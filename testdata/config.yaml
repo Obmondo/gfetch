@@ -1,0 +1,19 @@
+repos:
+  - name: test-repo
+    url: git@github.com:ashish1099/test-repo.git
+    ssh_key_path: /home/ashish/.ssh/id_ed25519
+    local_path: /tmp/gitsync/test-repo
+    poll_interval: 30s
+    checkout: main
+    branches:
+      - main
+      - /^release-.*/
+    tags:
+      - /^v[0-9]+\./
+
+  - name: public-repo
+    url: https://github.com/git/git.git
+    local_path: /tmp/gitsync/git
+    poll_interval: 30m
+    branches:
+      - main

@@ -1,0 +1,15 @@
+# Binaries
+gitsync
+dist/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+
+# Test
+coverage.out

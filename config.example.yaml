@@ -1,0 +1,25 @@
+repos:
+  # Private repo via SSH (requires ssh_key_path)
+  - name: my-service
+    url: git@github.com:ashish1099/my-service.git
+    ssh_key_path: /home/ashish/.ssh/id_ed25519
+    local_path: /var/repos/my-service
+    poll_interval: 5m
+    checkout: main                # working tree stays on this branch/tag
+    branches:
+      - main
+      - develop
+      - /^release-.*/              # regex (delimited by /)
+    tags:
+      - v1.0.0                     # exact match
+      - /^v[0-9]+\./               # regex (delimited by /)
+
+  # Public repo via HTTPS (no ssh_key_path needed)
+  - name: git
+    url: https://github.com/git/git.git
+    local_path: /var/repos/git
+    poll_interval: 30m
+    branches:
+      - main
+    tags:
+      - /^v[0-9]+\./
