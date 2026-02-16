@@ -1,19 +1,19 @@
 IMAGE_REGISTRY := ghcr.io/obmondo
-IMAGE_NAME := gitsync
+IMAGE_NAME := gfetch
 VERSION := $(shell git describe --tags 2>/dev/null || echo "dev")
 COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 DATE := $(shell date -u '+%Y-%m-%dT%H:%M:%SZ')
 
-BINARY := gitsync
+BINARY := gfetch
 LDFLAGS := -s -w \
-	-X github.com/ashish1099/gitsync/internal/cli.Version=$(VERSION) \
-	-X github.com/ashish1099/gitsync/internal/cli.Commit=$(COMMIT) \
-	-X github.com/ashish1099/gitsync/internal/cli.Date=$(DATE)
+	-X github.com/ashish1099/gfetch/internal/cli.Version=$(VERSION) \
+	-X github.com/ashish1099/gfetch/internal/cli.Commit=$(COMMIT) \
+	-X github.com/ashish1099/gfetch/internal/cli.Date=$(DATE)
 
 .PHONY: build test docker-build docker-push lint clean
 
 build:
-	CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o $(BINARY) ./cmd/gitsync
+	CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o $(BINARY) ./cmd/gfetch
 
 test:
 	go test ./...

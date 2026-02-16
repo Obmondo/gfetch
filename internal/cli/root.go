@@ -15,7 +15,7 @@ var (
 // NewRootCmd creates the root command.
 func NewRootCmd() *cobra.Command {
 	root := &cobra.Command{
-		Use:   "gitsync",
+		Use:   "gfetch",
 		Short: "Sync git repositories based on a YAML config",
 		PersistentPreRun: func(cmd *cobra.Command, args []string) {
 			setupLogger(logLevel)

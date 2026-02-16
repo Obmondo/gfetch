@@ -2,7 +2,7 @@ repos:
   - name: test-repo
     url: git@github.com:ashish1099/test-repo.git
     ssh_key_path: /home/ashish/.ssh/id_ed25519
-    local_path: /tmp/gitsync/test-repo
+    local_path: /tmp/gfetch/test-repo
     poll_interval: 30s
     checkout: main
     branches:
@@ -13,7 +13,7 @@ repos:
 
   - name: public-repo
     url: https://github.com/git/git.git
-    local_path: /tmp/gitsync/git
+    local_path: /tmp/gfetch/git
     poll_interval: 30m
     branches:
       - main

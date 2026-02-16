@@ -15,19 +15,19 @@ RUN go mod download
 COPY . .
 
 RUN go build -ldflags "-s -w \
-    -X github.com/ashish1099/gitsync/internal/cli.Version=${VERSION} \
-    -X github.com/ashish1099/gitsync/internal/cli.Commit=${COMMIT} \
-    -X github.com/ashish1099/gitsync/internal/cli.Date=${DATE}" \
-    -o /usr/local/bin/gitsync ./cmd/gitsync
+    -X github.com/ashish1099/gfetch/internal/cli.Version=${VERSION} \
+    -X github.com/ashish1099/gfetch/internal/cli.Commit=${COMMIT} \
+    -X github.com/ashish1099/gfetch/internal/cli.Date=${DATE}" \
+    -o /usr/local/bin/gfetch ./cmd/gfetch
 
 # Stage 2 — runtime
 FROM alpine:3.21
 
 RUN apk add --no-cache git openssh-client ca-certificates \
-    && adduser -D -h /home/gitsync gitsync
+    && adduser -D -h /home/gfetch gfetch
 
-COPY --from=builder /usr/local/bin/gitsync /usr/local/bin/gitsync
+COPY --from=builder /usr/local/bin/gfetch /usr/local/bin/gfetch
 
-USER gitsync
+USER gfetch
 
-ENTRYPOINT ["/usr/local/bin/gitsync"]
+ENTRYPOINT ["/usr/local/bin/gfetch"]

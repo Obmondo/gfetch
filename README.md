@@ -1,4 +1,4 @@
-# gitsync
+# gfetch
 
 A CLI tool that selectively mirrors remote Git repositories to local paths based on YAML configuration.
 
@@ -15,7 +15,7 @@ A CLI tool that selectively mirrors remote Git repositories to local paths based
 
 ```bash
 # Install
-go install github.com/ashish1099/gitsync/cmd/gitsync@latest
+go install github.com/ashish1099/gfetch/cmd/gfetch@latest
 
 # Create a config file
 cat <<'EOF' > config.yaml
@@ -29,7 +29,7 @@ repos:
 EOF
 
 # Run a one-shot sync
-gitsync sync
+gfetch sync
 ```
 
 ## Installation
@@ -37,24 +37,24 @@ gitsync sync
 ### From source
 
 ```bash
-git clone https://github.com/ashish1099/gitsync.git
-cd gitsync
-go build -o gitsync ./cmd/gitsync
+git clone https://github.com/ashish1099/gfetch.git
+cd gfetch
+go build -o gfetch ./cmd/gfetch
 ```
 
 ### With `go install`
 
 ```bash
-go install github.com/ashish1099/gitsync/cmd/gitsync@latest
+go install github.com/ashish1099/gfetch/cmd/gfetch@latest
 ```
 
 ### Releases
 
-Pre-built binaries for Linux and macOS (amd64/arm64) are available via [GoReleaser](https://github.com/ashish1099/gitsync/releases). Each release includes a `checksums.txt` for verification.
+Pre-built binaries for Linux and macOS (amd64/arm64) are available via [GoReleaser](https://github.com/ashish1099/gfetch/releases). Each release includes a `checksums.txt` for verification.
 
 ## Configuration
 
-gitsync reads a YAML config file (default: `config.yaml` in the current directory). Each entry in `repos` defines a repository to sync.
+gfetch reads a YAML config file (default: `config.yaml` in the current directory). Each entry in `repos` defines a repository to sync.
 
 ```yaml
 repos:
@@ -82,15 +82,15 @@ See [docs/configuration.md](docs/configuration.md) for the full configuration re
 | `--config`, `-c` | `config.yaml` | Path to config file |
 | `--log-level` | `info` | Log level: `debug`, `info`, `warn`, `error` |
 
-### `gitsync sync`
+### `gfetch sync`
 
 One-shot sync of all repos (or a specific repo).
 
 ```bash
-gitsync sync                    # sync all repos
-gitsync sync --repo my-service  # sync a specific repo
-gitsync sync --prune            # sync and remove obsolete branches/tags
-gitsync sync --prune --dry-run  # show what would be pruned without deleting
+gfetch sync                    # sync all repos
+gfetch sync --repo my-service  # sync a specific repo
+gfetch sync --prune            # sync and remove obsolete branches/tags
+gfetch sync --prune --dry-run  # show what would be pruned without deleting
 ```
 
 | Flag | Default | Description |
@@ -99,33 +99,33 @@ gitsync sync --prune --dry-run  # show what would be pruned without deleting
 | `--prune` | `false` | Delete local branches/tags that no longer match any pattern |
 | `--dry-run` | `false` | Show what would be pruned without actually deleting |
 
-### `gitsync daemon`
+### `gfetch daemon`
 
 Run as a foreground polling daemon. Each repo syncs immediately on start, then polls at its configured `poll_interval`. Shuts down gracefully on `SIGINT` or `SIGTERM`.
 
 ```bash
-gitsync daemon
-gitsync daemon --config /etc/gitsync/config.yaml --log-level debug
+gfetch daemon
+gfetch daemon --config /etc/gfetch/config.yaml --log-level debug
 ```
 
 Pruning is not performed in daemon mode. The daemon does not reload config on changes — restart it to pick up new configuration.
 
-### `gitsync validate-config`
+### `gfetch validate-config`
 
 Validate the config file and exit.
 
 ```bash
-gitsync validate-config
-gitsync validate-config -c /path/to/config.yaml
+gfetch validate-config
+gfetch validate-config -c /path/to/config.yaml
 ```
 
-### `gitsync version`
+### `gfetch version`
 
 Print version information.
 
 ```bash
-$ gitsync version
-gitsync dev (commit: none, built: unknown)
+$ gfetch version
+gfetch dev (commit: none, built: unknown)
 ```
 
 Version, commit, and build date are injected at build time via ldflags when using GoReleaser or a manual build with `-ldflags`.

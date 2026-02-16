@@ -7,13 +7,15 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/ashish1099/gitsync/pkg/config"
-	"github.com/ashish1099/gitsync/pkg/daemon"
-	"github.com/ashish1099/gitsync/pkg/sync"
+	"github.com/ashish1099/gfetch/pkg/config"
+	"github.com/ashish1099/gfetch/pkg/daemon"
+	"github.com/ashish1099/gfetch/pkg/sync"
 )
 
 func newDaemonCmd() *cobra.Command {
-	return &cobra.Command{
+	var listenAddr string
+
+	cmd := &cobra.Command{
 		Use:   "daemon",
 		Short: "Run as a foreground polling daemon",
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -27,9 +29,13 @@ func newDaemonCmd() *cobra.Command {
 
 			logger := slog.Default()
 			syncer := sync.New(logger)
-			sched := daemon.NewScheduler(syncer, logger)
+			sched := daemon.NewScheduler(syncer, logger, listenAddr)
 			sched.Run(context.Background(), cfg)
 			return nil
 		},
 	}
+
+	cmd.Flags().StringVar(&listenAddr, "listen-addr", ":8080", "Address for the HTTP server (health, metrics, sync endpoints)")
+
+	return cmd
 }

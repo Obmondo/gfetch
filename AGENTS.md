@@ -1,15 +1,15 @@
 # AGENTS.md
 
-Project context for AI coding agents working on gitsync.
+Project context for AI coding agents working on gfetch.
 
 ## Project Overview
 
-gitsync is a Go CLI tool that selectively mirrors remote Git repositories to local paths based on YAML configuration. It supports one-shot sync, a polling daemon mode, SSH/HTTPS auth, and branch/tag filtering via exact names or regex patterns.
+gfetch is a Go CLI tool that selectively mirrors remote Git repositories to local paths based on YAML configuration. It supports one-shot sync, a polling daemon mode, SSH/HTTPS auth, and branch/tag filtering via exact names or regex patterns.
 
 ## Project Structure
 
 ```
-cmd/gitsync/main.go          # Entry point — calls cli.NewRootCmd().Execute()
+cmd/gfetch/main.go          # Entry point — calls cli.NewRootCmd().Execute()
 internal/cli/
   root.go                     # Root cobra command, persistent flags (--config, --log-level)
   sync.go                     # "sync" subcommand (--repo, --prune, --dry-run)
@@ -45,7 +45,7 @@ testdata/config.yaml          # Test fixture
 
 ```bash
 # Build
-go build -o gitsync ./cmd/gitsync
+go build -o gfetch ./cmd/gfetch
 
 # Run all tests
 go test ./...
@@ -58,13 +58,13 @@ go test ./pkg/config/...
 go test ./pkg/sync/...
 
 # Build with version info (like GoReleaser does)
-go build -ldflags "-X github.com/ashish1099/gitsync/internal/cli.Version=dev -X github.com/ashish1099/gitsync/internal/cli.Commit=$(git rev-parse --short HEAD) -X github.com/ashish1099/gitsync/internal/cli.Date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o gitsync ./cmd/gitsync
+go build -ldflags "-X github.com/ashish1099/gfetch/internal/cli.Version=dev -X github.com/ashish1099/gfetch/internal/cli.Commit=$(git rev-parse --short HEAD) -X github.com/ashish1099/gfetch/internal/cli.Date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o gfetch ./cmd/gfetch
 ```
 
 ## Code Conventions
 
 - **Go version**: 1.25 (see `go.mod`)
-- **Module path**: `github.com/ashish1099/gitsync`
+- **Module path**: `github.com/ashish1099/gfetch`
 - **Logging**: `log/slog` with text handler to stderr. Logger is passed through structs (e.g., `Syncer.logger`), not globals. Use `.With("key", value)` for structured fields.
 - **CLI framework**: `github.com/spf13/cobra`. Commands are defined in `internal/cli/` with `newXxxCmd()` factory functions. Flags use package-level vars.
 - **Config parsing**: `gopkg.in/yaml.v3`. Config validation is manual in `Config.Validate()` — no struct validation tags.

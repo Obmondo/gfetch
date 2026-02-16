@@ -1,8 +1,8 @@
 version: 2
 
 builds:
-  - main: ./cmd/gitsync
-    binary: gitsync
+  - main: ./cmd/gfetch
+    binary: gfetch
     env:
       - CGO_ENABLED=0
     goos:
@@ -13,9 +13,9 @@ builds:
       - arm64
     ldflags:
       - -s -w
-      - -X github.com/ashish1099/gitsync/internal/cli.Version={{.Version}}
-      - -X github.com/ashish1099/gitsync/internal/cli.Commit={{.Commit}}
-      - -X github.com/ashish1099/gitsync/internal/cli.Date={{.Date}}
+      - -X github.com/ashish1099/gfetch/internal/cli.Version={{.Version}}
+      - -X github.com/ashish1099/gfetch/internal/cli.Commit={{.Commit}}
+      - -X github.com/ashish1099/gfetch/internal/cli.Date={{.Date}}
 
 archives:
   - format: tar.gz

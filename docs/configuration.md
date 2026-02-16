@@ -1,6 +1,6 @@
 # Configuration Reference
 
-gitsync is configured with a YAML file. By default it looks for `config.yaml` in the current directory. Use `--config` / `-c` to specify a different path.
+gfetch is configured with a YAML file. By default it looks for `config.yaml` in the current directory. Use `--config` / `-c` to specify a different path.
 
 ## Structure
 
@@ -82,7 +82,7 @@ Use an SSH-style URL (e.g. `git@github.com:user/repo.git`) and provide `ssh_key_
 
 ### HTTPS (public repos only)
 
-Use an `https://` or `http://` URL. No `ssh_key_path` is needed — authentication is anonymous. Only publicly accessible repositories are supported over HTTPS. During validation, gitsync makes an HTTP HEAD request to confirm the repo is reachable.
+Use an `https://` or `http://` URL. No `ssh_key_path` is needed — authentication is anonymous. Only publicly accessible repositories are supported over HTTPS. During validation, gfetch makes an HTTP HEAD request to confirm the repo is reachable.
 
 ```yaml
 - name: public-repo
@@ -107,7 +107,7 @@ The config is validated when loaded. The following rules are enforced:
 - If `url` is an HTTPS URL, the repo must be publicly accessible (HTTP 200 on HEAD request).
 - If `checkout` is set, it must match at least one configured branch or tag pattern.
 
-Run `gitsync validate-config` to check your config file without performing any sync.
+Run `gfetch validate-config` to check your config file without performing any sync.
 
 ## Complete Example
 

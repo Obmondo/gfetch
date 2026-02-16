@@ -4,13 +4,13 @@ import (
 	"log/slog"
 	"testing"
 
-	"github.com/ashish1099/gitsync/pkg/sync"
+	"github.com/ashish1099/gfetch/pkg/sync"
 )
 
 func TestNewScheduler(t *testing.T) {
 	logger := slog.Default()
 	syncer := sync.New(logger)
-	sched := NewScheduler(syncer, logger)
+	sched := NewScheduler(syncer, logger, ":8080")
 	if sched == nil {
 		t.Fatal("expected non-nil scheduler")
 	}

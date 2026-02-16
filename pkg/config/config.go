@@ -11,6 +11,9 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// DefaultPollInterval is used when a repo does not specify a poll interval.
+const DefaultPollInterval = 2 * time.Minute
+
 // Config is the top-level configuration.
 type Config struct {
 	Repos []RepoConfig `yaml:"repos"`
@@ -144,7 +147,9 @@ func (c *Config) Validate() error {
 		if r.LocalPath == "" {
 			return fmt.Errorf("repo %s: local_path is required", r.Name)
 		}
-		if r.PollInterval < 10*time.Second {
+		if r.PollInterval == 0 {
+			r.PollInterval = DefaultPollInterval
+		} else if r.PollInterval < 10*time.Second {
 			return fmt.Errorf("repo %s: poll_interval must be at least 10s, got %s", r.Name, r.PollInterval)
 		}
 		if len(r.Branches) == 0 && len(r.Tags) == 0 {

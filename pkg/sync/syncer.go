@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"time"
 
-	"github.com/ashish1099/gitsync/pkg/config"
+	"github.com/ashish1099/gfetch/pkg/config"
+	"github.com/ashish1099/gfetch/pkg/metrics"
 	git "github.com/go-git/go-git/v5"
 	gitconfig "github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing/transport"
@@ -55,19 +57,23 @@ func (s *Syncer) SyncAll(ctx context.Context, cfg *config.Config, opts SyncOptio
 
 // SyncRepo syncs a single repository.
 func (s *Syncer) SyncRepo(ctx context.Context, repo *config.RepoConfig, opts SyncOptions) Result {
+	start := time.Now()
 	result := Result{RepoName: repo.Name}
 	log := s.logger.With("repo", repo.Name)
 
+	metrics.SyncsTotal.WithLabelValues(repo.Name).Inc()
 	log.Info("starting sync")
 
 	auth, err := resolveAuth(repo)
 	if err != nil {
+		metrics.SyncFailuresTotal.WithLabelValues(repo.Name, "clone").Inc()
 		result.Err = err
 		return result
 	}
 
 	r, err := ensureCloned(ctx, repo, auth)
 	if err != nil {
+		metrics.SyncFailuresTotal.WithLabelValues(repo.Name, "clone").Inc()
 		result.Err = err
 		return result
 	}
@@ -77,14 +83,16 @@ func (s *Syncer) SyncRepo(ctx context.Context, repo *config.RepoConfig, opts Syn
 		branches, err := resolveBranches(ctx, r, repo.Branches, auth)
 		if err != nil {
 			log.Error("failed to resolve branches", "error", err)
+			metrics.SyncFailuresTotal.WithLabelValues(repo.Name, "branch_sync").Inc()
 			result.Err = fmt.Errorf("resolving branches: %w", err)
 			return result
 		}
 
 		for _, branch := range branches {
-			synced, err := syncBranch(ctx, r, branch, repo.URL, auth, log)
+			synced, err := syncBranch(ctx, r, branch, repo.URL, auth, repo.Name, log)
 			if err != nil {
 				log.Error("branch sync failed", "branch", branch, "error", err)
+				metrics.SyncFailuresTotal.WithLabelValues(repo.Name, "branch_sync").Inc()
 				result.BranchesFailed = append(result.BranchesFailed, branch)
 			} else if synced {
 				result.BranchesSynced = append(result.BranchesSynced, branch)
@@ -127,6 +135,7 @@ func (s *Syncer) SyncRepo(ctx context.Context, repo *config.RepoConfig, opts Syn
 		fetched, upToDate, obsolete, pruned, err := syncTags(ctx, r, repo, auth, opts.Prune, opts.DryRun, log)
 		if err != nil {
 			log.Error("tag sync failed", "error", err)
+			metrics.SyncFailuresTotal.WithLabelValues(repo.Name, "tag_sync").Inc()
 			if result.Err == nil {
 				result.Err = fmt.Errorf("tag sync: %w", err)
 			}
@@ -148,6 +157,16 @@ func (s *Syncer) SyncRepo(ctx context.Context, repo *config.RepoConfig, opts Syn
 		}
 	}
 
+	duration := time.Since(start)
+	metrics.SyncDurationSeconds.WithLabelValues(repo.Name, "total").Observe(duration.Seconds())
+
+	if result.Err != nil {
+		metrics.LastFailureTimestamp.WithLabelValues(repo.Name).Set(float64(time.Now().Unix()))
+	} else {
+		metrics.SyncSuccessTotal.WithLabelValues(repo.Name).Inc()
+		metrics.LastSuccessTimestamp.WithLabelValues(repo.Name).Set(float64(time.Now().Unix()))
+	}
+
 	log.Info("sync complete",
 		"branches_synced", len(result.BranchesSynced),
 		"branches_up_to_date", len(result.BranchesUpToDate),
@@ -158,6 +177,7 @@ func (s *Syncer) SyncRepo(ctx context.Context, repo *config.RepoConfig, opts Syn
 		"tags_up_to_date", len(result.TagsUpToDate),
 		"tags_obsolete", len(result.TagsObsolete),
 		"tags_pruned", len(result.TagsPruned),
+		"duration", duration,
 	)
 	return result
 }

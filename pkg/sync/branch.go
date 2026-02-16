@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"time"
 
-	"github.com/ashish1099/gitsync/pkg/config"
+	"github.com/ashish1099/gfetch/pkg/config"
+	"github.com/ashish1099/gfetch/pkg/metrics"
 	git "github.com/go-git/go-git/v5"
 	gitconfig "github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
@@ -14,7 +16,8 @@ import (
 
 // syncBranch fetches a single branch and hard-resets the local branch to match remote.
 // Returns true if the branch was updated, false if already up-to-date.
-func syncBranch(ctx context.Context, repo *git.Repository, branch, remoteURL string, auth transport.AuthMethod, log *slog.Logger) (bool, error) {
+func syncBranch(ctx context.Context, repo *git.Repository, branch, remoteURL string, auth transport.AuthMethod, repoName string, log *slog.Logger) (bool, error) {
+	start := time.Now()
 	remoteName := "origin"
 	refSpec := fmt.Sprintf("+refs/heads/%s:refs/remotes/%s/%s", branch, remoteName, branch)
 
@@ -48,7 +51,9 @@ func syncBranch(ctx context.Context, repo *git.Repository, branch, remoteURL str
 		return false, fmt.Errorf("setting local ref for %s: %w", branch, err)
 	}
 
-	log.Info("branch synced", "branch", branch, "hash", remoteRef.Hash().String()[:12])
+	duration := time.Since(start)
+	metrics.SyncDurationSeconds.WithLabelValues(repoName, "branch").Observe(duration.Seconds())
+	log.Info("branch synced", "branch", branch, "hash", remoteRef.Hash().String()[:12], "duration", duration)
 	return true, nil
 }
 

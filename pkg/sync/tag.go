@@ -4,19 +4,22 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"time"
 
 	git "github.com/go-git/go-git/v5"
 	gitconfig "github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/transport"
 
-	"github.com/ashish1099/gitsync/pkg/config"
+	"github.com/ashish1099/gfetch/pkg/config"
+	"github.com/ashish1099/gfetch/pkg/metrics"
 )
 
 // syncTags lists remote tags, filters by patterns, and fetches new matching tags.
 // It returns newly fetched, already up-to-date, obsolete (local tags not matching
 // any pattern), and pruned tag lists.
 func syncTags(ctx context.Context, repo *git.Repository, repoConfig *config.RepoConfig, auth transport.AuthMethod, pruneTags bool, dryRun bool, log *slog.Logger) (fetched, upToDate, obsolete, pruned []string, err error) {
+	start := time.Now()
 	remote, err := repo.Remote("origin")
 	if err != nil {
 		return nil, nil, nil, nil, fmt.Errorf("getting remote: %w", err)
@@ -107,6 +110,10 @@ func syncTags(ctx context.Context, repo *git.Repository, repoConfig *config.Repo
 			pruned = append(pruned, tag)
 		}
 	}
+
+	duration := time.Since(start)
+	metrics.SyncDurationSeconds.WithLabelValues(repoConfig.Name, "tag").Observe(duration.Seconds())
+	log.Info("tags synced", "fetched", len(fetched), "duration", duration)
 
 	return fetched, upToDate, obsolete, pruned, nil
 }

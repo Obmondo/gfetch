@@ -5,7 +5,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/ashish1099/gitsync/pkg/config"
+	"github.com/ashish1099/gfetch/pkg/config"
 )
 
 func newValidateCmd() *cobra.Command {
