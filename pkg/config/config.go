@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -39,6 +40,7 @@ type RepoConfig struct {
 	Branches      []Pattern     `yaml:"branches"`
 	Tags          []Pattern     `yaml:"tags"`
 	Checkout      string        `yaml:"checkout"`
+	OpenVox       bool          `yaml:"openvox"`
 }
 
 // Pattern represents a matching pattern, either literal or regex.
@@ -267,7 +269,11 @@ func (c *Config) Validate() error {
 			}
 		}
 
-		if r.Checkout != "" {
+		if r.OpenVox && r.Checkout != "" {
+			slog.Warn("repo has both openvox and checkout set; checkout will be ignored in openvox mode", "repo", r.Name)
+		}
+
+		if r.Checkout != "" && !r.OpenVox {
 			if !matchesAny(r.Checkout, r.Branches) && !matchesAny(r.Checkout, r.Tags) {
 				return fmt.Errorf("repo %s: checkout %q does not match any configured branch or tag pattern", r.Name, r.Checkout)
 			}

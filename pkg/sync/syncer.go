@@ -64,6 +64,11 @@ func (s *Syncer) SyncRepo(ctx context.Context, repo *config.RepoConfig, opts Syn
 	metrics.SyncsTotal.WithLabelValues(repo.Name).Inc()
 	log.Info("starting sync")
 
+	if repo.OpenVox {
+		log.Info("using openvox mode")
+		return s.syncRepoOpenVox(ctx, repo, opts)
+	}
+
 	auth, err := resolveAuth(repo)
 	if err != nil {
 		metrics.SyncFailuresTotal.WithLabelValues(repo.Name, "clone").Inc()
