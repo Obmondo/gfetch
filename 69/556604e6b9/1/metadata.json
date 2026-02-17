@@ -1,0 +1,36 @@
+{
+  "cli_version": "0.4.4",
+  "checkpoint_id": "69556604e6b9",
+  "session_id": "55318418-7658-4df6-84aa-0eb8030e5406",
+  "strategy": "manual-commit",
+  "created_at": "2026-02-17T10:29:52.497415981Z",
+  "branch": "master",
+  "checkpoints_count": 2,
+  "files_touched": [
+    "config.yaml",
+    "pkg/sync/branch.go",
+    "pkg/sync/openvox.go",
+    "pkg/sync/openvox_test.go",
+    "skills/golang/SKILLS.md",
+    "temp/linuxaid-config-enableit/config.yaml",
+    "temp/linuxaid/config.yaml"
+  ],
+  "agent": "Claude Code",
+  "token_usage": {
+    "input_tokens": 15,
+    "cache_creation_tokens": 9436,
+    "cache_read_tokens": 267707,
+    "output_tokens": 1095,
+    "api_call_count": 11
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-02-17T10:29:52.46296846Z",
+    "agent_lines": 12,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 1209,
+    "total_committed": 12,
+    "agent_percentage": 100
+  },
+  "transcript_path": ".claude/projects/-home-ashish-gitea-gfetch/55318418-7658-4df6-84aa-0eb8030e5406.jsonl"
+}

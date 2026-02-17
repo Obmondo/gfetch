@@ -1,0 +1,50 @@
+Implement the following plan:
+
+# Plan: Fix annotated tag checkout in `checkoutRef`
+
+## Context
+
+OpenVox mode calls `checkoutRef()` for every tag. For **annotated tags** (like `v1.4.4`), the git reference points to a tag object, not a commit. `wt.Reset(&git.ResetOptions{Commit: ref.Hash()})` fails because it expects a commit hash:
+
+```
+reset v1.4.4: invalid reset option: object not found
+```
+
+Lightweight tags work fine because their ref hash IS the commit hash directly.
+
+## Fix
+
+**File: `pkg/sync/branch.go` — `checkoutRef()` (line 82)**
+
+After resolving the ref (line 84-90), dereference annotated tags to their target commit before calling `wt.Reset`:
+
+```go
+hash := ref.Hash()
+// Annotated tags point to a tag object, not a commit directly. Peel to the commit.
+if tagObj, err := repo.TagObject(hash); err == nil {
+    commit, err := tagObj.Commit()
+    if err != nil {
+        return fmt.Errorf("peeling tag %s to commit: %w", name, err)
+    }
+    hash = commit.Hash
+}
+```
+
+- `repo.TagObject(hash)` returns `ErrObjectNotFound` for lightweight tags and branches → skipped (hash used as-is)
+- For annotated tags, `tagObj.Commit()` peels through to the commit
+
+Then use `hash` in the `wt.Reset` call instead of `ref.Hash()`.
+
+No new imports needed — `repo.TagObject()` is a method on `*git.Repository` (already imported).
+
+## Verification
+1. `go build ./...`
+2. `go test ./...`
+3. Manual test with an annotated tag (e.g. `v1.4.4`) in openvox mode
+
+
+If you need specific details from before exiting plan mode (like exact code snippets, error messages, or content you generated), read the full transcript at: /home/ashish/.claude/projects/-home-ashish-gitea-gfetch/e1d1a4fe-f181-4017-b9d8-bbec4debe90b.jsonl
+
+---
+
+commit this
