@@ -416,9 +416,14 @@ ssh_known_hosts: |
   example.com ssh-ed25519 AAAA...
 local_path: /tmp/global_path
 poll_interval: 5m
+branches:
+  - "*"
+tags:
+  - "*"
+openvox: true
 `), 0644)
 
-	// Create repo1/config.yaml — overrides ssh_key_path, inherits the rest
+	// Create repo1/config.yaml — overrides ssh_key_path and branches, inherits the rest
 	repo1Dir := filepath.Join(dir, "repo1")
 	os.MkdirAll(repo1Dir, 0755)
 	os.WriteFile(filepath.Join(repo1Dir, "config.yaml"), []byte(`repos:
@@ -435,8 +440,6 @@ poll_interval: 5m
 	os.WriteFile(filepath.Join(repo2Dir, "config.yaml"), []byte(`repos:
   - name: repo2
     url: git@github.com:test/repo2.git
-    branches:
-      - develop
 `), 0644)
 
 	cfg, err := Load(dir)
@@ -454,7 +457,7 @@ poll_interval: 5m
 		repos[cfg.Repos[i].Name] = &cfg.Repos[i]
 	}
 
-	// repo1 should have overridden ssh_key_path but inherited the rest
+	// repo1 should have overridden ssh_key_path and branches, inherited the rest
 	r1 := repos["repo1"]
 	if r1.SSHKeyPath != "/tmp/override_key" {
 		t.Errorf("repo1 ssh_key_path = %q, want /tmp/override_key", r1.SSHKeyPath)
@@ -468,6 +471,15 @@ poll_interval: 5m
 	if r1.SSHKnownHosts == "" {
 		t.Error("repo1 ssh_known_hosts should be inherited from global")
 	}
+	if len(r1.Branches) != 1 || r1.Branches[0].Raw != "main" {
+		t.Errorf("repo1 branches should not be overridden, got %v", r1.Branches)
+	}
+	if len(r1.Tags) != 1 || r1.Tags[0].Raw != "*" {
+		t.Errorf("repo1 tags should be inherited from global, got %v", r1.Tags)
+	}
+	if !r1.OpenVox {
+		t.Error("repo1 openvox should be inherited from global")
+	}
 
 	// repo2 should inherit everything
 	r2 := repos["repo2"]
@@ -480,21 +492,33 @@ poll_interval: 5m
 	if r2.PollInterval != 5*time.Minute {
 		t.Errorf("repo2 poll_interval = %v, want 5m", r2.PollInterval)
 	}
+	if len(r2.Branches) != 1 || r2.Branches[0].Raw != "*" {
+		t.Errorf("repo2 branches should be inherited from global, got %v", r2.Branches)
+	}
+	if len(r2.Tags) != 1 || r2.Tags[0].Raw != "*" {
+		t.Errorf("repo2 tags should be inherited from global, got %v", r2.Tags)
+	}
+	if !r2.OpenVox {
+		t.Error("repo2 openvox should be inherited from global")
+	}
 }
 
 func TestApplyDefaults(t *testing.T) {
+	openvoxTrue := true
 	defaults := &RepoDefaults{
 		SSHKeyPath:    "/tmp/default_key",
 		SSHKnownHosts: "example.com ssh-ed25519 AAAA...",
 		LocalPath:     "/tmp/default_path",
 		PollInterval:  3 * time.Minute,
+		Branches:      []Pattern{{Raw: "main"}, {Raw: "develop"}},
+		Tags:          []Pattern{{Raw: "*"}},
+		OpenVox:       &openvoxTrue,
 	}
 
 	// Repo with all fields empty — should inherit all defaults
 	repo := &RepoConfig{
-		Name:     "test",
-		URL:      "git@github.com:test/repo.git",
-		Branches: []Pattern{{Raw: "main"}},
+		Name: "test",
+		URL:  "git@github.com:test/repo.git",
 	}
 	applyDefaults(repo, defaults)
 
@@ -510,6 +534,15 @@ func TestApplyDefaults(t *testing.T) {
 	if repo.PollInterval != 3*time.Minute {
 		t.Errorf("poll_interval = %v, want 3m", repo.PollInterval)
 	}
+	if len(repo.Branches) != 2 || repo.Branches[0].Raw != "main" {
+		t.Errorf("branches should be inherited from defaults, got %v", repo.Branches)
+	}
+	if len(repo.Tags) != 1 || repo.Tags[0].Raw != "*" {
+		t.Errorf("tags should be inherited from defaults, got %v", repo.Tags)
+	}
+	if !repo.OpenVox {
+		t.Error("openvox should be inherited from defaults")
+	}
 
 	// Repo with fields set — should NOT be overridden
 	repo2 := &RepoConfig{
@@ -520,6 +553,8 @@ func TestApplyDefaults(t *testing.T) {
 		LocalPath:     "/tmp/my_path",
 		PollInterval:  1 * time.Minute,
 		Branches:      []Pattern{{Raw: "main"}},
+		Tags:          []Pattern{{Raw: "v1.0.0"}},
+		OpenVox:       true,
 	}
 	applyDefaults(repo2, defaults)
 
@@ -534,6 +569,12 @@ func TestApplyDefaults(t *testing.T) {
 	}
 	if repo2.PollInterval != 1*time.Minute {
 		t.Errorf("poll_interval should not be overridden, got %v", repo2.PollInterval)
+	}
+	if len(repo2.Branches) != 1 || repo2.Branches[0].Raw != "main" {
+		t.Errorf("branches should not be overridden, got %v", repo2.Branches)
+	}
+	if len(repo2.Tags) != 1 || repo2.Tags[0].Raw != "v1.0.0" {
+		t.Errorf("tags should not be overridden, got %v", repo2.Tags)
 	}
 }
 

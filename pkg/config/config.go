@@ -28,6 +28,9 @@ type RepoDefaults struct {
 	SSHKnownHosts string        `yaml:"ssh_known_hosts"`
 	LocalPath     string        `yaml:"local_path"`
 	PollInterval  time.Duration `yaml:"poll_interval"`
+	Branches      []Pattern     `yaml:"branches"`
+	Tags          []Pattern     `yaml:"tags"`
+	OpenVox       *bool         `yaml:"openvox"`
 }
 
 // RepoConfig defines the sync configuration for a single repository.
@@ -216,6 +219,15 @@ func applyDefaults(repo *RepoConfig, defaults *RepoDefaults) {
 	}
 	if repo.LocalPath == "" && defaults.LocalPath != "" {
 		repo.LocalPath = defaults.LocalPath
+	}
+	if len(repo.Branches) == 0 && len(defaults.Branches) > 0 {
+		repo.Branches = defaults.Branches
+	}
+	if len(repo.Tags) == 0 && len(defaults.Tags) > 0 {
+		repo.Tags = defaults.Tags
+	}
+	if defaults.OpenVox != nil && !repo.OpenVox {
+		repo.OpenVox = *defaults.OpenVox
 	}
 }
 
