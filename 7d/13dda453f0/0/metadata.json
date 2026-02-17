@@ -1,0 +1,33 @@
+{
+  "cli_version": "0.4.4",
+  "checkpoint_id": "7d13dda453f0",
+  "session_id": "df81d449-7633-485b-a888-a28cef5ab489",
+  "strategy": "manual-commit",
+  "created_at": "2026-02-17T12:26:32.301411184Z",
+  "branch": "master",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "README.md",
+    "config.example.yaml",
+    "docs/configuration.md",
+    "temp/global.yaml"
+  ],
+  "agent": "Claude Code",
+  "token_usage": {
+    "input_tokens": 19,
+    "cache_creation_tokens": 31388,
+    "cache_read_tokens": 540121,
+    "output_tokens": 362,
+    "api_call_count": 15
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-02-17T12:26:32.176958928Z",
+    "agent_lines": 46,
+    "human_added": 791,
+    "human_modified": 54,
+    "human_removed": 0,
+    "total_committed": 891,
+    "agent_percentage": 5.16273849607183
+  },
+  "transcript_path": ".claude/projects/-home-ashish-gitea-gfetch/df81d449-7633-485b-a888-a28cef5ab489.jsonl"
+}

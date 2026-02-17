@@ -1,0 +1,5 @@
+update the doc and where does global.yaml is read from ?
+
+---
+
+commit this and its already in staged
