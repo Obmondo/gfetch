@@ -21,7 +21,7 @@ RUN go build -ldflags "-s -w \
     -o /usr/local/bin/gfetch ./cmd/gfetch
 
 # Stage 2 — runtime
-FROM alpine:3.21
+FROM alpine:3.23
 
 RUN apk add --no-cache git openssh-client ca-certificates \
     && adduser -D -h /home/gfetch gfetch
