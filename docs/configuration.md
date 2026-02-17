@@ -13,6 +13,7 @@ repos:
     local_path: <string>
     poll_interval: <duration>
     checkout: <string>           # optional
+    openvox: <bool>              # optional, default false
     branches:
       - <pattern>
     tags:
@@ -87,7 +88,47 @@ Fields left empty are filled from `global.yaml`.
 | `poll_interval` | duration | Yes | How often the daemon polls this repo. Go duration format (e.g. `30s`, `5m`, `1h`). Minimum: `10s`. |
 | `branches` | list of patterns | At least one of `branches` or `tags` | Branch names or patterns to sync from the remote. |
 | `tags` | list of patterns | At least one of `branches` or `tags` | Tag names or patterns to sync from the remote. |
-| `checkout` | string | No | A literal branch or tag name to check out in the working tree. Must match at least one configured branch or tag pattern. |
+| `checkout` | string | No | A literal branch or tag name to check out in the working tree. Must match at least one configured branch or tag pattern. Ignored when `openvox` is enabled. |
+| `openvox` | bool | No | Enable OpenVox mode. Each matching branch/tag gets its own subdirectory under `local_path`, named with sanitized ref names (hyphens and dots replaced by underscores). The `checkout` field is ignored in this mode. |
+
+## OpenVox Mode
+
+When `openvox: true` is set on a repo, gfetch creates a separate subdirectory under `local_path` for each matching branch and tag. Each directory contains a fully checked-out working tree of that ref.
+
+Directory names are sanitized: hyphens (`-`) and dots (`.`) are replaced with underscores (`_`). For example, a branch named `release-1.0` becomes the directory `release_1_0`.
+
+If two refs produce the same sanitized name (e.g. `release-1` and `release.1` both become `release_1`), gfetch detects the collision and reports an error.
+
+A hidden `.gfetch-meta` directory is created under `local_path` to store a resolver repo used for listing remote refs.
+
+When `openvox` is enabled, the `checkout` field is ignored (a warning is logged if both are set).
+
+Pruning (`--prune`) in OpenVox mode removes directories that no longer correspond to any matched ref.
+
+```yaml
+repos:
+  - name: puppet-control
+    url: git@github.com:org/puppet-control.git
+    ssh_key_path: /home/user/.ssh/id_ed25519
+    local_path: /etc/puppetlabs/code/environments
+    poll_interval: 2m
+    openvox: true
+    branches:
+      - main
+      - /^feature-.*/
+    tags:
+      - /^v[0-9]+\./
+```
+
+This produces a layout like:
+
+```
+/etc/puppetlabs/code/environments/
+├── .gfetch-meta/          # internal resolver repo
+├── main/                  # checked out from branch main
+├── feature_foo/           # checked out from branch feature-foo
+└── v1_0_0/                # checked out from tag v1.0.0
+```
 
 ## Built-in SSH Host Keys
 
@@ -176,7 +217,8 @@ The config is validated when loaded. The following rules are enforced:
 - All regex patterns must be valid Go regular expressions.
 - If `url` is an SSH URL, `ssh_key_path` must be set and the file must exist.
 - If `url` is an HTTPS URL, the repo must be publicly accessible (HTTP 200 on HEAD request).
-- If `checkout` is set, it must match at least one configured branch or tag pattern.
+- If `checkout` is set, it must match at least one configured branch or tag pattern (not enforced when `openvox` is enabled).
+- If both `openvox` and `checkout` are set, a warning is logged and `checkout` is ignored.
 
 Run `gfetch validate-config` to check your config file without performing any sync.
 

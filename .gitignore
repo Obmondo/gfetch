@@ -13,3 +13,4 @@ dist/
 
 # Test
 coverage.out
+temp/

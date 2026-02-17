@@ -8,6 +8,7 @@ repos:
     local_path: /var/repos/my-service
     poll_interval: 5m
     checkout: main                # working tree stays on this branch/tag
+    openvox: false                # set true: each branch/tag gets its own subdirectory
     branches:
       - main
       - develop

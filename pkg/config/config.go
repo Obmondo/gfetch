@@ -18,7 +18,8 @@ const DefaultPollInterval = 2 * time.Minute
 
 // Config is the top-level configuration.
 type Config struct {
-	Repos []RepoConfig `yaml:"repos"`
+	Defaults *RepoDefaults `yaml:"defaults,omitempty"`
+	Repos    []RepoConfig  `yaml:"repos"`
 }
 
 // RepoDefaults holds default values that are applied to repos missing those fields.
@@ -144,6 +145,7 @@ func loadFile(path string) (*Config, error) {
 	// If top-level ssh_known_hosts is set, apply it as a default to repos missing it.
 	if raw.SSHKnownHosts != "" {
 		defaults := &RepoDefaults{SSHKnownHosts: raw.SSHKnownHosts}
+		cfg.Defaults = defaults
 		for i := range cfg.Repos {
 			applyDefaults(&cfg.Repos[i], defaults)
 		}
@@ -157,11 +159,13 @@ func loadDir(dir string) (*Config, error) {
 	var defaults RepoDefaults
 
 	// Load global.yaml if it exists.
+	var hasDefaults bool
 	globalPath := filepath.Join(dir, "global.yaml")
 	if data, err := os.ReadFile(globalPath); err == nil {
 		if err := yaml.Unmarshal(data, &defaults); err != nil {
 			return nil, fmt.Errorf("parsing global.yaml: %w", err)
 		}
+		hasDefaults = true
 	} else if !os.IsNotExist(err) {
 		return nil, fmt.Errorf("reading global.yaml: %w", err)
 	}
@@ -173,6 +177,9 @@ func loadDir(dir string) (*Config, error) {
 	}
 
 	cfg := &Config{}
+	if hasDefaults {
+		cfg.Defaults = &defaults
+	}
 	for _, match := range matches {
 		data, err := os.ReadFile(match)
 		if err != nil {

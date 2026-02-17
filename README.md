@@ -9,6 +9,7 @@ A CLI tool that selectively mirrors remote Git repositories to local paths based
 - **Daemon mode** — run as a foreground polling service with per-repo poll intervals
 - **SSH and HTTPS auth** — private repos via SSH key, public repos via anonymous HTTPS
 - **Working tree checkout** — optionally keep a working tree checked out on a specific branch or tag
+- **OpenVox mode** — create per-branch/tag directories with sanitized names, ideal for Puppet environments
 - **Lightweight clones** — repos are initialized empty and only configured refs are fetched
 
 ## Quick Start
@@ -98,6 +99,7 @@ repos:
     local_path: /var/repos/my-service
     poll_interval: 5m
     checkout: main
+    openvox: false                # set true for per-branch directories
     branches:
       - main
       - /^release-.*/        # regex pattern
