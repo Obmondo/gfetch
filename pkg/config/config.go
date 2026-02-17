@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -19,16 +20,25 @@ type Config struct {
 	Repos []RepoConfig `yaml:"repos"`
 }
 
+// RepoDefaults holds default values that are applied to repos missing those fields.
+type RepoDefaults struct {
+	SSHKeyPath    string        `yaml:"ssh_key_path"`
+	SSHKnownHosts string        `yaml:"ssh_known_hosts"`
+	LocalPath     string        `yaml:"local_path"`
+	PollInterval  time.Duration `yaml:"poll_interval"`
+}
+
 // RepoConfig defines the sync configuration for a single repository.
 type RepoConfig struct {
-	Name         string        `yaml:"name"`
-	URL          string        `yaml:"url"`
-	SSHKeyPath   string        `yaml:"ssh_key_path"`
-	LocalPath    string        `yaml:"local_path"`
-	PollInterval time.Duration `yaml:"poll_interval"`
-	Branches     []Pattern     `yaml:"branches"`
-	Tags         []Pattern     `yaml:"tags"`
-	Checkout     string        `yaml:"checkout"`
+	Name          string        `yaml:"name"`
+	URL           string        `yaml:"url"`
+	SSHKeyPath    string        `yaml:"ssh_key_path"`
+	SSHKnownHosts string        `yaml:"ssh_known_hosts"`
+	LocalPath     string        `yaml:"local_path"`
+	PollInterval  time.Duration `yaml:"poll_interval"`
+	Branches      []Pattern     `yaml:"branches"`
+	Tags          []Pattern     `yaml:"tags"`
+	Checkout      string        `yaml:"checkout"`
 }
 
 // Pattern represents a matching pattern, either literal or regex.
@@ -45,6 +55,11 @@ func (p *Pattern) UnmarshalYAML(value *yaml.Node) error {
 	}
 	p.Raw = value.Value
 	return nil
+}
+
+// MarshalYAML marshals a Pattern to a plain YAML string.
+func (p Pattern) MarshalYAML() (interface{}, error) {
+	return p.Raw, nil
 }
 
 // IsRegex returns true if the pattern is a regex (delimited by /).
@@ -92,19 +107,104 @@ func (r *RepoConfig) IsHTTPS() bool {
 	return strings.HasPrefix(r.URL, "https://") || strings.HasPrefix(r.URL, "http://")
 }
 
-// Load reads and parses a YAML config file.
+// Load reads and parses configuration from a file or directory.
+// If path is a file, it loads a single YAML config.
+// If path is a directory, it loads global.yaml for defaults and */config.yaml for repos.
 func Load(path string) (*Config, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, fmt.Errorf("accessing config path: %w", err)
+	}
+	if info.IsDir() {
+		return loadDir(path)
+	}
+	return loadFile(path)
+}
+
+// loadFile reads and parses a single YAML config file.
+func loadFile(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("reading config file: %w", err)
 	}
 
-	var cfg Config
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
+	// Support top-level ssh_known_hosts in single-file mode for backwards compatibility.
+	var raw struct {
+		SSHKnownHosts string       `yaml:"ssh_known_hosts"`
+		Repos         []RepoConfig `yaml:"repos"`
+	}
+	if err := yaml.Unmarshal(data, &raw); err != nil {
 		return nil, fmt.Errorf("parsing config file: %w", err)
 	}
 
-	return &cfg, nil
+	cfg := &Config{Repos: raw.Repos}
+
+	// If top-level ssh_known_hosts is set, apply it as a default to repos missing it.
+	if raw.SSHKnownHosts != "" {
+		defaults := &RepoDefaults{SSHKnownHosts: raw.SSHKnownHosts}
+		for i := range cfg.Repos {
+			applyDefaults(&cfg.Repos[i], defaults)
+		}
+	}
+
+	return cfg, nil
+}
+
+// loadDir loads configuration from a directory structure.
+func loadDir(dir string) (*Config, error) {
+	var defaults RepoDefaults
+
+	// Load global.yaml if it exists.
+	globalPath := filepath.Join(dir, "global.yaml")
+	if data, err := os.ReadFile(globalPath); err == nil {
+		if err := yaml.Unmarshal(data, &defaults); err != nil {
+			return nil, fmt.Errorf("parsing global.yaml: %w", err)
+		}
+	} else if !os.IsNotExist(err) {
+		return nil, fmt.Errorf("reading global.yaml: %w", err)
+	}
+
+	// Scan */config.yaml for per-repo configs.
+	matches, err := filepath.Glob(filepath.Join(dir, "*", "config.yaml"))
+	if err != nil {
+		return nil, fmt.Errorf("scanning config directory: %w", err)
+	}
+
+	cfg := &Config{}
+	for _, match := range matches {
+		data, err := os.ReadFile(match)
+		if err != nil {
+			return nil, fmt.Errorf("reading %s: %w", match, err)
+		}
+		var sub Config
+		if err := yaml.Unmarshal(data, &sub); err != nil {
+			return nil, fmt.Errorf("parsing %s: %w", match, err)
+		}
+		cfg.Repos = append(cfg.Repos, sub.Repos...)
+	}
+
+	// Apply global defaults to each repo.
+	for i := range cfg.Repos {
+		applyDefaults(&cfg.Repos[i], &defaults)
+	}
+
+	return cfg, nil
+}
+
+// applyDefaults fills empty repo fields from global defaults.
+func applyDefaults(repo *RepoConfig, defaults *RepoDefaults) {
+	if repo.SSHKeyPath == "" && defaults.SSHKeyPath != "" {
+		repo.SSHKeyPath = defaults.SSHKeyPath
+	}
+	if repo.SSHKnownHosts == "" && defaults.SSHKnownHosts != "" {
+		repo.SSHKnownHosts = defaults.SSHKnownHosts
+	}
+	if repo.PollInterval == 0 && defaults.PollInterval != 0 {
+		repo.PollInterval = defaults.PollInterval
+	}
+	if repo.LocalPath == "" && defaults.LocalPath != "" {
+		repo.LocalPath = defaults.LocalPath
+	}
 }
 
 // Validate checks the configuration for required fields and compiles regex patterns.

@@ -15,7 +15,7 @@ A CLI tool that selectively mirrors remote Git repositories to local paths based
 
 ```bash
 # Install
-go install github.com/ashish1099/gfetch/cmd/gfetch@latest
+go install gitea.obmondo.com/EnableIT/gfetch/cmd/gfetch@latest
 
 # Create a config file
 cat <<'EOF' > config.yaml
@@ -32,12 +32,20 @@ EOF
 gfetch sync
 ```
 
+Or run with Docker:
+
+```bash
+docker run -v /path/to/config.yaml:/home/gfetch/config.yaml \
+           -v /var/repos:/var/repos \
+           gitea.obmondo.com/enableit/gfetch daemon
+```
+
 ## Installation
 
 ### From source
 
 ```bash
-git clone https://github.com/ashish1099/gfetch.git
+git clone https://gitea.obmondo.com/EnableIT/gfetch.git
 cd gfetch
 go build -o gfetch ./cmd/gfetch
 ```
@@ -45,12 +53,38 @@ go build -o gfetch ./cmd/gfetch
 ### With `go install`
 
 ```bash
-go install github.com/ashish1099/gfetch/cmd/gfetch@latest
+go install gitea.obmondo.com/EnableIT/gfetch/cmd/gfetch@latest
 ```
 
 ### Releases
 
-Pre-built binaries for Linux and macOS (amd64/arm64) are available via [GoReleaser](https://github.com/ashish1099/gfetch/releases). Each release includes a `checksums.txt` for verification.
+Pre-built binaries for Linux and macOS (amd64/arm64) are available via [GoReleaser](https://gitea.obmondo.com/EnableIT/gfetch/releases). Each release includes a `checksums.txt` for verification.
+
+### Docker
+
+A pre-built image is published to the Gitea Container Registry on every tagged release.
+
+```bash
+# Pull the latest image
+docker pull gitea.obmondo.com/enableit/gfetch
+
+# Run the daemon with config and repo storage mounted
+docker run -v /path/to/config.yaml:/home/gfetch/config.yaml \
+           -v /var/repos:/var/repos \
+           gitea.obmondo.com/enableit/gfetch daemon
+```
+
+To build locally:
+
+```bash
+docker build -t gfetch .
+
+# With version info
+docker build --build-arg VERSION=1.0.0 \
+             --build-arg COMMIT=$(git rev-parse --short HEAD) \
+             --build-arg DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ) \
+             -t gfetch .
+```
 
 ## Configuration
 
@@ -117,6 +151,15 @@ Validate the config file and exit.
 ```bash
 gfetch validate-config
 gfetch validate-config -c /path/to/config.yaml
+```
+
+### `gfetch cat`
+
+Print the fully resolved configuration as YAML. Loads the config, applies defaults, validates, and outputs the result to stdout.
+
+```bash
+gfetch cat
+gfetch cat -c /path/to/config.yaml
 ```
 
 ### `gfetch version`

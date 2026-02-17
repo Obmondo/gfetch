@@ -15,6 +15,7 @@ internal/cli/
   sync.go                     # "sync" subcommand (--repo, --prune, --dry-run)
   daemon.go                   # "daemon" subcommand (foreground polling)
   validate.go                 # "validate-config" subcommand
+  cat.go                      # "cat" subcommand — print resolved config as YAML
   version.go                  # "version" subcommand + Version/Commit/Date vars
 pkg/config/
   config.go                   # Config/RepoConfig/Pattern structs, Load(), Validate()
@@ -22,6 +23,7 @@ pkg/config/
   config_test.go              # Config unit tests
 pkg/sync/
   auth.go                     # resolveAuth() — SSH key or nil (HTTPS)
+  known_hosts.go              # SSH known_hosts callback helper
   syncer.go                   # Syncer, SyncAll(), SyncRepo(), ensureCloned()
   branch.go                   # syncBranch(), findObsoleteBranches(), checkoutRef(), deleteBranch()
   tag.go                      # syncTags() — fetch, prune, obsolete detection
@@ -32,6 +34,11 @@ pkg/daemon/
 config.example.yaml           # Annotated example configuration
 testdata/config.yaml          # Test fixture
 .goreleaser.yaml              # Release config (linux/darwin, amd64/arm64)
+Dockerfile                    # Multi-stage build (Go builder + Alpine runtime)
+.gitea/workflows/
+  docker.yaml                 # CI: Docker build on PR, build+push on tag
+  renovate.yaml               # CI: Renovate bot (weekly cron + manual)
+renovate.json                 # Renovate config (gomod, dockerfile, github-actions)
 ```
 
 ## Key Architectural Decisions

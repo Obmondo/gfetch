@@ -347,3 +347,210 @@ func TestValidate_InvalidBranchRegex(t *testing.T) {
 		t.Error("expected error for invalid branch regex")
 	}
 }
+
+func TestLoad_Directory(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create repo1/config.yaml
+	repo1Dir := filepath.Join(dir, "repo1")
+	os.MkdirAll(repo1Dir, 0755)
+	os.WriteFile(filepath.Join(repo1Dir, "config.yaml"), []byte(`repos:
+  - name: repo1
+    url: git@github.com:test/repo1.git
+    ssh_key_path: /tmp/key1
+    local_path: /tmp/repo1
+    poll_interval: 1m
+    branches:
+      - main
+`), 0644)
+
+	// Create repo2/config.yaml
+	repo2Dir := filepath.Join(dir, "repo2")
+	os.MkdirAll(repo2Dir, 0755)
+	os.WriteFile(filepath.Join(repo2Dir, "config.yaml"), []byte(`repos:
+  - name: repo2
+    url: git@github.com:test/repo2.git
+    ssh_key_path: /tmp/key2
+    local_path: /tmp/repo2
+    poll_interval: 2m
+    branches:
+      - develop
+`), 0644)
+
+	cfg, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(cfg.Repos) != 2 {
+		t.Fatalf("expected 2 repos, got %d", len(cfg.Repos))
+	}
+
+	// repos are loaded in glob order (alphabetical by directory name)
+	names := map[string]bool{}
+	for _, r := range cfg.Repos {
+		names[r.Name] = true
+	}
+	if !names["repo1"] || !names["repo2"] {
+		t.Errorf("expected repos repo1 and repo2, got %v", names)
+	}
+}
+
+func TestLoad_DirectoryWithGlobal(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create global.yaml with defaults
+	os.WriteFile(filepath.Join(dir, "global.yaml"), []byte(`ssh_key_path: /tmp/global_key
+ssh_known_hosts: |
+  example.com ssh-ed25519 AAAA...
+local_path: /tmp/global_path
+poll_interval: 5m
+`), 0644)
+
+	// Create repo1/config.yaml — overrides ssh_key_path, inherits the rest
+	repo1Dir := filepath.Join(dir, "repo1")
+	os.MkdirAll(repo1Dir, 0755)
+	os.WriteFile(filepath.Join(repo1Dir, "config.yaml"), []byte(`repos:
+  - name: repo1
+    url: git@github.com:test/repo1.git
+    ssh_key_path: /tmp/override_key
+    branches:
+      - main
+`), 0644)
+
+	// Create repo2/config.yaml — inherits everything from global
+	repo2Dir := filepath.Join(dir, "repo2")
+	os.MkdirAll(repo2Dir, 0755)
+	os.WriteFile(filepath.Join(repo2Dir, "config.yaml"), []byte(`repos:
+  - name: repo2
+    url: git@github.com:test/repo2.git
+    branches:
+      - develop
+`), 0644)
+
+	cfg, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(cfg.Repos) != 2 {
+		t.Fatalf("expected 2 repos, got %d", len(cfg.Repos))
+	}
+
+	// Find repos by name
+	repos := map[string]*RepoConfig{}
+	for i := range cfg.Repos {
+		repos[cfg.Repos[i].Name] = &cfg.Repos[i]
+	}
+
+	// repo1 should have overridden ssh_key_path but inherited the rest
+	r1 := repos["repo1"]
+	if r1.SSHKeyPath != "/tmp/override_key" {
+		t.Errorf("repo1 ssh_key_path = %q, want /tmp/override_key", r1.SSHKeyPath)
+	}
+	if r1.LocalPath != "/tmp/global_path" {
+		t.Errorf("repo1 local_path = %q, want /tmp/global_path", r1.LocalPath)
+	}
+	if r1.PollInterval != 5*time.Minute {
+		t.Errorf("repo1 poll_interval = %v, want 5m", r1.PollInterval)
+	}
+	if r1.SSHKnownHosts == "" {
+		t.Error("repo1 ssh_known_hosts should be inherited from global")
+	}
+
+	// repo2 should inherit everything
+	r2 := repos["repo2"]
+	if r2.SSHKeyPath != "/tmp/global_key" {
+		t.Errorf("repo2 ssh_key_path = %q, want /tmp/global_key", r2.SSHKeyPath)
+	}
+	if r2.LocalPath != "/tmp/global_path" {
+		t.Errorf("repo2 local_path = %q, want /tmp/global_path", r2.LocalPath)
+	}
+	if r2.PollInterval != 5*time.Minute {
+		t.Errorf("repo2 poll_interval = %v, want 5m", r2.PollInterval)
+	}
+}
+
+func TestApplyDefaults(t *testing.T) {
+	defaults := &RepoDefaults{
+		SSHKeyPath:    "/tmp/default_key",
+		SSHKnownHosts: "example.com ssh-ed25519 AAAA...",
+		LocalPath:     "/tmp/default_path",
+		PollInterval:  3 * time.Minute,
+	}
+
+	// Repo with all fields empty — should inherit all defaults
+	repo := &RepoConfig{
+		Name:     "test",
+		URL:      "git@github.com:test/repo.git",
+		Branches: []Pattern{{Raw: "main"}},
+	}
+	applyDefaults(repo, defaults)
+
+	if repo.SSHKeyPath != "/tmp/default_key" {
+		t.Errorf("ssh_key_path = %q, want /tmp/default_key", repo.SSHKeyPath)
+	}
+	if repo.SSHKnownHosts != "example.com ssh-ed25519 AAAA..." {
+		t.Errorf("ssh_known_hosts = %q, want default", repo.SSHKnownHosts)
+	}
+	if repo.LocalPath != "/tmp/default_path" {
+		t.Errorf("local_path = %q, want /tmp/default_path", repo.LocalPath)
+	}
+	if repo.PollInterval != 3*time.Minute {
+		t.Errorf("poll_interval = %v, want 3m", repo.PollInterval)
+	}
+
+	// Repo with fields set — should NOT be overridden
+	repo2 := &RepoConfig{
+		Name:          "test2",
+		URL:           "git@github.com:test/repo2.git",
+		SSHKeyPath:    "/tmp/my_key",
+		SSHKnownHosts: "custom.com ssh-rsa BBBB...",
+		LocalPath:     "/tmp/my_path",
+		PollInterval:  1 * time.Minute,
+		Branches:      []Pattern{{Raw: "main"}},
+	}
+	applyDefaults(repo2, defaults)
+
+	if repo2.SSHKeyPath != "/tmp/my_key" {
+		t.Errorf("ssh_key_path should not be overridden, got %q", repo2.SSHKeyPath)
+	}
+	if repo2.SSHKnownHosts != "custom.com ssh-rsa BBBB..." {
+		t.Errorf("ssh_known_hosts should not be overridden, got %q", repo2.SSHKnownHosts)
+	}
+	if repo2.LocalPath != "/tmp/my_path" {
+		t.Errorf("local_path should not be overridden, got %q", repo2.LocalPath)
+	}
+	if repo2.PollInterval != 1*time.Minute {
+		t.Errorf("poll_interval should not be overridden, got %v", repo2.PollInterval)
+	}
+}
+
+func TestLoad_FileWithTopLevelSSHKnownHosts(t *testing.T) {
+	content := `ssh_known_hosts: |
+  example.com ssh-ed25519 AAAA...
+
+repos:
+  - name: test-repo
+    url: git@github.com:test/repo.git
+    ssh_key_path: /tmp/test_key
+    local_path: /tmp/test_repo
+    poll_interval: 1m
+    branches:
+      - main
+`
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(cfgPath, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if cfg.Repos[0].SSHKnownHosts == "" {
+		t.Error("expected top-level ssh_known_hosts to be applied to repo")
+	}
+}

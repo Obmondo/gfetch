@@ -3,6 +3,8 @@ repos:
   - name: my-service
     url: git@github.com:ashish1099/my-service.git
     ssh_key_path: /home/ashish/.ssh/id_ed25519
+    ssh_known_hosts: |                          # optional: extra host keys (built-in keys for GitHub, GitLab, Bitbucket, Azure DevOps are always included)
+      custom-git.example.com ssh-ed25519 AAAA...
     local_path: /var/repos/my-service
     poll_interval: 5m
     checkout: main                # working tree stays on this branch/tag
@@ -23,3 +25,22 @@ repos:
       - main
     tags:
       - /^v[0-9]+\./
+
+# --- Directory mode ---
+# Instead of a single file, --config can point to a directory:
+#
+#   config.d/
+#   ├── global.yaml            # shared defaults (ssh_key_path, ssh_known_hosts, poll_interval, local_path)
+#   ├── repo-a/
+#   │   └── config.yaml        # repos: [{ name: repo-a, url: ..., branches: [...] }]
+#   └── repo-b/
+#       └── config.yaml
+#
+# global.yaml example:
+#   ssh_key_path: /home/user/.ssh/id_ed25519
+#   ssh_known_hosts: |
+#     custom-git.example.com ssh-ed25519 AAAA...
+#   poll_interval: 5m
+#   local_path: /var/repos
+#
+# Per-repo values override globals. Use `gfetch cat` to see the resolved config.

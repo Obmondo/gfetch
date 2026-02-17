@@ -22,13 +22,14 @@ func NewRootCmd() *cobra.Command {
 		},
 	}
 
-	root.PersistentFlags().StringVarP(&configPath, "config", "c", "config.yaml", "path to config file")
+	root.PersistentFlags().StringVarP(&configPath, "config", "c", "config.yaml", "path to config file or directory")
 	root.PersistentFlags().StringVar(&logLevel, "log-level", "info", "log level (debug, info, warn, error)")
 
 	root.AddCommand(newSyncCmd())
 	root.AddCommand(newDaemonCmd())
 	root.AddCommand(newValidateCmd())
 	root.AddCommand(newVersionCmd())
+	root.AddCommand(newCatCmd())
 
 	return root
 }

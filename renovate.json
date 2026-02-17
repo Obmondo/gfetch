@@ -1,0 +1,26 @@
+{
+    "enabledManagers": [
+        "github-actions",
+        "gomod",
+        "dockerfile"
+    ],
+    "extends": [
+        "config:recommended",
+        ":rebaseStalePrs",
+        ":gitSignOff",
+        ":assignAndReview(sidharth)",
+        ":label(Renovate/Dependency)"
+    ],
+    "packageRules": [
+        {
+            "matchDatasources": [
+                "golang-version"
+            ],
+            "rangeStrategy": "bump"
+        }
+    ],
+    "postUpdateOptions": [
+        "gomodUpdateImportPaths",
+        "gomodTidy"
+    ]
+}
