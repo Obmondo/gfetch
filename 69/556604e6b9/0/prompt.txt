@@ -1,0 +1,85 @@
+Implement the following plan:
+
+# Plan: Add `openvox` config key
+
+## Context
+
+gfetch currently syncs each repo into a single `local_path` directory with all branches/tags as git refs. For Puppet/OpenVox environment management, each branch/tag needs to be a **separate directory** with sanitized names (hyphens and dots replaced with underscores). This feature adds an `openvox` boolean to the YAML config that enables this behavior.
+
+## Design
+
+When `openvox: true`, instead of one git repo at `local_path`:
+- A separate git repo is created per branch/tag at `local_path/{sanitized_name}/`
+- Each repo fetches only its specific ref and checks it out as a working tree
+- Name sanitization: `-` and `.` become `_` (e.g., `feature-branch` → `feature_branch`, `v1.0.0` → `v1_0_0`)
+- The `checkout` field is ignored (warning logged) since every ref gets its own checkout
+
+```
+local_path/
+├── production/          # branch "production" checked out
+├── feature_auth/        # branch "feature-auth" checked out
+├── v1_0_0/              # tag "v1.0.0" checked out
+└── v2_0_0/              # tag "v2.0.0" checked out
+```
+
+Each subdirectory is a standalone git repo (uses go-git, no CLI dependency).
+
+## Key Reuse Strategy
+
+The openvox per-ref sync **reuses existing functions** rather than reimplementing:
+
+- **`ensureCloned(ctx, subRepoConfig, auth)`** (`syncer.go:192`) — called with a shallow copy of `RepoConfig` where `LocalPath` is set to `local_path/{sanitized}/`. Handles init + remote creation.
+- **`syncBranch(ctx, repo, branch, url, auth, name, log)`** (`branch.go:19`) — fetches a single branch with narrow refspec and updates local ref. Called per branch in each subdirectory repo.
+- **`checkoutRef(repo, refName, log)`** (`branch.go:82`) — checks out branch or tag and hard-resets worktree. Called after sync to populate the working directory.
+- **Tag fetch** — for tags, a single-tag fetch + `checkoutRef` (simple inline, ~10 lines) since `syncTags` does bulk operations unsuitable for per-directory repos.
+- **`resolveBranches(ctx, repo, patterns, auth)`** (`syncer.go:214`) — lists remote branches matching patterns. Used with the resolver repo.
+- **`resolveAuth(repo)`** (`auth.go:14`) — unchanged.
+
+The **only new logic** is:
+- `SanitizeName()` — string replacer
+- `syncRepoOpenVox()` — orchestrator that creates sub-configs and delegates to existing functions
+- `ensureResolverRepo()` — bare repo at `.gfetch-meta/` for listing remote refs
+- `resolveTags()` — like `resolveBranches` but for tags (the existing `syncTags` merges resolution + fetch)
+- Collision detection + directory pruning
+
+## Changes
+
+### 1. Config: `pkg/config/config.go` ✅ (already done)
+- Add `OpenVox bool` field to `RepoConfig` struct
+- In `Validate()`: warn if both `openvox` and `checkout` are set; skip checkout validation in openvox mode
+
+### 2. New file: `pkg/sync/openvox.go` (needs refactor)
+- `SanitizeName(name string) string` — replaces `-` and `.` with `_`
+- `syncRepoOpenVox(ctx, repo, opts) Result` — main openvox sync flow:
+  1. Create resolver repo at `local_path/.gfetch-meta/`
+  2. Resolve matching branches via `resolveBranches()` + tags via `resolveTags()`
+  3. Detect name collisions after sanitization
+  4. For each branch: build sub-config → `ensureCloned()` → `syncBranch()` → `checkoutRef()`
+  5. For each tag: build sub-config → `ensureCloned()` → single-tag fetch → `checkoutRef()`
+  6. Pruning: scan `local_path` dirs, remove stale ones
+- `ensureResolverRepo()` — bare repo for remote ref listing
+- `resolveTags()` — tag equivalent of `resolveBranches()`
+- `detectCollisions()` / `pruneOpenVoxDirs()` — unchanged from current draft
+
+### 3. Sync integration: `pkg/sync/syncer.go` ✅ (already done)
+- In `SyncRepo()`, if `repo.OpenVox`, delegate to `s.syncRepoOpenVox()` and return
+
+### 4. Tests: `pkg/sync/openvox_test.go` ✅ (already done)
+- Unit tests for `SanitizeName`
+- Test collision detection
+
+## Verification
+1. `go build ./...` — compiles
+2. `go test ./...` — passes
+3. Manual test with `config.yaml` adding `openvox: true` to a repo entry
+
+
+If you need specific details from before exiting plan mode (like exact code snippets, error messages, or content you generated), read the full transcript at: /home/ashish/.claude/projects/-home-ashish-gitea-gfetch/d4f4400d-8f30-4da5-ae30-316bdaec3307.jsonl
+
+---
+
+tag sync v1.4.4: checkout tag v1.4.4: reset v1.4.4: invalid reset option: object not found
+
+---
+
+[Request interrupted by user for tool use]

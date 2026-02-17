@@ -1,0 +1,31 @@
+{
+  "cli_version": "0.4.4",
+  "checkpoint_id": "69556604e6b9",
+  "strategy": "manual-commit",
+  "branch": "master",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "config.yaml",
+    "pkg/sync/openvox.go",
+    "pkg/sync/openvox_test.go",
+    "skills/golang/SKILLS.md",
+    "temp/linuxaid-config-enableit/config.yaml",
+    "temp/linuxaid/config.yaml"
+  ],
+  "sessions": [
+    {
+      "metadata": "/69/556604e6b9/0/metadata.json",
+      "transcript": "/69/556604e6b9/0/full.jsonl",
+      "context": "/69/556604e6b9/0/context.md",
+      "content_hash": "/69/556604e6b9/0/content_hash.txt",
+      "prompt": "/69/556604e6b9/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 26,
+    "cache_creation_tokens": 45299,
+    "cache_read_tokens": 1128696,
+    "output_tokens": 6948,
+    "api_call_count": 22
+  }
+}
