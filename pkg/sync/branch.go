@@ -89,6 +89,16 @@ func checkoutRef(repo *git.Repository, name string, log *slog.Logger) error {
 		}
 	}
 
+	hash := ref.Hash()
+	// Annotated tags point to a tag object, not a commit directly. Peel to the commit.
+	if tagObj, err := repo.TagObject(hash); err == nil {
+		commit, err := tagObj.Commit()
+		if err != nil {
+			return fmt.Errorf("peeling tag %s to commit: %w", name, err)
+		}
+		hash = commit.Hash
+	}
+
 	wt, err := repo.Worktree()
 	if err != nil {
 		return fmt.Errorf("getting worktree: %w", err)
@@ -102,13 +112,13 @@ func checkoutRef(repo *git.Repository, name string, log *slog.Logger) error {
 	}
 
 	if err := wt.Reset(&git.ResetOptions{
-		Commit: ref.Hash(),
+		Commit: hash,
 		Mode:   git.HardReset,
 	}); err != nil {
 		return fmt.Errorf("reset %s: %w", name, err)
 	}
 
-	log.Info("checked out ref", "ref", name, "hash", ref.Hash().String()[:12])
+	log.Info("checked out ref", "ref", name, "hash", hash.String()[:12])
 	return nil
 }
 
