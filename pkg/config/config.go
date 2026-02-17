@@ -72,6 +72,9 @@ func (p *Pattern) IsRegex() bool {
 
 // Matches returns true if the given name matches this pattern.
 func (p *Pattern) Matches(name string) bool {
+	if p.Raw == "*" {
+		return true
+	}
 	if p.IsRegex() {
 		if p.compiled != nil {
 			return p.compiled.MatchString(name)

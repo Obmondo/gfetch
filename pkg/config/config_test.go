@@ -45,6 +45,17 @@ func TestPattern_Matches(t *testing.T) {
 	if regex.Matches("release-1.0") {
 		t.Error("regex should not match release-1.0")
 	}
+
+	wildcard := Pattern{Raw: "*"}
+	if !wildcard.Matches("anything") {
+		t.Error("wildcard should match any string")
+	}
+	if !wildcard.Matches("main") {
+		t.Error("wildcard should match main")
+	}
+	if !wildcard.Matches("v1.0.0") {
+		t.Error("wildcard should match v1.0.0")
+	}
 }
 
 func TestPattern_MatchesBranches(t *testing.T) {
