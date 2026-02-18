@@ -13,9 +13,9 @@ builds:
       - arm64
     ldflags:
       - -s -w
-      - -X github.com/ashish1099/gfetch/internal/cli.Version={{.Version}}
-      - -X github.com/ashish1099/gfetch/internal/cli.Commit={{.Commit}}
-      - -X github.com/ashish1099/gfetch/internal/cli.Date={{.Date}}
+      - -X github.com/obmondo/gfetch/internal/cli.Version={{.Version}}
+      - -X github.com/obmondo/gfetch/internal/cli.Commit={{.Commit}}
+      - -X github.com/obmondo/gfetch/internal/cli.Date={{.Date}}
 
 archives:
   - format: tar.gz

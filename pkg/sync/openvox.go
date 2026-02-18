@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ashish1099/gfetch/pkg/config"
-	"github.com/ashish1099/gfetch/pkg/metrics"
+	"github.com/obmondo/gfetch/pkg/config"
+	"github.com/obmondo/gfetch/pkg/metrics"
 	git "github.com/go-git/go-git/v5"
 	gitconfig "github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing/transport"

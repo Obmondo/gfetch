@@ -8,8 +8,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/ashish1099/gfetch/pkg/config"
-	"github.com/ashish1099/gfetch/pkg/sync"
+	"github.com/obmondo/gfetch/pkg/config"
+	"github.com/obmondo/gfetch/pkg/sync"
 )
 
 func newSyncCmd() *cobra.Command {

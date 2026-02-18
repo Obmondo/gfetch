@@ -3,7 +3,7 @@ package sync
 import (
 	"fmt"
 
-	"github.com/ashish1099/gfetch/pkg/config"
+	"github.com/obmondo/gfetch/pkg/config"
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	gitssh "github.com/go-git/go-git/v5/plumbing/transport/ssh"
 )

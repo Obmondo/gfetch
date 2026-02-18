@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/ashish1099/gfetch/internal/cli"
+	"github.com/obmondo/gfetch/internal/cli"
 )
 
 func main() {

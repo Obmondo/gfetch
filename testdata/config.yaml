@@ -1,6 +1,6 @@
 repos:
   - name: test-repo
-    url: git@github.com:ashish1099/test-repo.git
+    url: git@github.com:obmondo/test-repo.git
     ssh_key_path: /home/ashish/.ssh/id_ed25519
     local_path: /tmp/gfetch/test-repo
     poll_interval: 30s

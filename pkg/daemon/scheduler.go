@@ -11,8 +11,8 @@ import (
 
 	"github.com/go-co-op/gocron/v2"
 
-	"github.com/ashish1099/gfetch/pkg/config"
-	"github.com/ashish1099/gfetch/pkg/sync"
+	"github.com/obmondo/gfetch/pkg/config"
+	"github.com/obmondo/gfetch/pkg/sync"
 )
 
 // Scheduler manages periodic syncing of repositories using gocron.

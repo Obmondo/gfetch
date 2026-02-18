@@ -3,7 +3,7 @@ package cli
 import (
 	"fmt"
 
-	"github.com/ashish1099/gfetch/pkg/config"
+	"github.com/obmondo/gfetch/pkg/config"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 )

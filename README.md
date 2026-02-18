@@ -1,5 +1,9 @@
 # gfetch
 
+[![Tests](https://github.com/obmondo/gfetch/actions/workflows/test.yml/badge.svg)](https://github.com/obmondo/gfetch/actions/workflows/test.yml)
+[![Docker](https://github.com/obmondo/gfetch/actions/workflows/docker.yml/badge.svg)](https://github.com/obmondo/gfetch/actions/workflows/docker.yml)
+[![Go Report Card](https://goreportcard.com/badge/github.com/obmondo/gfetch)](https://goreportcard.com/report/github.com/obmondo/gfetch)
+
 A CLI tool that selectively mirrors remote Git repositories to local paths based on YAML configuration.
 
 ## Features
@@ -94,7 +98,7 @@ gfetch reads a YAML config file (default: `config.yaml` in the current directory
 ```yaml
 repos:
   - name: my-service
-    url: git@github.com:ashish1099/my-service.git
+    url: git@github.com:obmondo/my-service.git
     ssh_key_path: /home/user/.ssh/id_ed25519
     local_path: /var/repos/my-service
     poll_interval: 5m

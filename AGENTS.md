@@ -65,13 +65,13 @@ go test ./pkg/config/...
 go test ./pkg/sync/...
 
 # Build with version info (like GoReleaser does)
-go build -ldflags "-X github.com/ashish1099/gfetch/internal/cli.Version=dev -X github.com/ashish1099/gfetch/internal/cli.Commit=$(git rev-parse --short HEAD) -X github.com/ashish1099/gfetch/internal/cli.Date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o gfetch ./cmd/gfetch
+go build -ldflags "-X github.com/obmondo/gfetch/internal/cli.Version=dev -X github.com/obmondo/gfetch/internal/cli.Commit=$(git rev-parse --short HEAD) -X github.com/obmondo/gfetch/internal/cli.Date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o gfetch ./cmd/gfetch
 ```
 
 ## Code Conventions
 
 - **Go version**: 1.25 (see `go.mod`)
-- **Module path**: `github.com/ashish1099/gfetch`
+- **Module path**: `github.com/obmondo/gfetch`
 - **Logging**: `log/slog` with text handler to stderr. Logger is passed through structs (e.g., `Syncer.logger`), not globals. Use `.With("key", value)` for structured fields.
 - **CLI framework**: `github.com/spf13/cobra`. Commands are defined in `internal/cli/` with `newXxxCmd()` factory functions. Flags use package-level vars.
 - **Config parsing**: `gopkg.in/yaml.v3`. Config validation is manual in `Config.Validate()` — no struct validation tags.

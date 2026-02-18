@@ -6,9 +6,9 @@ DATE := $(shell date -u '+%Y-%m-%dT%H:%M:%SZ')
 
 BINARY := gfetch
 LDFLAGS := -s -w \
-	-X github.com/ashish1099/gfetch/internal/cli.Version=$(VERSION) \
-	-X github.com/ashish1099/gfetch/internal/cli.Commit=$(COMMIT) \
-	-X github.com/ashish1099/gfetch/internal/cli.Date=$(DATE)
+	-X github.com/obmondo/gfetch/internal/cli.Version=$(VERSION) \
+	-X github.com/obmondo/gfetch/internal/cli.Commit=$(COMMIT) \
+	-X github.com/obmondo/gfetch/internal/cli.Date=$(DATE)
 
 .PHONY: build test docker-build docker-push lint clean
 

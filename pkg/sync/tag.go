@@ -11,8 +11,8 @@ import (
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/transport"
 
-	"github.com/ashish1099/gfetch/pkg/config"
-	"github.com/ashish1099/gfetch/pkg/metrics"
+	"github.com/obmondo/gfetch/pkg/config"
+	"github.com/obmondo/gfetch/pkg/metrics"
 )
 
 // syncTags lists remote tags, filters by patterns, and fetches new matching tags.

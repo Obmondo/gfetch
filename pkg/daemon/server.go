@@ -7,8 +7,8 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
-	"github.com/ashish1099/gfetch/pkg/config"
-	"github.com/ashish1099/gfetch/pkg/sync"
+	"github.com/obmondo/gfetch/pkg/config"
+	"github.com/obmondo/gfetch/pkg/sync"
 )
 
 func newServer(syncer *sync.Syncer, logger *slog.Logger, cfg *config.Config) http.Handler {

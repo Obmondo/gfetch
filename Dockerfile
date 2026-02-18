@@ -15,9 +15,9 @@ RUN go mod download
 COPY . .
 
 RUN go build -ldflags "-s -w \
-    -X github.com/ashish1099/gfetch/internal/cli.Version=${VERSION} \
-    -X github.com/ashish1099/gfetch/internal/cli.Commit=${COMMIT} \
-    -X github.com/ashish1099/gfetch/internal/cli.Date=${DATE}" \
+    -X github.com/obmondo/gfetch/internal/cli.Version=${VERSION} \
+    -X github.com/obmondo/gfetch/internal/cli.Commit=${COMMIT} \
+    -X github.com/obmondo/gfetch/internal/cli.Date=${DATE}" \
     -o /usr/local/bin/gfetch ./cmd/gfetch
 
 # Stage 2 — runtime

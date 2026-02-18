@@ -1,4 +1,4 @@
-module github.com/ashish1099/gfetch
+module github.com/obmondo/gfetch
 
 go 1.25
 

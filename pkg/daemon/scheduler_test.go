@@ -4,7 +4,7 @@ import (
 	"log/slog"
 	"testing"
 
-	"github.com/ashish1099/gfetch/pkg/sync"
+	"github.com/obmondo/gfetch/pkg/sync"
 )
 
 func TestNewScheduler(t *testing.T) {
