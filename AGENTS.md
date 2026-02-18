@@ -19,6 +19,7 @@ internal/cli/
   version.go                  # "version" subcommand + Version/Commit/Date vars
 pkg/config/
   config.go                   # Config/RepoConfig/Pattern structs, Load(), Validate(), validateRepo(), validateAuth()
+  duration.go                 # ParseDuration() — support for s, m, h, d
   url.go                      # CheckHTTPSAccessible() helper
   config_test.go              # Config unit tests
 pkg/gsync/
@@ -50,7 +51,7 @@ renovate.json                 # Renovate config (gomod, dockerfile, github-actio
 - **No full clone**: repos are initialized empty via `git.PlainInit` + `CreateRemote`, then only configured refs are fetched with narrow refspecs. This avoids downloading unnecessary data.
 - **Ref-level sync**: branches are updated by setting local refs directly to remote hashes — no merge/pull. The working tree is only touched when `checkout` is configured.
 - **One goroutine per repo in daemon**: each repo polls independently with its own `time.Ticker`. Shutdown is via context cancellation on SIGINT/SIGTERM.
-- **Pruning disabled in daemon mode**: daemon always uses `SyncOptions{}` (prune=false). Pruning is only available in the `sync` subcommand.
+- **Pruning disabled in daemon mode**: daemon always uses `SyncOptions{}` (prune=false, pruneStale=false). Pruning is only available in the `sync` subcommand.
 - **Package Naming**: `pkg/gsync` is used for git sync logic to avoid conflict with the standard `sync` package. `pkg/telemetry` is used for metrics.
 
 ## Build & Test
@@ -68,6 +69,8 @@ go test -v ./...
 # Run a specific package's tests
 go test ./pkg/config/...
 go test ./pkg/gsync/...
+
+# TODO: Add integration tests using a real SSH Git repository (e.g., via a test container or mock server) to verify full SSH auth flow.
 
 # Build with version info (like GoReleaser does)
 go build -ldflags "-X github.com/obmondo/gfetch/internal/cli.Version=dev -X github.com/obmondo/gfetch/internal/cli.Commit=$(git rev-parse --short HEAD) -X github.com/obmondo/gfetch/internal/cli.Date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o gfetch ./cmd/gfetch
@@ -155,6 +158,7 @@ Commits should be logically atomic — one concern per commit. When a session to
 - `name` must be unique across repos
 - `poll_interval` minimum is `10s`
 - At least one of `branches` or `tags` must be non-empty
+- `prune_stale` (bool) and `stale_age` (duration) enable inactivity-based pruning
 - Regex patterns (wrapped in `/`) are compiled and validated
 - SSH URLs require `ssh_key_path` pointing to an existing file
 - HTTPS URLs must be publicly accessible (HEAD request returns 200)
@@ -164,6 +168,7 @@ Commits should be logically atomic — one concern per commit. When a session to
 
 Patterns appear in `branches` and `tags` YAML lists:
 - **Exact**: plain string, matched with `==`
+- **Wildcard**: `*` matches everything
 - **Regex**: wrapped in `/` delimiters (e.g., `/^release-.*/`), compiled with `regexp.Compile`, matched with `MatchString`
 - `//` is treated as a literal, not an empty regex
 - `Pattern.Compile()` must be called before `Matches()` for regex patterns — `Validate()` handles this

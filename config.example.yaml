@@ -1,27 +1,30 @@
+# --- Shared defaults ---
+defaults:
+  ssh_key_path: /home/gfetch/.ssh/id_rsa
+  poll_interval: 10m
+  local_path: /var/repos
+  branches:
+    - main
+  tags:
+    - /^v[0-9]+\./
+  openvox: false
+  prune_stale: true             # prune branches matching patterns but with no commits in 6 months
+  stale_age: 180d               # custom threshold for staleness (d=days, mo=months, y=years)
+
 repos:
-  # Private repo via SSH (requires ssh_key_path)
+  # Private repo via SSH
   - name: my-service
     url: git@github.com:obmondo/my-service.git
-    ssh_key_path: /home/ashish/.ssh/id_ed25519
-    ssh_known_hosts: |                          # optional: extra host keys (built-in keys for GitHub, GitLab, Bitbucket, Azure DevOps are always included)
-      custom-git.example.com ssh-ed25519 AAAA...
-    local_path: /var/repos/my-service
-    poll_interval: 5m
-    checkout: main                # working tree stays on this branch/tag
-    openvox: false                # set true: each branch/tag gets its own subdirectory
+    # Inherits all fields from defaults
     branches:
       - main
-      - develop
-      - /^release-.*/              # regex (delimited by /)
-    tags:
-      - v1.0.0                     # exact match
-      - /^v[0-9]+\./               # regex (delimited by /)
+      - /^release-.*/
 
-  # Public repo via HTTPS (no ssh_key_path needed)
+  # Public repo via HTTPS (overrides some defaults)
   - name: git
     url: https://github.com/git/git.git
-    local_path: /var/repos/git
-    poll_interval: 30m
+    local_path: /var/repos/mirror
+    prune_stale: false          # override for this repo
     branches:
       - main
     tags:
@@ -31,22 +34,10 @@ repos:
 # Instead of a single file, --config can point to a directory:
 #
 #   config.d/
-#   ├── global.yaml            # shared defaults (ssh_key_path, ssh_known_hosts, poll_interval, local_path, branches, tags, openvox)
+#   ├── global.yaml            # shared defaults (uses the same fields as the 'defaults:' key)
 #   ├── repo-a/
 #   │   └── config.yaml        # repos: [{ name: repo-a, url: ..., branches: [...] }]
 #   └── repo-b/
 #       └── config.yaml
-#
-# global.yaml example:
-#   ssh_key_path: /home/user/.ssh/id_ed25519
-#   ssh_known_hosts: |
-#     custom-git.example.com ssh-ed25519 AAAA...
-#   poll_interval: 5m
-#   local_path: /var/repos
-#   branches:
-#     - main
-#   tags:
-#     - /^v[0-9]+\./
-#   openvox: false
 #
 # Per-repo values override globals. Use `gfetch cat` to see the resolved config.

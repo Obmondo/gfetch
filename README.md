@@ -8,8 +8,9 @@ A CLI tool that selectively mirrors remote Git repositories to local paths based
 
 ## Features
 
-- **Selective sync** — choose exactly which branches and tags to mirror using exact names or regex patterns
+- **Selective sync** — choose exactly which branches and tags to mirror using exact names, wildcards (`*`), or regex patterns
 - **Pruning** — detect and remove local branches/tags that no longer match any configured pattern
+- **Stale pruning** — optionally remove inactive branches that have no new commits in a specified period (e.g., last 6 months)
 - **Daemon mode** — run as a foreground polling service with per-repo poll intervals
 - **SSH and HTTPS auth** — private repos via SSH key, public repos via anonymous HTTPS
 - **Working tree checkout** — optionally keep a working tree checked out on a specific branch or tag
@@ -93,22 +94,31 @@ docker build --build-arg VERSION=1.0.0 \
 
 ## Configuration
 
-gfetch reads a YAML config file (default: `config.yaml` in the current directory). Each entry in `repos` defines a repository to sync.
+gfetch reads a YAML config file (default: `config.yaml` in the current directory). Use a `defaults:` key to share settings across multiple repositories.
 
 ```yaml
+defaults:
+  ssh_key_path: /home/gfetch/.ssh/id_rsa
+  poll_interval: 10m
+  prune_stale: true             # remove branches with no commits in 6 months
+  stale_age: 180d               # supports d (days)
+
+# TODO: Add integration tests for real SSH Git repositories.
+
 repos:
   - name: my-service
     url: git@github.com:obmondo/my-service.git
-    ssh_key_path: /home/user/.ssh/id_ed25519
-    local_path: /var/repos/my-service
-    poll_interval: 5m
-    checkout: main
-    openvox: false                # set true for per-branch directories
     branches:
       - main
       - /^release-.*/        # regex pattern
     tags:
-      - /^v[0-9]+\./
+      - "*"                  # wildcard matches all tags
+
+  - name: internal-tool
+    url: git@github.com:org/tool.git
+    prune_stale: false          # override default for this repo
+    branches:
+      - main
 ```
 
 See [docs/configuration.md](docs/configuration.md) for the full configuration reference, including all fields, pattern syntax, auth methods, and validation rules.
@@ -130,6 +140,8 @@ One-shot sync of all repos (or a specific repo).
 gfetch sync                    # sync all repos
 gfetch sync --repo my-service  # sync a specific repo
 gfetch sync --prune            # sync and remove obsolete branches/tags
+gfetch sync --prune-stale      # sync and remove branches with no commits in 6 months
+gfetch sync --stale-age 30d    # custom threshold for stale pruning
 gfetch sync --prune --dry-run  # show what would be pruned without deleting
 ```
 
@@ -137,6 +149,8 @@ gfetch sync --prune --dry-run  # show what would be pruned without deleting
 |------|---------|-------------|
 | `--repo` | *(empty)* | Sync only the named repo |
 | `--prune` | `false` | Delete local branches/tags that no longer match any pattern |
+| `--prune-stale` | `false` | Delete local branches with no commits in the last 6 months |
+| `--stale-age` | `180d` | Custom age threshold for stale pruning (e.g., `30d`) |
 | `--dry-run` | `false` | Show what would be pruned without actually deleting |
 
 ### `gfetch daemon`

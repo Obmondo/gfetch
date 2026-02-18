@@ -42,7 +42,7 @@ func (s *Scheduler) Run(ctx context.Context, cfg *config.Config) {
 
 	for i := range cfg.Repos {
 		repo := &cfg.Repos[i]
-		interval := repo.PollInterval
+		interval := time.Duration(repo.PollInterval)
 
 		_, err := scheduler.NewJob(
 			gocron.DurationJob(interval),

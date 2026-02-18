@@ -116,8 +116,8 @@ func TestLoad(t *testing.T) {
 	if r.Name != "test-repo" {
 		t.Errorf("name = %q, want %q", r.Name, "test-repo")
 	}
-	if r.PollInterval != time.Minute {
-		t.Errorf("poll_interval = %v, want %v", r.PollInterval, time.Minute)
+	if time.Duration(r.PollInterval) != time.Minute {
+		t.Errorf("poll_interval = %v, want %v", time.Duration(r.PollInterval), time.Minute)
 	}
 	if len(r.Branches) != 2 {
 		t.Fatalf("branches count = %d, want 2", len(r.Branches))
@@ -156,7 +156,7 @@ func TestValidate_PollIntervalTooLow(t *testing.T) {
 		URL:          "git@github.com:test/repo.git",
 		SSHKeyPath:   keyFile,
 		LocalPath:    "/tmp/test",
-		PollInterval: 5 * time.Second,
+		PollInterval: Duration(5 * time.Second),
 		Branches:     []Pattern{{Raw: branchMain}},
 	}}}
 	err := cfg.Validate()
@@ -172,8 +172,8 @@ func TestValidate_DuplicateNames(t *testing.T) {
 	}
 
 	cfg := &Config{Repos: []RepoConfig{
-		{Name: "dup", URL: "git@a.git", SSHKeyPath: keyFile, LocalPath: "/tmp/a", PollInterval: 30 * time.Second, Branches: []Pattern{{Raw: branchMain}}},
-		{Name: "dup", URL: "git@b.git", SSHKeyPath: keyFile, LocalPath: "/tmp/b", PollInterval: 30 * time.Second, Branches: []Pattern{{Raw: branchMain}}},
+		{Name: "dup", URL: "git@a.git", SSHKeyPath: keyFile, LocalPath: "/tmp/a", PollInterval: Duration(30 * time.Second), Branches: []Pattern{{Raw: branchMain}}},
+		{Name: "dup", URL: "git@b.git", SSHKeyPath: keyFile, LocalPath: "/tmp/b", PollInterval: Duration(30 * time.Second), Branches: []Pattern{{Raw: branchMain}}},
 	}}
 	err := cfg.Validate()
 	if err == nil {
@@ -186,7 +186,7 @@ func TestValidate_HTTPSPublicRepo(t *testing.T) {
 		Name:         "public-repo",
 		URL:          "https://github.com/git/git.git",
 		LocalPath:    "/tmp/test",
-		PollInterval: 30 * time.Second,
+		PollInterval: Duration(30 * time.Second),
 		Branches:     []Pattern{{Raw: branchMain}},
 	}}}
 	err := cfg.Validate()
@@ -200,7 +200,7 @@ func TestValidate_SSHRepoRequiresKey(t *testing.T) {
 		Name:         "ssh-repo",
 		URL:          "git@github.com:test/repo.git",
 		LocalPath:    "/tmp/test",
-		PollInterval: 30 * time.Second,
+		PollInterval: Duration(30 * time.Second),
 		Branches:     []Pattern{{Raw: branchMain}},
 	}}}
 	err := cfg.Validate()
@@ -220,7 +220,7 @@ func TestValidate_InvalidTagRegex(t *testing.T) {
 		URL:          "git@github.com:test/repo.git",
 		SSHKeyPath:   keyFile,
 		LocalPath:    "/tmp/test",
-		PollInterval: 30 * time.Second,
+		PollInterval: Duration(30 * time.Second),
 		Tags:         []Pattern{{Raw: "/[invalid/"}},
 	}}}
 	err := cfg.Validate()
@@ -240,7 +240,7 @@ func TestValidate_CheckoutMatchesLiteralBranch(t *testing.T) {
 		URL:          "git@github.com:test/repo.git",
 		SSHKeyPath:   keyFile,
 		LocalPath:    "/tmp/test",
-		PollInterval: 30 * time.Second,
+		PollInterval: Duration(30 * time.Second),
 		Branches:     []Pattern{{Raw: "main"}, {Raw: "develop"}},
 		Checkout:     "main",
 	}}}
@@ -260,7 +260,7 @@ func TestValidate_CheckoutMatchesRegexBranch(t *testing.T) {
 		URL:          "git@github.com:test/repo.git",
 		SSHKeyPath:   keyFile,
 		LocalPath:    "/tmp/test",
-		PollInterval: 30 * time.Second,
+		PollInterval: Duration(30 * time.Second),
 		Branches:     []Pattern{{Raw: "/^release-.*/"}},
 		Checkout:     "release-1.0",
 	}}}
@@ -280,7 +280,7 @@ func TestValidate_CheckoutMatchesTag(t *testing.T) {
 		URL:          "git@github.com:test/repo.git",
 		SSHKeyPath:   keyFile,
 		LocalPath:    "/tmp/test",
-		PollInterval: 30 * time.Second,
+		PollInterval: Duration(30 * time.Second),
 		Branches:     []Pattern{{Raw: "main"}},
 		Tags:         []Pattern{{Raw: "v1.0.0"}},
 		Checkout:     "v1.0.0",
@@ -301,7 +301,7 @@ func TestValidate_CheckoutNoMatch(t *testing.T) {
 		URL:          "git@github.com:test/repo.git",
 		SSHKeyPath:   keyFile,
 		LocalPath:    "/tmp/test",
-		PollInterval: 30 * time.Second,
+		PollInterval: Duration(30 * time.Second),
 		Branches:     []Pattern{{Raw: "main"}},
 		Checkout:     "nonexistent",
 	}}}
@@ -322,7 +322,7 @@ func TestValidate_CheckoutEmpty(t *testing.T) {
 		URL:          "git@github.com:test/repo.git",
 		SSHKeyPath:   keyFile,
 		LocalPath:    "/tmp/test",
-		PollInterval: 30 * time.Second,
+		PollInterval: Duration(30 * time.Second),
 		Branches:     []Pattern{{Raw: "main"}},
 		Checkout:     "",
 	}}}
@@ -370,7 +370,7 @@ func TestValidate_InvalidBranchRegex(t *testing.T) {
 		URL:          "git@github.com:test/repo.git",
 		SSHKeyPath:   keyFile,
 		LocalPath:    "/tmp/test",
-		PollInterval: 30 * time.Second,
+		PollInterval: Duration(30 * time.Second),
 		Branches:     []Pattern{{Raw: "/[invalid/"}},
 	}}}
 	err := cfg.Validate()
@@ -503,8 +503,8 @@ openvox: true
 	if r1.LocalPath != "/tmp/global_path" {
 		t.Errorf("repo1 local_path = %q, want /tmp/global_path", r1.LocalPath)
 	}
-	if r1.PollInterval != 5*time.Minute {
-		t.Errorf("repo1 poll_interval = %v, want 5m", r1.PollInterval)
+	if time.Duration(r1.PollInterval) != 5*time.Minute {
+		t.Errorf("repo1 poll_interval = %v, want 5m", time.Duration(r1.PollInterval))
 	}
 	if r1.SSHKnownHosts == "" {
 		t.Error("repo1 ssh_known_hosts should be inherited from global")
@@ -527,8 +527,8 @@ openvox: true
 	if r2.LocalPath != "/tmp/global_path" {
 		t.Errorf("repo2 local_path = %q, want /tmp/global_path", r2.LocalPath)
 	}
-	if r2.PollInterval != 5*time.Minute {
-		t.Errorf("repo2 poll_interval = %v, want 5m", r2.PollInterval)
+	if time.Duration(r2.PollInterval) != 5*time.Minute {
+		t.Errorf("repo2 poll_interval = %v, want 5m", time.Duration(r2.PollInterval))
 	}
 	if len(r2.Branches) != 1 || r2.Branches[0].Raw != "*" {
 		t.Errorf("repo2 branches should be inherited from global, got %v", r2.Branches)
@@ -547,7 +547,7 @@ func TestApplyDefaults(t *testing.T) {
 		SSHKeyPath:    "/tmp/default_key",
 		SSHKnownHosts: "example.com ssh-ed25519 AAAA...",
 		LocalPath:     "/tmp/default_path",
-		PollInterval:  3 * time.Minute,
+		PollInterval:  Duration(3 * time.Minute),
 		Branches:      []Pattern{{Raw: "main"}, {Raw: "develop"}},
 		Tags:          []Pattern{{Raw: "*"}},
 		OpenVox:       &openvoxTrue,
@@ -569,8 +569,8 @@ func TestApplyDefaults(t *testing.T) {
 	if repo.LocalPath != "/tmp/default_path" {
 		t.Errorf("local_path = %q, want /tmp/default_path", repo.LocalPath)
 	}
-	if repo.PollInterval != 3*time.Minute {
-		t.Errorf("poll_interval = %v, want 3m", repo.PollInterval)
+	if time.Duration(repo.PollInterval) != 3*time.Minute {
+		t.Errorf("poll_interval = %v, want 3m", time.Duration(repo.PollInterval))
 	}
 	if len(repo.Branches) != 2 || repo.Branches[0].Raw != "main" {
 		t.Errorf("branches should be inherited from defaults, got %v", repo.Branches)
@@ -589,7 +589,7 @@ func TestApplyDefaults(t *testing.T) {
 		SSHKeyPath:    "/tmp/my_key",
 		SSHKnownHosts: "custom.com ssh-rsa BBBB...",
 		LocalPath:     "/tmp/my_path",
-		PollInterval:  1 * time.Minute,
+		PollInterval:  Duration(1 * time.Minute),
 		Branches:      []Pattern{{Raw: "main"}},
 		Tags:          []Pattern{{Raw: "v1.0.0"}},
 		OpenVox:       true,
@@ -605,14 +605,57 @@ func TestApplyDefaults(t *testing.T) {
 	if repo2.LocalPath != "/tmp/my_path" {
 		t.Errorf("local_path should not be overridden, got %q", repo2.LocalPath)
 	}
-	if repo2.PollInterval != 1*time.Minute {
-		t.Errorf("poll_interval should not be overridden, got %v", repo2.PollInterval)
+	if time.Duration(repo2.PollInterval) != 1*time.Minute {
+		t.Errorf("poll_interval should not be overridden, got %v", time.Duration(repo2.PollInterval))
 	}
 	if len(repo2.Branches) != 1 || repo2.Branches[0].Raw != "main" {
 		t.Errorf("branches should not be overridden, got %v", repo2.Branches)
 	}
 	if len(repo2.Tags) != 1 || repo2.Tags[0].Raw != "v1.0.0" {
 		t.Errorf("tags should not be overridden, got %v", repo2.Tags)
+	}
+}
+
+func TestLoad_FileWithDefaultsKey(t *testing.T) {
+	content := `defaults:
+  ssh_key_path: /tmp/defaults_key
+  poll_interval: 15m
+  prune_stale: true
+  stale_age: 90d
+
+repos:
+  - name: test-repo
+    url: git@github.com:test/repo.git
+    local_path: /tmp/test_repo
+    branches:
+      - main
+`
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(cfgPath, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(cfg.Repos) != 1 {
+		t.Fatalf("expected 1 repo, got %d", len(cfg.Repos))
+	}
+	r := cfg.Repos[0]
+	if r.SSHKeyPath != "/tmp/defaults_key" {
+		t.Errorf("ssh_key_path = %q, want /tmp/defaults_key", r.SSHKeyPath)
+	}
+	if time.Duration(r.PollInterval) != 15*time.Minute {
+		t.Errorf("poll_interval = %v, want 15m", time.Duration(r.PollInterval))
+	}
+	if !r.PruneStale {
+		t.Error("prune_stale should be true")
+	}
+	if time.Duration(r.StaleAge) != 90*24*time.Hour {
+		t.Errorf("stale_age = %v, want 90d", time.Duration(r.StaleAge))
 	}
 }
 

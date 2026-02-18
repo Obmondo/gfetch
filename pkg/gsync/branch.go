@@ -79,6 +79,42 @@ func findObsoleteBranches(repo *git.Repository, patterns []config.Pattern) ([]st
 	return obsolete, nil
 }
 
+// findStaleBranches returns local branches that match configured patterns but have no commits in the last age duration.
+func findStaleBranches(repo *git.Repository, patterns []config.Pattern, age time.Duration) ([]string, error) {
+	if age == 0 {
+		return nil, nil
+	}
+
+	branches, err := repo.Branches()
+	if err != nil {
+		return nil, fmt.Errorf("listing local branches: %w", err)
+	}
+
+	var stale []string
+	cutoff := time.Now().Add(-age)
+
+	err = branches.ForEach(func(ref *plumbing.Reference) error {
+		name := ref.Name().Short()
+		if !matchesAnyPattern(name, patterns) {
+			return nil
+		}
+
+		commit, err := repo.CommitObject(ref.Hash())
+		if err != nil {
+			return fmt.Errorf("getting commit for %s: %w", name, err)
+		}
+
+		if commit.Committer.When.Before(cutoff) {
+			stale = append(stale, name)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("iterating local branches: %w", err)
+	}
+	return stale, nil
+}
+
 // checkoutRef checks out the named branch or tag and hard-resets the working tree.
 func checkoutRef(repo *git.Repository, name string, log *slog.Logger) error {
 	// Try branch first, then tag.

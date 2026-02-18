@@ -21,29 +21,51 @@ type Config struct {
 	Repos    []RepoConfig  `yaml:"repos"`
 }
 
+// Duration is a wrapper around time.Duration that supports extra units like 'd'.
+type Duration time.Duration
+
+// UnmarshalYAML unmarshals a Duration from a string.
+func (d *Duration) UnmarshalYAML(value *yaml.Node) error {
+	dur, err := ParseDuration(value.Value)
+	if err != nil {
+		return err
+	}
+	*d = Duration(dur)
+	return nil
+}
+
+// MarshalYAML marshals a Duration to a string.
+func (d Duration) MarshalYAML() (interface{}, error) {
+	return time.Duration(d).String(), nil
+}
+
 // RepoDefaults holds default values that are applied to repos missing those fields.
 type RepoDefaults struct {
-	SSHKeyPath    string        `yaml:"ssh_key_path"`
-	SSHKnownHosts string        `yaml:"ssh_known_hosts"`
-	LocalPath     string        `yaml:"local_path"`
-	PollInterval  time.Duration `yaml:"poll_interval"`
-	Branches      []Pattern     `yaml:"branches"`
-	Tags          []Pattern     `yaml:"tags"`
-	OpenVox       *bool         `yaml:"openvox"`
+	SSHKeyPath    string    `yaml:"ssh_key_path"`
+	SSHKnownHosts string    `yaml:"ssh_known_hosts"`
+	LocalPath     string    `yaml:"local_path"`
+	PollInterval  Duration  `yaml:"poll_interval"`
+	Branches      []Pattern `yaml:"branches"`
+	Tags          []Pattern `yaml:"tags"`
+	OpenVox       *bool     `yaml:"openvox"`
+	PruneStale    *bool     `yaml:"prune_stale"`
+	StaleAge      Duration  `yaml:"stale_age"`
 }
 
 // RepoConfig defines the sync configuration for a single repository.
 type RepoConfig struct {
-	Name          string        `yaml:"name"`
-	URL           string        `yaml:"url"`
-	SSHKeyPath    string        `yaml:"ssh_key_path"`
-	SSHKnownHosts string        `yaml:"ssh_known_hosts"`
-	LocalPath     string        `yaml:"local_path"`
-	PollInterval  time.Duration `yaml:"poll_interval"`
-	Branches      []Pattern     `yaml:"branches"`
-	Tags          []Pattern     `yaml:"tags"`
-	Checkout      string        `yaml:"checkout"`
-	OpenVox       bool          `yaml:"openvox"`
+	Name          string    `yaml:"name"`
+	URL           string    `yaml:"url"`
+	SSHKeyPath    string    `yaml:"ssh_key_path"`
+	SSHKnownHosts string    `yaml:"ssh_known_hosts"`
+	LocalPath     string    `yaml:"local_path"`
+	PollInterval  Duration  `yaml:"poll_interval"`
+	Branches      []Pattern `yaml:"branches"`
+	Tags          []Pattern `yaml:"tags"`
+	Checkout      string    `yaml:"checkout"`
+	OpenVox       bool      `yaml:"openvox"`
+	PruneStale    bool      `yaml:"prune_stale"`
+	StaleAge      Duration  `yaml:"stale_age"`
 }
 
 // Pattern represents a matching pattern, either literal or regex.
@@ -115,6 +137,28 @@ func (r *RepoConfig) IsHTTPS() bool {
 	return strings.HasPrefix(r.URL, "https://") || strings.HasPrefix(r.URL, "http://")
 }
 
+// ParseDuration parses a duration string, adding support for 'd' (days).
+func ParseDuration(s string) (time.Duration, error) {
+	if s == "" {
+		return 0, nil
+	}
+	original := s
+	var multiplier time.Duration
+	switch {
+	case strings.HasSuffix(s, "d"):
+		multiplier = 24 * time.Hour
+		s = s[:len(s)-1]
+	default:
+		return time.ParseDuration(s)
+	}
+
+	var val float64
+	if _, err := fmt.Sscanf(s, "%f", &val); err != nil {
+		return 0, fmt.Errorf("invalid duration %q: %w", original, err)
+	}
+	return time.Duration(val * float64(multiplier)), nil
+}
+
 // Load reads and parses configuration from a file or directory.
 // If path is a file, it loads a single YAML config.
 // If path is a directory, it loads global.yaml for defaults and */config.yaml for repos.
@@ -136,44 +180,55 @@ func loadFile(path string) (*Config, error) {
 		return nil, fmt.Errorf("reading config file: %w", err)
 	}
 
-	// Global defaults can be placed at the top level in single-file mode.
-	// Any field set here is applied to repos that do not have that field set.
-	var raw struct {
-		SSHKeyPath    string        `yaml:"ssh_key_path"`
-		SSHKnownHosts string        `yaml:"ssh_known_hosts"`
-		LocalPath     string        `yaml:"local_path"`
-		PollInterval  time.Duration `yaml:"poll_interval"`
-		Branches      []Pattern     `yaml:"branches"`
-		Tags          []Pattern     `yaml:"tags"`
-		OpenVox       *bool         `yaml:"openvox"`
-		Repos         []RepoConfig  `yaml:"repos"`
-	}
-	if err := yaml.Unmarshal(data, &raw); err != nil {
+	// First try to unmarshal into the standard Config struct which has "defaults" key.
+	var cfg Config
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parsing config file: %w", err)
 	}
 
-	cfg := &Config{Repos: raw.Repos}
+	// Also support top-level fields for backward compatibility.
+	var raw struct {
+		SSHKeyPath    string    `yaml:"ssh_key_path"`
+		SSHKnownHosts string    `yaml:"ssh_known_hosts"`
+		LocalPath     string    `yaml:"local_path"`
+		PollInterval  Duration  `yaml:"poll_interval"`
+		Branches      []Pattern `yaml:"branches"`
+		Tags          []Pattern `yaml:"tags"`
+		OpenVox       *bool     `yaml:"openvox"`
+		PruneStale    *bool     `yaml:"prune_stale"`
+		StaleAge      Duration  `yaml:"stale_age"`
+	}
+	if err := yaml.Unmarshal(data, &raw); err == nil {
+		// If explicit defaults key is missing, but top-level fields are present, use them.
+		if cfg.Defaults == nil {
+			hasTopLevel := raw.SSHKeyPath != "" || raw.SSHKnownHosts != "" || raw.LocalPath != "" ||
+				raw.PollInterval != 0 || len(raw.Branches) > 0 || len(raw.Tags) > 0 || raw.OpenVox != nil ||
+				raw.PruneStale != nil || raw.StaleAge != 0
 
-	// If any top-level default field is set, apply it as a default to repos missing that field.
-	hasDefaults := raw.SSHKeyPath != "" || raw.SSHKnownHosts != "" || raw.LocalPath != "" ||
-		raw.PollInterval != 0 || len(raw.Branches) > 0 || len(raw.Tags) > 0 || raw.OpenVox != nil
-	if hasDefaults {
-		defaults := &RepoDefaults{
-			SSHKeyPath:    raw.SSHKeyPath,
-			SSHKnownHosts: raw.SSHKnownHosts,
-			LocalPath:     raw.LocalPath,
-			PollInterval:  raw.PollInterval,
-			Branches:      raw.Branches,
-			Tags:          raw.Tags,
-			OpenVox:       raw.OpenVox,
-		}
-		cfg.Defaults = defaults
-		for i := range cfg.Repos {
-			applyDefaults(&cfg.Repos[i], defaults)
+			if hasTopLevel {
+				cfg.Defaults = &RepoDefaults{
+					SSHKeyPath:    raw.SSHKeyPath,
+					SSHKnownHosts: raw.SSHKnownHosts,
+					LocalPath:     raw.LocalPath,
+					PollInterval:  Duration(raw.PollInterval),
+					Branches:      raw.Branches,
+					Tags:          raw.Tags,
+					OpenVox:       raw.OpenVox,
+					PruneStale:    raw.PruneStale,
+					StaleAge:      Duration(raw.StaleAge),
+				}
+			}
 		}
 	}
 
-	return cfg, nil
+	// Apply defaults to each repo.
+	if cfg.Defaults != nil {
+		for i := range cfg.Repos {
+			applyDefaults(&cfg.Repos[i], cfg.Defaults)
+		}
+	}
+
+	return &cfg, nil
 }
 
 // loadDir loads configuration from a directory structure.
@@ -245,6 +300,12 @@ func applyDefaults(repo *RepoConfig, defaults *RepoDefaults) {
 	if defaults.OpenVox != nil && !repo.OpenVox {
 		repo.OpenVox = *defaults.OpenVox
 	}
+	if defaults.PruneStale != nil && !repo.PruneStale {
+		repo.PruneStale = *defaults.PruneStale
+	}
+	if repo.StaleAge == 0 && defaults.StaleAge != 0 {
+		repo.StaleAge = defaults.StaleAge
+	}
 }
 
 // Validate checks the configuration for required fields and compiles regex patterns.
@@ -284,9 +345,14 @@ func (c *Config) validateRepo(r *RepoConfig, index int, names map[string]bool) e
 		return fmt.Errorf("repo %s: local_path is required", r.Name)
 	}
 	if r.PollInterval == 0 {
-		r.PollInterval = DefaultPollInterval
-	} else if r.PollInterval < 10*time.Second {
-		return fmt.Errorf("repo %s: poll_interval must be at least 10s, got %s", r.Name, r.PollInterval)
+		r.PollInterval = Duration(DefaultPollInterval)
+	} else if time.Duration(r.PollInterval) < 10*time.Second {
+		return fmt.Errorf("repo %s: poll_interval must be at least 10s, got %s", r.Name, time.Duration(r.PollInterval))
+	}
+
+	if r.PruneStale && r.StaleAge == 0 {
+		// Default to 180 days (approx 6 months)
+		r.StaleAge = Duration(180 * 24 * time.Hour)
 	}
 	if len(r.Branches) == 0 && len(r.Tags) == 0 {
 		return fmt.Errorf("repo %s: at least one branch or tag pattern is required", r.Name)

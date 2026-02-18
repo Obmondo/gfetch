@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -15,6 +16,8 @@ import (
 func newSyncCmd() *cobra.Command {
 	var repoName string
 	var prune bool
+	var pruneStale bool
+	var staleAgeStr string
 	var dryRun bool
 
 	cmd := &cobra.Command{
@@ -29,9 +32,22 @@ func newSyncCmd() *cobra.Command {
 				return fmt.Errorf("config validation: %w", err)
 			}
 
+			var staleAge time.Duration
+			if staleAgeStr != "" {
+				staleAge, err = config.ParseDuration(staleAgeStr)
+				if err != nil {
+					return fmt.Errorf("invalid stale-age: %w", err)
+				}
+			}
+
 			s := gsync.New(slog.Default())
 			ctx := context.Background()
-			opts := gsync.SyncOptions{Prune: prune, DryRun: dryRun}
+			opts := gsync.SyncOptions{
+				Prune:      prune,
+				PruneStale: pruneStale,
+				StaleAge:   staleAge,
+				DryRun:     dryRun,
+			}
 
 			if repoName != "" {
 				repo := findRepo(cfg, repoName)
@@ -63,6 +79,8 @@ func newSyncCmd() *cobra.Command {
 
 	cmd.Flags().StringVar(&repoName, "repo", "", "sync a specific repo by name")
 	cmd.Flags().BoolVar(&prune, "prune", false, "delete obsolete local branches and tags that no longer match any configured pattern")
+	cmd.Flags().BoolVar(&pruneStale, "prune-stale", false, "delete local branches that match patterns but have no commits in the last 6 months (or custom stale-age)")
+	cmd.Flags().StringVar(&staleAgeStr, "stale-age", "", "custom age threshold for stale pruning (e.g., 30d, 6m, 1y)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "show what would be pruned without deleting")
 	return cmd
 }
@@ -89,6 +107,9 @@ func printResult(cmd *cobra.Command, r gsync.Result, dryRun bool) {
 	}
 	if len(r.BranchesObsolete) > 0 {
 		cmd.Printf("  Branches obsolete: %v\n", r.BranchesObsolete)
+	}
+	if len(r.BranchesStale) > 0 {
+		cmd.Printf("  Branches stale: %v\n", r.BranchesStale)
 	}
 	if len(r.BranchesPruned) > 0 {
 		if dryRun {

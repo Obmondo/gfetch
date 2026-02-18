@@ -2,112 +2,66 @@
 
 gfetch is configured with a YAML file or a directory of YAML files. By default it looks for `config.yaml` in the current directory. Use `--config` / `-c` to specify a different path (file or directory).
 
-## Single-file mode
+## Configuration structure
+
+gfetch supports two ways to organize your configuration.
+
+### Single-file mode
+
+In single-file mode, you define a `defaults` key for shared settings and a `repos` key for individual repositories.
 
 ```yaml
-repos:
-  - name: <string>
-    url: <string>
-    ssh_key_path: <string>       # required for SSH URLs
-    ssh_known_hosts: <string>    # optional, extra SSH host key entries
-    local_path: <string>
-    poll_interval: <duration>
-    checkout: <string>           # optional
-    openvox: <bool>              # optional, default false
-    branches:
-      - <pattern>
-    tags:
-      - <pattern>
-```
-
-The top-level key is `repos`, a list of repository configurations.
-
-### Global defaults (single-file mode)
-
-Any `RepoDefaults` field can be placed at the top level of the file. Values set there are applied to every repo that does not have that field set — per-repo values always take precedence.
-
-```yaml
-# Global defaults applied to all repos in this file
-ssh_key_path: /home/user/.ssh/id_ed25519
-ssh_known_hosts: |
-  custom-git.example.com ssh-ed25519 AAAA...
-local_path: /var/repos
-poll_interval: 5m
-openvox: false
-branches:
-  - main
-tags:
-  - /^v[0-9]+\./
+defaults:
+  ssh_key_path: /home/gfetch/.ssh/id_rsa
+  poll_interval: 10m
+  local_path: /var/repos
+  prune_stale: true             # default for all repos
+  stale_age: 180d
 
 repos:
   - name: my-repo
     url: git@github.com:org/my-repo.git
-    # inherits all global defaults above; override any field here to take precedence
-    local_path: /var/repos/my-repo   # override local_path for this repo
-```
-
-## Directory mode
-
-Instead of a single file, `--config` can point to a directory. This is useful when managing many repos — each gets its own file.
-
-### Layout
-
-```
-config.d/
-├── global.yaml            # shared defaults (optional)
-├── repo-a/
-│   └── config.yaml        # repos: [{ name: repo-a, url: ..., branches: [...] }]
-└── repo-b/
-    └── config.yaml
-```
-
-### global.yaml
-
-The `global.yaml` file in the config directory provides default values inherited by all repos. Any field set in a per-repo config overrides the global default.
-
-```yaml
-ssh_key_path: /home/user/.ssh/id_ed25519
-ssh_known_hosts: |
-  custom-git.example.com ssh-ed25519 AAAA...
-poll_interval: 5m
-local_path: /var/repos
-openvox: false
-branches:
-  - main
-tags:
-  - /^v[0-9]+\./
-```
-
-Supported global fields: `ssh_key_path`, `ssh_known_hosts`, `poll_interval`, `local_path`, `branches`, `tags`, `openvox`.
-
-### Per-repo config
-
-Each subdirectory contains a `config.yaml` with the standard `repos:` structure:
-
-```yaml
-repos:
-  - name: repo-a
-    url: git@github.com:org/repo-a.git
+    # inherits all defaults above
     branches:
       - main
 ```
 
-Fields left empty are filled from `global.yaml`.
+**Backward Compatibility**: Top-level fields are still supported (e.g., `ssh_key_path` directly at the top level), but grouping them under `defaults:` is the recommended approach.
 
 ## Fields
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `name` | string | Yes | Unique identifier for the repo. Used with `--repo` flag to target a specific repo. |
-| `url` | string | Yes | Remote repository URL. Prefix `https://` or `http://` for HTTPS mode; anything else (e.g. `git@github.com:...`) for SSH mode. |
-| `ssh_key_path` | string | Only for SSH | Absolute path to a private SSH key file. Must exist on disk. Not used for HTTPS URLs. |
-| `ssh_known_hosts` | string | No | Extra SSH host key entries (same format as `~/.ssh/known_hosts`). Merged with built-in keys for GitHub, GitLab, Bitbucket, and Azure DevOps. |
-| `local_path` | string | Yes | Local directory where the repo will be cloned and synced. Created automatically if it doesn't exist. |
-| `poll_interval` | duration | Yes | How often the daemon polls this repo. Go duration format (e.g. `30s`, `5m`, `1h`). Minimum: `10s`. |
+| `url` | string | Yes | Remote repository URL. Prefix `https://` for HTTPS; anything else for SSH. |
+| `ssh_key_path` | string | Only for SSH | Absolute path to a private SSH key file. |
+| `ssh_known_hosts` | string | No | Extra SSH host key entries. Merged with built-in keys for GitHub, GitLab, Bitbucket, and Azure DevOps. |
+| `local_path` | string | Yes | Local directory where the repo will be cloned and synced. |
+| `poll_interval` | duration | Yes | How often the daemon polls this repo. Supports `30s`, `5m`, `1h`, `30d`. Minimum: `10s`. |
 | `branches` | list of patterns | At least one of `branches` or `tags` | Branch names or patterns to sync from the remote. |
 | `tags` | list of patterns | At least one of `branches` or `tags` | Tag names or patterns to sync from the remote. |
-| `checkout` | string | No | A literal branch or tag name to check out in the working tree. Must match at least one configured branch or tag pattern. Ignored when `openvox` is enabled. |
-| `openvox` | bool | No | Enable OpenVox mode. Each matching branch/tag gets its own subdirectory under `local_path`, named with sanitized ref names (hyphens and dots replaced by underscores). The `checkout` field is ignored in this mode. |
+| `checkout` | string | No | A literal branch or tag name to check out in the working tree. |
+| `openvox` | bool | No | Enable OpenVox mode. Each matching branch/tag gets its own subdirectory. |
+| `prune_stale` | bool | No | If true, local branches matching patterns but with no commits in `stale_age` will be pruned during sync. Default `false`. |
+| `stale_age` | duration | No | The period of inactivity (based on committer date) after which a branch is considered stale. Default `180d`. |
+
+## Stale Pruning
+
+Stale pruning allows gfetch to remove inactive branches from the local mirror, even if they still match a configured pattern (like `*`). This is especially useful for preventing local storage from growing indefinitely when using wildcards or broad regex patterns.
+
+- **Check**: gfetch inspects the **committer date** of the tip of each local branch.
+- **Threshold**: If the latest commit is older than `stale_age` (relative to the current time), the branch is identified as stale.
+- **Action**: When `--prune-stale` is used (or `prune_stale: true` is set in the config), these branches are deleted.
+- **Safety**: The branch currently specified in the `checkout` field is **never** pruned, even if it is stale.
+
+## Duration units
+
+gfetch supports standard Go duration strings as well as human-friendly units for long-term configuration:
+
+- `s` — seconds (e.g., `30s`)
+- `m` — minutes (e.g., `5m`)
+- `h` — hours (e.g., `24h`)
+- `d` — days (e.g., `30d`)
 
 ## OpenVox Mode
 

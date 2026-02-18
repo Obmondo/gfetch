@@ -16,8 +16,10 @@ import (
 
 // SyncOptions controls optional sync behaviour.
 type SyncOptions struct {
-	Prune  bool
-	DryRun bool
+	Prune      bool
+	PruneStale bool
+	StaleAge   time.Duration
+	DryRun     bool
 }
 
 // Result holds the outcome of syncing a single repository.
@@ -32,6 +34,7 @@ type Result struct {
 	TagsPruned       []string
 	BranchesObsolete []string
 	BranchesPruned   []string
+	BranchesStale    []string
 	Checkout         string
 	Err              error
 }
@@ -60,6 +63,14 @@ func (s *Syncer) SyncRepo(ctx context.Context, repo *config.RepoConfig, opts Syn
 	start := time.Now()
 	result := Result{RepoName: repo.Name}
 	log := s.logger.With("repo", repo.Name)
+
+	// Merge repo-specific config into options if not explicitly set.
+	if repo.PruneStale && !opts.PruneStale {
+		opts.PruneStale = true
+	}
+	if opts.StaleAge == 0 && repo.StaleAge != 0 {
+		opts.StaleAge = time.Duration(repo.StaleAge)
+	}
 
 	telemetry.SyncsTotal.WithLabelValues(repo.Name).Inc()
 	log.Info("starting sync")
@@ -153,6 +164,36 @@ func (s *Syncer) syncBranches(ctx context.Context, r *git.Repository, repo *conf
 	} else {
 		result.BranchesObsolete = obsolete
 		s.pruneBranches(r, repo, obsolete, opts, log, result)
+	}
+
+	if opts.PruneStale {
+		stale, err := findStaleBranches(r, repo.Branches, opts.StaleAge)
+		if err != nil {
+			log.Error("failed to find stale branches", "error", err)
+		} else {
+			result.BranchesStale = stale
+			s.pruneStaleBranches(r, repo, stale, opts, log, result)
+		}
+	}
+}
+
+func (*Syncer) pruneStaleBranches(r *git.Repository, repo *config.RepoConfig, stale []string, opts SyncOptions, log *slog.Logger, result *Result) {
+	for _, branch := range stale {
+		if repo.Checkout != "" && branch == repo.Checkout {
+			log.Info("skipping prune of checkout branch", "branch", branch)
+			continue
+		}
+		if opts.DryRun {
+			log.Info("stale branch would be pruned (dry-run)", "branch", branch)
+			result.BranchesPruned = append(result.BranchesPruned, branch)
+		} else {
+			if err := deleteBranch(r, branch); err != nil {
+				log.Error("failed to prune stale branch", "branch", branch, "error", err)
+				continue
+			}
+			log.Info("stale branch pruned", "branch", branch)
+			result.BranchesPruned = append(result.BranchesPruned, branch)
+		}
 	}
 }
 
