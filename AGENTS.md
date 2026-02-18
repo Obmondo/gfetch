@@ -40,8 +40,8 @@ testdata/config.yaml          # Test fixture
 .goreleaser.yaml              # Release config (linux/darwin, amd64/arm64)
 Dockerfile                    # Multi-stage build (Go builder + Alpine runtime)
 .gitea/workflows/
-  docker.yaml                 # CI: Gitea Docker build on tag
-  test.yml                    # CI: Gitea tests on push
+  docker.yaml                 # CI: Docker build on push/PR, push on tag
+  test.yml                    # CI: Gitea tests on push/PR
 renovate.json                 # Renovate config (gomod, dockerfile, github-actions)
 ```
 
@@ -87,7 +87,9 @@ go build -ldflags "-X github.com/obmondo/gfetch/internal/cli.Version=dev -X gith
 
 ## Git commit style
 
-Follow [Conventional Commits](https://www.conventionalcommits.org/):
+- **Mandatory User Approval**: NEVER commit changes unless the user explicitly asks you to.
+- **Signed Commits**: Always sign commits when requested (ensure GPG signing is enabled or use `-S`).
+- Follow [Conventional Commits](https://www.conventionalcommits.org/):
 
 ```
 <type>(<scope>): <subject>
