@@ -1,6 +1,7 @@
 package gsync
 
 import (
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -152,7 +153,7 @@ func initBareAndClone(t *testing.T, bareDir, localDir string, extraBranches []st
 	// Fetch and create local branches for the extras.
 	for _, branch := range extraBranches {
 		refSpec := gitconfig.RefSpec("+refs/heads/" + branch + ":refs/remotes/origin/" + branch)
-		if err := local.Fetch(&git.FetchOptions{RefSpecs: []gitconfig.RefSpec{refSpec}}); err != nil && err != git.NoErrAlreadyUpToDate {
+		if err := local.Fetch(&git.FetchOptions{RefSpecs: []gitconfig.RefSpec{refSpec}}); err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) {
 			t.Fatal(err)
 		}
 		remoteRef, err := local.Reference(plumbing.NewRemoteReferenceName("origin", branch), true)

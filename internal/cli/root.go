@@ -17,7 +17,7 @@ func NewRootCmd() *cobra.Command {
 	root := &cobra.Command{
 		Use:   "gfetch",
 		Short: "Sync git repositories based on a YAML config",
-		PersistentPreRun: func(cmd *cobra.Command, args []string) {
+		PersistentPreRun: func(_ *cobra.Command, _ []string) {
 			setupLogger(logLevel)
 		},
 	}

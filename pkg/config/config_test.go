@@ -509,7 +509,7 @@ openvox: true
 	if r1.SSHKnownHosts == "" {
 		t.Error("repo1 ssh_known_hosts should be inherited from global")
 	}
-	if len(r1.Branches) != 1 || r1.Branches[0].Raw != "main" {
+	if len(r1.Branches) != 1 || r1.Branches[0].Raw != branchMain {
 		t.Errorf("repo1 branches should not be overridden, got %v", r1.Branches)
 	}
 	if len(r1.Tags) != 1 || r1.Tags[0].Raw != "*" {

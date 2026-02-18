@@ -215,7 +215,7 @@ func (s *Syncer) handleCheckout(r *git.Repository, repo *config.RepoConfig, log 
 
 // ensureCloned opens an existing repo or inits an empty one with the remote configured.
 // Actual fetching is deferred to syncBranch/syncTags which use narrow refspecs.
-func ensureCloned(_ context.Context, repo *config.RepoConfig, auth transport.AuthMethod) (*git.Repository, error) {
+func ensureCloned(_ context.Context, repo *config.RepoConfig, _ transport.AuthMethod) (*git.Repository, error) {
 	if _, err := os.Stat(repo.LocalPath); err == nil {
 		return git.PlainOpen(repo.LocalPath)
 	}

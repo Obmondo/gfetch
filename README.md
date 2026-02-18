@@ -20,7 +20,7 @@ A CLI tool that selectively mirrors remote Git repositories to local paths based
 
 ```bash
 # Install
-go install gitea.obmondo.com/EnableIT/gfetch/cmd/gfetch@latest
+go install github.com/obmondo/gfetch/cmd/gfetch@latest
 
 # Create a config file
 cat <<'EOF' > config.yaml
@@ -42,7 +42,7 @@ Or run with Docker:
 ```bash
 docker run -v /path/to/config.yaml:/home/gfetch/config.yaml \
            -v /var/repos:/var/repos \
-           gitea.obmondo.com/enableit/gfetch daemon
+           ghcr.io/obmondo/gfetch daemon
 ```
 
 ## Installation
@@ -50,7 +50,7 @@ docker run -v /path/to/config.yaml:/home/gfetch/config.yaml \
 ### From source
 
 ```bash
-git clone https://gitea.obmondo.com/EnableIT/gfetch.git
+git clone https://github.com/obmondo/gfetch.git
 cd gfetch
 go build -o gfetch ./cmd/gfetch
 ```
@@ -58,25 +58,25 @@ go build -o gfetch ./cmd/gfetch
 ### With `go install`
 
 ```bash
-go install gitea.obmondo.com/EnableIT/gfetch/cmd/gfetch@latest
+go install github.com/obmondo/gfetch/cmd/gfetch@latest
 ```
 
 ### Releases
 
-Pre-built binaries for Linux and macOS (amd64/arm64) are available via [GoReleaser](https://gitea.obmondo.com/EnableIT/gfetch/releases). Each release includes a `checksums.txt` for verification.
+Pre-built binaries for Linux and macOS (amd64/arm64) are available via [GitHub Releases](https://github.com/obmondo/gfetch/releases). Each release includes a `checksums.txt` for verification.
 
 ### Docker
 
-A pre-built image is published to the Gitea Container Registry on every tagged release.
+A pre-built image is published to the GitHub Container Registry on every tagged release.
 
 ```bash
 # Pull the latest image
-docker pull gitea.obmondo.com/enableit/gfetch
+docker pull ghcr.io/obmondo/gfetch
 
 # Run the daemon with config and repo storage mounted
 docker run -v /path/to/config.yaml:/home/gfetch/config.yaml \
            -v /var/repos:/var/repos \
-           gitea.obmondo.com/enableit/gfetch daemon
+           ghcr.io/obmondo/gfetch daemon
 ```
 
 To build locally:

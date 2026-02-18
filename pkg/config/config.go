@@ -315,7 +315,7 @@ func (c *Config) validateRepo(r *RepoConfig, index int, names map[string]bool) e
 	return nil
 }
 
-func (c *Config) validateAuth(r *RepoConfig) error {
+func (_ *Config) validateAuth(r *RepoConfig) error {
 	if r.IsHTTPS() {
 		return CheckHTTPSAccessible(r.Name, r.URL)
 	}

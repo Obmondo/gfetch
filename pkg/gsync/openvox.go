@@ -100,7 +100,7 @@ func (s *Syncer) syncOpenVoxBranches(ctx context.Context, resolverRepo *git.Repo
 	return nil
 }
 
-func (s *Syncer) syncOneOpenVoxBranch(ctx context.Context, repo *config.RepoConfig, branch string, auth transport.AuthMethod, log *slog.Logger, result *Result) {
+func (_ *Syncer) syncOneOpenVoxBranch(ctx context.Context, repo *config.RepoConfig, branch string, auth transport.AuthMethod, log *slog.Logger, result *Result) {
 	dirName := SanitizeName(branch)
 	dirPath := filepath.Join(repo.LocalPath, dirName)
 
@@ -157,7 +157,7 @@ func (s *Syncer) syncOpenVoxTags(ctx context.Context, resolverRepo *git.Reposito
 	}
 }
 
-func (s *Syncer) syncOneOpenVoxTag(ctx context.Context, repo *config.RepoConfig, tag string, auth transport.AuthMethod, log *slog.Logger, result *Result) {
+func (_ *Syncer) syncOneOpenVoxTag(ctx context.Context, repo *config.RepoConfig, tag string, auth transport.AuthMethod, log *slog.Logger, result *Result) {
 	dirName := SanitizeName(tag)
 	dirPath := filepath.Join(repo.LocalPath, dirName)
 
@@ -188,7 +188,7 @@ func (s *Syncer) syncOneOpenVoxTag(ctx context.Context, repo *config.RepoConfig,
 	result.TagsFetched = append(result.TagsFetched, tag)
 }
 
-func (s *Syncer) recordOpenVoxMetrics(repo *config.RepoConfig, start time.Time, result *Result, log *slog.Logger) {
+func (_ *Syncer) recordOpenVoxMetrics(repo *config.RepoConfig, start time.Time, result *Result, log *slog.Logger) {
 	duration := time.Since(start)
 	telemetry.SyncDurationSeconds.WithLabelValues(repo.Name, "total").Observe(duration.Seconds())
 
