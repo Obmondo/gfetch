@@ -16,7 +16,7 @@ func newServer(syncer *sync.Syncer, logger *slog.Logger, cfg *config.Config) htt
 
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"status":"ok"}`))
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
 
 	mux.Handle("GET /metrics", promhttp.Handler())
@@ -88,5 +88,5 @@ func writeResult(w http.ResponseWriter, results []sync.Result) {
 	if hasErr {
 		w.WriteHeader(http.StatusInternalServerError)
 	}
-	json.NewEncoder(w).Encode(out)
+	_ = json.NewEncoder(w).Encode(out)
 }
