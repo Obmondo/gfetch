@@ -3,7 +3,6 @@ package config
 import (
 	"fmt"
 	"log/slog"
-	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -270,13 +269,9 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("repo %s: url is required", r.Name)
 		}
 		if r.IsHTTPS() {
-			checkURL := r.URL
-			checkURL = strings.TrimSuffix(checkURL, ".git")
-			resp, err := http.Head(checkURL)
-			if err != nil || resp.StatusCode != http.StatusOK {
-				return fmt.Errorf("repo %s: HTTPS URL is not publicly accessible; only public repos are supported with HTTPS — use an SSH URL with ssh_key_path for private repos", r.Name)
+			if err := CheckHTTPSAccessible(r.Name, r.URL); err != nil {
+				return err
 			}
-			resp.Body.Close()
 		} else {
 			if r.SSHKeyPath == "" {
 				return fmt.Errorf("repo %s: ssh_key_path is required", r.Name)
