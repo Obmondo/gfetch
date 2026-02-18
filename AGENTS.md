@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Project context for AI coding agents working on gfetch.
+Project context and conventions for AI coding agents working on gfetch.
 
 ## Project Overview
 
@@ -18,19 +18,23 @@ internal/cli/
   cat.go                      # "cat" subcommand — print resolved config as YAML
   version.go                  # "version" subcommand + Version/Commit/Date vars
 pkg/config/
-  config.go                   # Config/RepoConfig/Pattern structs, Load(), Validate()
-  url.go                      # checkHTTPSAccessible() helper
+  config.go                   # Config/RepoConfig/Pattern structs, Load(), Validate(), validateRepo(), validateAuth()
+  url.go                      # CheckHTTPSAccessible() helper
   config_test.go              # Config unit tests
-pkg/sync/
+pkg/gsync/
   auth.go                     # resolveAuth() — SSH key or nil (HTTPS)
   known_hosts.go              # SSH known_hosts callback helper
-  syncer.go                   # Syncer, SyncAll(), SyncRepo(), ensureCloned()
+  syncer.go                   # Syncer, SyncAll(), SyncRepo(), syncBranches(), syncTagsWrapper(), handleCheckout(), ensureCloned()
   branch.go                   # syncBranch(), findObsoleteBranches(), checkoutRef(), deleteBranch()
-  tag.go                      # syncTags() — fetch, prune, obsolete detection
+  tag.go                      # syncTags(), resolveAndFilterTags(), fetchTags(), handleObsoleteTags()
+  openvox.go                  # OpenVox mode sync logic (SanitizeName, syncRepoOpenVox, and helpers)
   syncer_test.go              # Integration tests using in-process bare repos
+pkg/telemetry/
+  telemetry.go                # Prometheus metrics definitions and registration
 pkg/daemon/
   scheduler.go                # Scheduler — one goroutine per repo, signal handling
   scheduler_test.go           # Scheduler construction test
+  server.go                   # HTTP server for health, metrics, and manual sync triggers
 config.example.yaml           # Annotated example configuration
 testdata/config.yaml          # Test fixture
 .goreleaser.yaml              # Release config (linux/darwin, amd64/arm64)
@@ -47,6 +51,7 @@ renovate.json                 # Renovate config (gomod, dockerfile, github-actio
 - **Ref-level sync**: branches are updated by setting local refs directly to remote hashes — no merge/pull. The working tree is only touched when `checkout` is configured.
 - **One goroutine per repo in daemon**: each repo polls independently with its own `time.Ticker`. Shutdown is via context cancellation on SIGINT/SIGTERM.
 - **Pruning disabled in daemon mode**: daemon always uses `SyncOptions{}` (prune=false). Pruning is only available in the `sync` subcommand.
+- **Package Naming**: `pkg/gsync` is used for git sync logic to avoid conflict with the standard `sync` package. `pkg/telemetry` is used for metrics.
 
 ## Build & Test
 
@@ -62,7 +67,7 @@ go test -v ./...
 
 # Run a specific package's tests
 go test ./pkg/config/...
-go test ./pkg/sync/...
+go test ./pkg/gsync/...
 
 # Build with version info (like GoReleaser does)
 go build -ldflags "-X github.com/obmondo/gfetch/internal/cli.Version=dev -X github.com/obmondo/gfetch/internal/cli.Commit=$(git rev-parse --short HEAD) -X github.com/obmondo/gfetch/internal/cli.Date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o gfetch ./cmd/gfetch
@@ -79,6 +84,67 @@ go build -ldflags "-X github.com/obmondo/gfetch/internal/cli.Version=dev -X gith
 - **Error handling**: errors are returned up the call stack, wrapped with `fmt.Errorf("context: %w", err)`. The `sync` command exits with code 1 if any repo has an error.
 - **Tests**: standard `testing` package, table-driven tests, `t.TempDir()` for temp dirs. Sync tests use in-process bare git repos created via `initBareAndClone()` helper. No external test dependencies or test frameworks.
 - **No Makefile**: build and test with standard `go` commands.
+
+## Git commit style
+
+Follow [Conventional Commits](https://www.conventionalcommits.org/):
+
+```
+<type>(<scope>): <subject>
+
+[optional body]
+```
+
+### Types
+
+| Type | When to use |
+|------|-------------|
+| `feat` | New user-facing feature |
+| `fix` | Bug fix |
+| `docs` | Documentation only (README, configuration.md, code comments) |
+| `chore` | Maintenance that is not a feature or fix (deps, config, rename, gitignore) |
+| `ci` | CI/CD workflow changes (.github/workflows/) |
+| `refactor` | Code restructuring with no behaviour change |
+| `test` | Adding or fixing tests only |
+| `perf` | Performance improvement |
+| `build` | Build system changes (Makefile, Dockerfile, .goreleaser.yaml) |
+| `style` | Formatting / whitespace only, no logic change |
+
+### Breaking changes
+
+Append `!` after the type/scope for breaking changes:
+
+```
+chore!: rename module path to github.com/obmondo/gfetch
+feat(api)!: remove deprecated endpoint
+```
+
+### Scope
+
+Use the package or subsystem name — keep it short:
+
+```
+fix(config): ...
+feat(sync): ...
+docs(readme): ...
+ci(docker): ...
+```
+
+Omit scope when the change is repo-wide.
+
+### Subject line rules
+
+- Imperative mood, lowercase, no trailing period
+- ≤ 72 characters
+- Say *what* changed and *why*, not *how*
+
+### Commit grouping
+
+Commits should be logically atomic — one concern per commit. When a session touches multiple concerns, stage and commit them separately:
+
+1. Code/logic fixes first (`fix`, `feat`, `refactor`)
+2. Documentation second (`docs`)
+3. Housekeeping last (`chore`, `ci`, `build`)
 
 ## Config Validation Rules (for reference when modifying config logic)
 
