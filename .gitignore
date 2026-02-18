@@ -14,3 +14,4 @@ dist/
 # Test
 coverage.out
 temp/
+config.yaml
