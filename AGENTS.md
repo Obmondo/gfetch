@@ -39,6 +39,9 @@ config.example.yaml           # Annotated example configuration
 testdata/config.yaml          # Test fixture
 .goreleaser.yaml              # Release config (linux/darwin, amd64/arm64)
 Dockerfile                    # Multi-stage build (Go builder + Alpine runtime)
+.gitea/workflows/
+  docker.yaml                 # CI: Gitea Docker build on tag
+  test.yml                    # CI: Gitea tests on push
 renovate.json                 # Renovate config (gomod, dockerfile, github-actions)
 ```
 
