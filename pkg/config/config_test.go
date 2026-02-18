@@ -343,7 +343,9 @@ func TestLoad_WithCheckout(t *testing.T) {
 
 func TestValidate_InvalidBranchRegex(t *testing.T) {
 	keyFile := filepath.Join(t.TempDir(), "key")
-	os.WriteFile(keyFile, []byte("fake"), 0600)
+	if err := os.WriteFile(keyFile, []byte("fake"), 0600); err != nil {
+		t.Fatal(err)
+	}
 
 	cfg := &Config{Repos: []RepoConfig{{
 		Name:         "test",
@@ -364,8 +366,10 @@ func TestLoad_Directory(t *testing.T) {
 
 	// Create repo1/config.yaml
 	repo1Dir := filepath.Join(dir, "repo1")
-	os.MkdirAll(repo1Dir, 0755)
-	os.WriteFile(filepath.Join(repo1Dir, "config.yaml"), []byte(`repos:
+	if err := os.MkdirAll(repo1Dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo1Dir, "config.yaml"), []byte(`repos:
   - name: repo1
     url: git@github.com:test/repo1.git
     ssh_key_path: /tmp/key1
@@ -373,12 +377,16 @@ func TestLoad_Directory(t *testing.T) {
     poll_interval: 1m
     branches:
       - main
-`), 0644)
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	// Create repo2/config.yaml
 	repo2Dir := filepath.Join(dir, "repo2")
-	os.MkdirAll(repo2Dir, 0755)
-	os.WriteFile(filepath.Join(repo2Dir, "config.yaml"), []byte(`repos:
+	if err := os.MkdirAll(repo2Dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo2Dir, "config.yaml"), []byte(`repos:
   - name: repo2
     url: git@github.com:test/repo2.git
     ssh_key_path: /tmp/key2
@@ -386,7 +394,9 @@ func TestLoad_Directory(t *testing.T) {
     poll_interval: 2m
     branches:
       - develop
-`), 0644)
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	cfg, err := Load(dir)
 	if err != nil {
@@ -411,7 +421,7 @@ func TestLoad_DirectoryWithGlobal(t *testing.T) {
 	dir := t.TempDir()
 
 	// Create global.yaml with defaults
-	os.WriteFile(filepath.Join(dir, "global.yaml"), []byte(`ssh_key_path: /tmp/global_key
+	if err := os.WriteFile(filepath.Join(dir, "global.yaml"), []byte(`ssh_key_path: /tmp/global_key
 ssh_known_hosts: |
   example.com ssh-ed25519 AAAA...
 local_path: /tmp/global_path
@@ -421,26 +431,36 @@ branches:
 tags:
   - "*"
 openvox: true
-`), 0644)
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	// Create repo1/config.yaml — overrides ssh_key_path and branches, inherits the rest
 	repo1Dir := filepath.Join(dir, "repo1")
-	os.MkdirAll(repo1Dir, 0755)
-	os.WriteFile(filepath.Join(repo1Dir, "config.yaml"), []byte(`repos:
+	if err := os.MkdirAll(repo1Dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo1Dir, "config.yaml"), []byte(`repos:
   - name: repo1
     url: git@github.com:test/repo1.git
     ssh_key_path: /tmp/override_key
     branches:
       - main
-`), 0644)
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	// Create repo2/config.yaml — inherits everything from global
 	repo2Dir := filepath.Join(dir, "repo2")
-	os.MkdirAll(repo2Dir, 0755)
-	os.WriteFile(filepath.Join(repo2Dir, "config.yaml"), []byte(`repos:
+	if err := os.MkdirAll(repo2Dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo2Dir, "config.yaml"), []byte(`repos:
   - name: repo2
     url: git@github.com:test/repo2.git
-`), 0644)
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	cfg, err := Load(dir)
 	if err != nil {
