@@ -9,7 +9,7 @@ import (
 
 	"github.com/obmondo/gfetch/pkg/config"
 	"github.com/obmondo/gfetch/pkg/daemon"
-	"github.com/obmondo/gfetch/pkg/sync"
+	"github.com/obmondo/gfetch/pkg/gsync"
 )
 
 func newDaemonCmd() *cobra.Command {
@@ -18,7 +18,7 @@ func newDaemonCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "daemon",
 		Short: "Run as a foreground polling daemon",
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(_ *cobra.Command, args []string) error {
 			cfg, err := config.Load(configPath)
 			if err != nil {
 				return err
@@ -28,8 +28,8 @@ func newDaemonCmd() *cobra.Command {
 			}
 
 			logger := slog.Default()
-			syncer := sync.New(logger)
-			sched := daemon.NewScheduler(syncer, logger, listenAddr)
+			s := gsync.New(logger)
+			sched := daemon.NewScheduler(s, logger, listenAddr)
 			sched.Run(context.Background(), cfg)
 			return nil
 		},

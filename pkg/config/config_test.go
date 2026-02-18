@@ -7,6 +7,8 @@ import (
 	"time"
 )
 
+const branchMain = "main"
+
 func TestPattern_IsRegex(t *testing.T) {
 	tests := []struct {
 		raw    string
@@ -50,7 +52,7 @@ func TestPattern_Matches(t *testing.T) {
 	if !wildcard.Matches("anything") {
 		t.Error("wildcard should match any string")
 	}
-	if !wildcard.Matches("main") {
+	if !wildcard.Matches(branchMain) {
 		t.Error("wildcard should match main")
 	}
 	if !wildcard.Matches("v1.0.0") {
@@ -59,8 +61,8 @@ func TestPattern_Matches(t *testing.T) {
 }
 
 func TestPattern_MatchesBranches(t *testing.T) {
-	literal := Pattern{Raw: "main"}
-	if !literal.Matches("main") {
+	literal := Pattern{Raw: branchMain}
+	if !literal.Matches(branchMain) {
 		t.Error("literal should match exact branch name")
 	}
 	if literal.Matches("main2") {
@@ -120,8 +122,8 @@ func TestLoad(t *testing.T) {
 	if len(r.Branches) != 2 {
 		t.Fatalf("branches count = %d, want 2", len(r.Branches))
 	}
-	if r.Branches[0].Raw != "main" {
-		t.Errorf("branches[0] = %q, want %q", r.Branches[0].Raw, "main")
+	if r.Branches[0].Raw != branchMain {
+		t.Errorf("branches[0] = %q, want %q", r.Branches[0].Raw, branchMain)
 	}
 	if r.Branches[1].Raw != "/^release-.*/" {
 		t.Errorf("branches[1] = %q, want %q", r.Branches[1].Raw, "/^release-.*/")
@@ -145,7 +147,9 @@ func TestValidate_MissingFields(t *testing.T) {
 
 func TestValidate_PollIntervalTooLow(t *testing.T) {
 	keyFile := filepath.Join(t.TempDir(), "key")
-	os.WriteFile(keyFile, []byte("fake"), 0600)
+	if err := os.WriteFile(keyFile, []byte("fake"), 0600); err != nil {
+		t.Fatal(err)
+	}
 
 	cfg := &Config{Repos: []RepoConfig{{
 		Name:         "test",
@@ -153,7 +157,7 @@ func TestValidate_PollIntervalTooLow(t *testing.T) {
 		SSHKeyPath:   keyFile,
 		LocalPath:    "/tmp/test",
 		PollInterval: 5 * time.Second,
-		Branches:     []Pattern{{Raw: "main"}},
+		Branches:     []Pattern{{Raw: branchMain}},
 	}}}
 	err := cfg.Validate()
 	if err == nil {
@@ -163,11 +167,13 @@ func TestValidate_PollIntervalTooLow(t *testing.T) {
 
 func TestValidate_DuplicateNames(t *testing.T) {
 	keyFile := filepath.Join(t.TempDir(), "key")
-	os.WriteFile(keyFile, []byte("fake"), 0600)
+	if err := os.WriteFile(keyFile, []byte("fake"), 0600); err != nil {
+		t.Fatal(err)
+	}
 
 	cfg := &Config{Repos: []RepoConfig{
-		{Name: "dup", URL: "git@a.git", SSHKeyPath: keyFile, LocalPath: "/tmp/a", PollInterval: 30 * time.Second, Branches: []Pattern{{Raw: "main"}}},
-		{Name: "dup", URL: "git@b.git", SSHKeyPath: keyFile, LocalPath: "/tmp/b", PollInterval: 30 * time.Second, Branches: []Pattern{{Raw: "main"}}},
+		{Name: "dup", URL: "git@a.git", SSHKeyPath: keyFile, LocalPath: "/tmp/a", PollInterval: 30 * time.Second, Branches: []Pattern{{Raw: branchMain}}},
+		{Name: "dup", URL: "git@b.git", SSHKeyPath: keyFile, LocalPath: "/tmp/b", PollInterval: 30 * time.Second, Branches: []Pattern{{Raw: branchMain}}},
 	}}
 	err := cfg.Validate()
 	if err == nil {
@@ -181,7 +187,7 @@ func TestValidate_HTTPSPublicRepo(t *testing.T) {
 		URL:          "https://github.com/git/git.git",
 		LocalPath:    "/tmp/test",
 		PollInterval: 30 * time.Second,
-		Branches:     []Pattern{{Raw: "main"}},
+		Branches:     []Pattern{{Raw: branchMain}},
 	}}}
 	err := cfg.Validate()
 	if err != nil {
@@ -195,7 +201,7 @@ func TestValidate_SSHRepoRequiresKey(t *testing.T) {
 		URL:          "git@github.com:test/repo.git",
 		LocalPath:    "/tmp/test",
 		PollInterval: 30 * time.Second,
-		Branches:     []Pattern{{Raw: "main"}},
+		Branches:     []Pattern{{Raw: branchMain}},
 	}}}
 	err := cfg.Validate()
 	if err == nil {
@@ -205,7 +211,9 @@ func TestValidate_SSHRepoRequiresKey(t *testing.T) {
 
 func TestValidate_InvalidTagRegex(t *testing.T) {
 	keyFile := filepath.Join(t.TempDir(), "key")
-	os.WriteFile(keyFile, []byte("fake"), 0600)
+	if err := os.WriteFile(keyFile, []byte("fake"), 0600); err != nil {
+		t.Fatal(err)
+	}
 
 	cfg := &Config{Repos: []RepoConfig{{
 		Name:         "test",
@@ -223,7 +231,9 @@ func TestValidate_InvalidTagRegex(t *testing.T) {
 
 func TestValidate_CheckoutMatchesLiteralBranch(t *testing.T) {
 	keyFile := filepath.Join(t.TempDir(), "key")
-	os.WriteFile(keyFile, []byte("fake"), 0600)
+	if err := os.WriteFile(keyFile, []byte("fake"), 0600); err != nil {
+		t.Fatal(err)
+	}
 
 	cfg := &Config{Repos: []RepoConfig{{
 		Name:         "test",
@@ -241,7 +251,9 @@ func TestValidate_CheckoutMatchesLiteralBranch(t *testing.T) {
 
 func TestValidate_CheckoutMatchesRegexBranch(t *testing.T) {
 	keyFile := filepath.Join(t.TempDir(), "key")
-	os.WriteFile(keyFile, []byte("fake"), 0600)
+	if err := os.WriteFile(keyFile, []byte("fake"), 0600); err != nil {
+		t.Fatal(err)
+	}
 
 	cfg := &Config{Repos: []RepoConfig{{
 		Name:         "test",
@@ -259,7 +271,9 @@ func TestValidate_CheckoutMatchesRegexBranch(t *testing.T) {
 
 func TestValidate_CheckoutMatchesTag(t *testing.T) {
 	keyFile := filepath.Join(t.TempDir(), "key")
-	os.WriteFile(keyFile, []byte("fake"), 0600)
+	if err := os.WriteFile(keyFile, []byte("fake"), 0600); err != nil {
+		t.Fatal(err)
+	}
 
 	cfg := &Config{Repos: []RepoConfig{{
 		Name:         "test",
@@ -278,7 +292,9 @@ func TestValidate_CheckoutMatchesTag(t *testing.T) {
 
 func TestValidate_CheckoutNoMatch(t *testing.T) {
 	keyFile := filepath.Join(t.TempDir(), "key")
-	os.WriteFile(keyFile, []byte("fake"), 0600)
+	if err := os.WriteFile(keyFile, []byte("fake"), 0600); err != nil {
+		t.Fatal(err)
+	}
 
 	cfg := &Config{Repos: []RepoConfig{{
 		Name:         "test",
@@ -297,7 +313,9 @@ func TestValidate_CheckoutNoMatch(t *testing.T) {
 
 func TestValidate_CheckoutEmpty(t *testing.T) {
 	keyFile := filepath.Join(t.TempDir(), "key")
-	os.WriteFile(keyFile, []byte("fake"), 0600)
+	if err := os.WriteFile(keyFile, []byte("fake"), 0600); err != nil {
+		t.Fatal(err)
+	}
 
 	cfg := &Config{Repos: []RepoConfig{{
 		Name:         "test",
@@ -336,8 +354,8 @@ func TestLoad_WithCheckout(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if cfg.Repos[0].Checkout != "main" {
-		t.Errorf("checkout = %q, want %q", cfg.Repos[0].Checkout, "main")
+	if cfg.Repos[0].Checkout != branchMain {
+		t.Errorf("checkout = %q, want %q", cfg.Repos[0].Checkout, branchMain)
 	}
 }
 

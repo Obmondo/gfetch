@@ -9,7 +9,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/obmondo/gfetch/pkg/config"
-	"github.com/obmondo/gfetch/pkg/sync"
+	"github.com/obmondo/gfetch/pkg/gsync"
 )
 
 func newSyncCmd() *cobra.Command {
@@ -29,27 +29,27 @@ func newSyncCmd() *cobra.Command {
 				return fmt.Errorf("config validation: %w", err)
 			}
 
-			syncer := sync.New(slog.Default())
+			s := gsync.New(slog.Default())
 			ctx := context.Background()
-			opts := sync.SyncOptions{Prune: prune, DryRun: dryRun}
+			opts := gsync.SyncOptions{Prune: prune, DryRun: dryRun}
 
 			if repoName != "" {
 				repo := findRepo(cfg, repoName)
 				if repo == nil {
 					return fmt.Errorf("repo %q not found in config", repoName)
 				}
-				result := syncer.SyncRepo(ctx, repo, opts)
-				printResult(result, dryRun)
+				result := s.SyncRepo(ctx, repo, opts)
+				printResult(cmd, result, dryRun)
 				if result.Err != nil {
 					os.Exit(1)
 				}
 				return nil
 			}
 
-			results := syncer.SyncAll(ctx, cfg, opts)
+			results := s.SyncAll(ctx, cfg, opts)
 			hasErr := false
 			for _, r := range results {
-				printResult(r, dryRun)
+				printResult(cmd, r, dryRun)
 				if r.Err != nil {
 					hasErr = true
 				}
@@ -76,47 +76,47 @@ func findRepo(cfg *config.Config, name string) *config.RepoConfig {
 	return nil
 }
 
-func printResult(r sync.Result, dryRun bool) {
-	fmt.Printf("Repo: %s\n", r.RepoName)
+func printResult(cmd *cobra.Command, r gsync.Result, dryRun bool) {
+	cmd.Printf("Repo: %s\n", r.RepoName)
 	if len(r.BranchesSynced) > 0 {
-		fmt.Printf("  Branches synced: %v\n", r.BranchesSynced)
+		cmd.Printf("  Branches synced: %v\n", r.BranchesSynced)
 	}
 	if len(r.BranchesUpToDate) > 0 {
-		fmt.Printf("  Branches up-to-date: %v\n", r.BranchesUpToDate)
+		cmd.Printf("  Branches up-to-date: %v\n", r.BranchesUpToDate)
 	}
 	if len(r.BranchesFailed) > 0 {
-		fmt.Printf("  Branches failed: %v\n", r.BranchesFailed)
+		cmd.Printf("  Branches failed: %v\n", r.BranchesFailed)
 	}
 	if len(r.BranchesObsolete) > 0 {
-		fmt.Printf("  Branches obsolete: %v\n", r.BranchesObsolete)
+		cmd.Printf("  Branches obsolete: %v\n", r.BranchesObsolete)
 	}
 	if len(r.BranchesPruned) > 0 {
 		if dryRun {
-			fmt.Printf("  Branches to prune: %v\n", r.BranchesPruned)
+			cmd.Printf("  Branches to prune: %v\n", r.BranchesPruned)
 		} else {
-			fmt.Printf("  Branches pruned: %v\n", r.BranchesPruned)
+			cmd.Printf("  Branches pruned: %v\n", r.BranchesPruned)
 		}
 	}
 	if len(r.TagsFetched) > 0 {
-		fmt.Printf("  Tags fetched: %v\n", r.TagsFetched)
+		cmd.Printf("  Tags fetched: %v\n", r.TagsFetched)
 	}
 	if len(r.TagsUpToDate) > 0 {
-		fmt.Printf("  Tags up-to-date: %v\n", r.TagsUpToDate)
+		cmd.Printf("  Tags up-to-date: %v\n", r.TagsUpToDate)
 	}
 	if len(r.TagsObsolete) > 0 {
-		fmt.Printf("  Tags obsolete: %v\n", r.TagsObsolete)
+		cmd.Printf("  Tags obsolete: %v\n", r.TagsObsolete)
 	}
 	if len(r.TagsPruned) > 0 {
 		if dryRun {
-			fmt.Printf("  Tags to prune: %v\n", r.TagsPruned)
+			cmd.Printf("  Tags to prune: %v\n", r.TagsPruned)
 		} else {
-			fmt.Printf("  Tags pruned: %v\n", r.TagsPruned)
+			cmd.Printf("  Tags pruned: %v\n", r.TagsPruned)
 		}
 	}
 	if r.Checkout != "" {
-		fmt.Printf("  Checkout: %s\n", r.Checkout)
+		cmd.Printf("  Checkout: %s\n", r.Checkout)
 	}
 	if r.Err != nil {
-		fmt.Printf("  Error: %v\n", r.Err)
+		cmd.Printf("  Error: %v\n", r.Err)
 	}
 }

@@ -256,63 +256,74 @@ func (c *Config) Validate() error {
 	names := make(map[string]bool)
 	for i := range c.Repos {
 		r := &c.Repos[i]
-
-		if r.Name == "" {
-			return fmt.Errorf("repo at index %d: name is required", i)
-		}
-		if names[r.Name] {
-			return fmt.Errorf("duplicate repo name: %s", r.Name)
-		}
-		names[r.Name] = true
-
-		if r.URL == "" {
-			return fmt.Errorf("repo %s: url is required", r.Name)
-		}
-		if r.IsHTTPS() {
-			if err := CheckHTTPSAccessible(r.Name, r.URL); err != nil {
-				return err
-			}
-		} else {
-			if r.SSHKeyPath == "" {
-				return fmt.Errorf("repo %s: ssh_key_path is required", r.Name)
-			}
-			if _, err := os.Stat(r.SSHKeyPath); err != nil {
-				return fmt.Errorf("repo %s: ssh key not found at %s: %w", r.Name, r.SSHKeyPath, err)
-			}
-		}
-		if r.LocalPath == "" {
-			return fmt.Errorf("repo %s: local_path is required", r.Name)
-		}
-		if r.PollInterval == 0 {
-			r.PollInterval = DefaultPollInterval
-		} else if r.PollInterval < 10*time.Second {
-			return fmt.Errorf("repo %s: poll_interval must be at least 10s, got %s", r.Name, r.PollInterval)
-		}
-		if len(r.Branches) == 0 && len(r.Tags) == 0 {
-			return fmt.Errorf("repo %s: at least one branch or tag pattern is required", r.Name)
-		}
-
-		for j := range r.Branches {
-			if err := r.Branches[j].Compile(); err != nil {
-				return fmt.Errorf("repo %s: %w", r.Name, err)
-			}
-		}
-		for j := range r.Tags {
-			if err := r.Tags[j].Compile(); err != nil {
-				return fmt.Errorf("repo %s: %w", r.Name, err)
-			}
-		}
-
-		if r.OpenVox && r.Checkout != "" {
-			slog.Warn("repo has both openvox and checkout set; checkout will be ignored in openvox mode", "repo", r.Name)
-		}
-
-		if r.Checkout != "" && !r.OpenVox {
-			if !matchesAny(r.Checkout, r.Branches) && !matchesAny(r.Checkout, r.Tags) {
-				return fmt.Errorf("repo %s: checkout %q does not match any configured branch or tag pattern", r.Name, r.Checkout)
-			}
+		if err := c.validateRepo(r, i, names); err != nil {
+			return err
 		}
 	}
 
+	return nil
+}
+
+func (c *Config) validateRepo(r *RepoConfig, index int, names map[string]bool) error {
+	if r.Name == "" {
+		return fmt.Errorf("repo at index %d: name is required", index)
+	}
+	if names[r.Name] {
+		return fmt.Errorf("duplicate repo name: %s", r.Name)
+	}
+	names[r.Name] = true
+
+	if r.URL == "" {
+		return fmt.Errorf("repo %s: url is required", r.Name)
+	}
+	if err := c.validateAuth(r); err != nil {
+		return err
+	}
+
+	if r.LocalPath == "" {
+		return fmt.Errorf("repo %s: local_path is required", r.Name)
+	}
+	if r.PollInterval == 0 {
+		r.PollInterval = DefaultPollInterval
+	} else if r.PollInterval < 10*time.Second {
+		return fmt.Errorf("repo %s: poll_interval must be at least 10s, got %s", r.Name, r.PollInterval)
+	}
+	if len(r.Branches) == 0 && len(r.Tags) == 0 {
+		return fmt.Errorf("repo %s: at least one branch or tag pattern is required", r.Name)
+	}
+
+	for j := range r.Branches {
+		if err := r.Branches[j].Compile(); err != nil {
+			return fmt.Errorf("repo %s: %w", r.Name, err)
+		}
+	}
+	for j := range r.Tags {
+		if err := r.Tags[j].Compile(); err != nil {
+			return fmt.Errorf("repo %s: %w", r.Name, err)
+		}
+	}
+
+	if r.OpenVox && r.Checkout != "" {
+		slog.Warn("repo has both openvox and checkout set; checkout will be ignored in openvox mode", "repo", r.Name)
+	}
+
+	if r.Checkout != "" && !r.OpenVox {
+		if !matchesAny(r.Checkout, r.Branches) && !matchesAny(r.Checkout, r.Tags) {
+			return fmt.Errorf("repo %s: checkout %q does not match any configured branch or tag pattern", r.Name, r.Checkout)
+		}
+	}
+	return nil
+}
+
+func (c *Config) validateAuth(r *RepoConfig) error {
+	if r.IsHTTPS() {
+		return CheckHTTPSAccessible(r.Name, r.URL)
+	}
+	if r.SSHKeyPath == "" {
+		return fmt.Errorf("repo %s: ssh_key_path is required", r.Name)
+	}
+	if _, err := os.Stat(r.SSHKeyPath); err != nil {
+		return fmt.Errorf("repo %s: ssh key not found at %s: %w", r.Name, r.SSHKeyPath, err)
+	}
 	return nil
 }

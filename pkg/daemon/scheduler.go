@@ -12,19 +12,21 @@ import (
 	"github.com/go-co-op/gocron/v2"
 
 	"github.com/obmondo/gfetch/pkg/config"
-	"github.com/obmondo/gfetch/pkg/sync"
+	"github.com/obmondo/gfetch/pkg/gsync"
 )
+
+const defaultShutdownTimeout = 10 * time.Second
 
 // Scheduler manages periodic syncing of repositories using gocron.
 type Scheduler struct {
-	syncer     *sync.Syncer
+	syncer     *gsync.Syncer
 	logger     *slog.Logger
 	listenAddr string
 }
 
 // NewScheduler creates a new Scheduler.
-func NewScheduler(syncer *sync.Syncer, logger *slog.Logger, listenAddr string) *Scheduler {
-	return &Scheduler{syncer: syncer, logger: logger, listenAddr: listenAddr}
+func NewScheduler(s *gsync.Syncer, logger *slog.Logger, listenAddr string) *Scheduler {
+	return &Scheduler{syncer: s, logger: logger, listenAddr: listenAddr}
 }
 
 // Run starts the gocron scheduler and HTTP server, blocking until SIGINT/SIGTERM.
@@ -45,7 +47,7 @@ func (s *Scheduler) Run(ctx context.Context, cfg *config.Config) {
 		_, err := scheduler.NewJob(
 			gocron.DurationJob(interval),
 			gocron.NewTask(func() {
-				s.syncer.SyncRepo(ctx, repo, sync.SyncOptions{})
+				s.syncer.SyncRepo(ctx, repo, gsync.SyncOptions{})
 			}),
 			gocron.WithSingletonMode(gocron.LimitModeReschedule),
 			gocron.WithStartAt(gocron.WithStartImmediately()),
@@ -82,7 +84,7 @@ func (s *Scheduler) Run(ctx context.Context, cfg *config.Config) {
 	s.logger.Info("received signal, shutting down", "signal", sig)
 	cancel()
 
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), defaultShutdownTimeout)
 	defer shutdownCancel()
 
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {

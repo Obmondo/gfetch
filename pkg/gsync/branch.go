@@ -1,7 +1,8 @@
-package sync
+package gsync
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -11,12 +12,12 @@ import (
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	"github.com/obmondo/gfetch/pkg/config"
-	"github.com/obmondo/gfetch/pkg/metrics"
+	"github.com/obmondo/gfetch/pkg/telemetry"
 )
 
 // syncBranch fetches a single branch and hard-resets the local branch to match remote.
 // Returns true if the branch was updated, false if already up-to-date.
-func syncBranch(ctx context.Context, repo *git.Repository, branch, remoteURL string, auth transport.AuthMethod, repoName string, log *slog.Logger) (bool, error) {
+func syncBranch(ctx context.Context, repo *git.Repository, branch, _ string, auth transport.AuthMethod, repoName string, log *slog.Logger) (bool, error) {
 	start := time.Now()
 	remoteName := "origin"
 	refSpec := fmt.Sprintf("+refs/heads/%s:refs/remotes/%s/%s", branch, remoteName, branch)
@@ -28,7 +29,7 @@ func syncBranch(ctx context.Context, repo *git.Repository, branch, remoteURL str
 		Tags:       git.NoTags,
 		Force:      true,
 	})
-	if err != nil && err != git.NoErrAlreadyUpToDate {
+	if err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) {
 		return false, fmt.Errorf("fetching branch %s: %w", branch, err)
 	}
 
@@ -52,7 +53,7 @@ func syncBranch(ctx context.Context, repo *git.Repository, branch, remoteURL str
 	}
 
 	duration := time.Since(start)
-	metrics.SyncDurationSeconds.WithLabelValues(repoName, "branch").Observe(duration.Seconds())
+	telemetry.SyncDurationSeconds.WithLabelValues(repoName, "branch").Observe(duration.Seconds())
 	log.Info("branch synced", "branch", branch, "hash", remoteRef.Hash().String()[:12], "duration", duration)
 	return true, nil
 }

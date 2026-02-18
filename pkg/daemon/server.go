@@ -8,13 +8,13 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/obmondo/gfetch/pkg/config"
-	"github.com/obmondo/gfetch/pkg/sync"
+	"github.com/obmondo/gfetch/pkg/gsync"
 )
 
-func newServer(syncer *sync.Syncer, logger *slog.Logger, cfg *config.Config) http.Handler {
+func newServer(s *gsync.Syncer, logger *slog.Logger, cfg *config.Config) http.Handler {
 	mux := http.NewServeMux()
 
-	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
@@ -36,20 +36,20 @@ func newServer(syncer *sync.Syncer, logger *slog.Logger, cfg *config.Config) htt
 		}
 
 		logger.Info("manual sync triggered", "repo", repoName)
-		result := syncer.SyncRepo(r.Context(), repo, sync.SyncOptions{})
-		writeResult(w, []sync.Result{result})
+		result := s.SyncRepo(r.Context(), repo, gsync.SyncOptions{})
+		writeResult(w, []gsync.Result{result})
 	})
 
 	mux.HandleFunc("POST /sync", func(w http.ResponseWriter, r *http.Request) {
 		logger.Info("manual sync triggered for all repos")
-		results := syncer.SyncAll(r.Context(), cfg, sync.SyncOptions{})
+		results := s.SyncAll(r.Context(), cfg, gsync.SyncOptions{})
 		writeResult(w, results)
 	})
 
 	return mux
 }
 
-func writeResult(w http.ResponseWriter, results []sync.Result) {
+func writeResult(w http.ResponseWriter, results []gsync.Result) {
 	w.Header().Set("Content-Type", "application/json")
 
 	hasErr := false

@@ -1,4 +1,4 @@
-package sync
+package gsync
 
 import (
 	"context"
@@ -11,7 +11,7 @@ import (
 	gitconfig "github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	"github.com/obmondo/gfetch/pkg/config"
-	"github.com/obmondo/gfetch/pkg/metrics"
+	"github.com/obmondo/gfetch/pkg/telemetry"
 )
 
 // SyncOptions controls optional sync behaviour.
@@ -61,13 +61,13 @@ func (s *Syncer) SyncRepo(ctx context.Context, repo *config.RepoConfig, opts Syn
 	result := Result{RepoName: repo.Name}
 	log := s.logger.With("repo", repo.Name)
 
-	metrics.SyncsTotal.WithLabelValues(repo.Name).Inc()
+	telemetry.SyncsTotal.WithLabelValues(repo.Name).Inc()
 	log.Info("starting sync")
 
 	if repo.IsHTTPS() {
 		if err := config.CheckHTTPSAccessible(repo.Name, repo.URL); err != nil {
 			log.Warn("HTTPS URL not accessible, skipping sync", "url", repo.URL, "error", err)
-			metrics.SyncFailuresTotal.WithLabelValues(repo.Name, "clone").Inc()
+			telemetry.SyncFailuresTotal.WithLabelValues(repo.Name, "clone").Inc()
 			result.Err = err
 			return result
 		}
@@ -80,105 +80,30 @@ func (s *Syncer) SyncRepo(ctx context.Context, repo *config.RepoConfig, opts Syn
 
 	auth, err := resolveAuth(repo)
 	if err != nil {
-		metrics.SyncFailuresTotal.WithLabelValues(repo.Name, "clone").Inc()
+		telemetry.SyncFailuresTotal.WithLabelValues(repo.Name, "clone").Inc()
 		result.Err = err
 		return result
 	}
 
 	r, err := ensureCloned(ctx, repo, auth)
 	if err != nil {
-		metrics.SyncFailuresTotal.WithLabelValues(repo.Name, "clone").Inc()
+		telemetry.SyncFailuresTotal.WithLabelValues(repo.Name, "clone").Inc()
 		result.Err = err
 		return result
 	}
 
-	// Resolve branches: list remote branches and filter by configured patterns.
-	if len(repo.Branches) > 0 {
-		branches, err := resolveBranches(ctx, r, repo.Branches, auth)
-		if err != nil {
-			log.Error("failed to resolve branches", "error", err)
-			metrics.SyncFailuresTotal.WithLabelValues(repo.Name, "branch_sync").Inc()
-			result.Err = fmt.Errorf("resolving branches: %w", err)
-			return result
-		}
-
-		for _, branch := range branches {
-			synced, err := syncBranch(ctx, r, branch, repo.URL, auth, repo.Name, log)
-			if err != nil {
-				log.Error("branch sync failed", "branch", branch, "error", err)
-				metrics.SyncFailuresTotal.WithLabelValues(repo.Name, "branch_sync").Inc()
-				result.BranchesFailed = append(result.BranchesFailed, branch)
-			} else if synced {
-				result.BranchesSynced = append(result.BranchesSynced, branch)
-			} else {
-				result.BranchesUpToDate = append(result.BranchesUpToDate, branch)
-			}
-		}
-	}
-
-	if len(repo.Branches) > 0 {
-		obsolete, err := findObsoleteBranches(r, repo.Branches)
-		if err != nil {
-			log.Error("failed to find obsolete branches", "error", err)
-		} else {
-			result.BranchesObsolete = obsolete
-			for _, branch := range obsolete {
-				if repo.Checkout != "" && branch == repo.Checkout {
-					log.Info("skipping prune of checkout branch", "branch", branch)
-					continue
-				}
-				switch {
-				case !opts.Prune:
-					// just reported as obsolete, no action
-				case opts.DryRun:
-					log.Info("branch would be pruned (dry-run)", "branch", branch)
-					result.BranchesPruned = append(result.BranchesPruned, branch)
-				default:
-					if err := deleteBranch(r, branch); err != nil {
-						log.Error("failed to prune branch", "branch", branch, "error", err)
-						continue
-					}
-					log.Info("branch pruned", "branch", branch)
-					result.BranchesPruned = append(result.BranchesPruned, branch)
-				}
-			}
-		}
-	}
-
-	if len(repo.Tags) > 0 {
-		fetched, upToDate, obsolete, pruned, err := syncTags(ctx, r, repo, auth, opts.Prune, opts.DryRun, log)
-		if err != nil {
-			log.Error("tag sync failed", "error", err)
-			metrics.SyncFailuresTotal.WithLabelValues(repo.Name, "tag_sync").Inc()
-			if result.Err == nil {
-				result.Err = fmt.Errorf("tag sync: %w", err)
-			}
-		}
-		result.TagsFetched = fetched
-		result.TagsUpToDate = upToDate
-		result.TagsObsolete = obsolete
-		result.TagsPruned = pruned
-	}
-
-	if repo.Checkout != "" {
-		if err := checkoutRef(r, repo.Checkout, log); err != nil {
-			log.Error("failed to checkout", "ref", repo.Checkout, "error", err)
-			if result.Err == nil {
-				result.Err = fmt.Errorf("checkout %s: %w", repo.Checkout, err)
-			}
-		} else {
-			result.Checkout = repo.Checkout
-		}
-	}
+	s.syncBranches(ctx, r, repo, auth, opts, log, &result)
+	s.syncTagsWrapper(ctx, r, repo, auth, opts, log, &result)
+	s.handleCheckout(r, repo, log, &result)
 
 	duration := time.Since(start)
-	metrics.SyncDurationSeconds.WithLabelValues(repo.Name, "total").Observe(duration.Seconds())
+	telemetry.SyncDurationSeconds.WithLabelValues(repo.Name, "total").Observe(duration.Seconds())
 
 	if result.Err != nil {
-		metrics.LastFailureTimestamp.WithLabelValues(repo.Name).Set(float64(time.Now().Unix()))
+		telemetry.LastFailureTimestamp.WithLabelValues(repo.Name).Set(float64(time.Now().Unix()))
 	} else {
-		metrics.SyncSuccessTotal.WithLabelValues(repo.Name).Inc()
-		metrics.LastSuccessTimestamp.WithLabelValues(repo.Name).Set(float64(time.Now().Unix()))
+		telemetry.SyncSuccessTotal.WithLabelValues(repo.Name).Inc()
+		telemetry.LastSuccessTimestamp.WithLabelValues(repo.Name).Set(float64(time.Now().Unix()))
 	}
 
 	log.Info("sync complete",
@@ -196,9 +121,101 @@ func (s *Syncer) SyncRepo(ctx context.Context, repo *config.RepoConfig, opts Syn
 	return result
 }
 
+func (s *Syncer) syncBranches(ctx context.Context, r *git.Repository, repo *config.RepoConfig, auth transport.AuthMethod, opts SyncOptions, log *slog.Logger, result *Result) {
+	if len(repo.Branches) == 0 {
+		return
+	}
+
+	branches, err := resolveBranches(ctx, r, repo.Branches, auth)
+	if err != nil {
+		log.Error("failed to resolve branches", "error", err)
+		telemetry.SyncFailuresTotal.WithLabelValues(repo.Name, "branch_sync").Inc()
+		result.Err = fmt.Errorf("resolving branches: %w", err)
+		return
+	}
+
+	for _, branch := range branches {
+		synced, err := syncBranch(ctx, r, branch, repo.URL, auth, repo.Name, log)
+		if err != nil {
+			log.Error("branch sync failed", "branch", branch, "error", err)
+			telemetry.SyncFailuresTotal.WithLabelValues(repo.Name, "branch_sync").Inc()
+			result.BranchesFailed = append(result.BranchesFailed, branch)
+		} else if synced {
+			result.BranchesSynced = append(result.BranchesSynced, branch)
+		} else {
+			result.BranchesUpToDate = append(result.BranchesUpToDate, branch)
+		}
+	}
+
+	obsolete, err := findObsoleteBranches(r, repo.Branches)
+	if err != nil {
+		log.Error("failed to find obsolete branches", "error", err)
+	} else {
+		result.BranchesObsolete = obsolete
+		s.pruneBranches(r, repo, obsolete, opts, log, result)
+	}
+}
+
+func (s *Syncer) pruneBranches(r *git.Repository, repo *config.RepoConfig, obsolete []string, opts SyncOptions, log *slog.Logger, result *Result) {
+	for _, branch := range obsolete {
+		if repo.Checkout != "" && branch == repo.Checkout {
+			log.Info("skipping prune of checkout branch", "branch", branch)
+			continue
+		}
+		switch {
+		case !opts.Prune:
+			// just reported as obsolete, no action
+		case opts.DryRun:
+			log.Info("branch would be pruned (dry-run)", "branch", branch)
+			result.BranchesPruned = append(result.BranchesPruned, branch)
+		default:
+			if err := deleteBranch(r, branch); err != nil {
+				log.Error("failed to prune branch", "branch", branch, "error", err)
+				continue
+			}
+			log.Info("branch pruned", "branch", branch)
+			result.BranchesPruned = append(result.BranchesPruned, branch)
+		}
+	}
+}
+
+func (s *Syncer) syncTagsWrapper(ctx context.Context, r *git.Repository, repo *config.RepoConfig, auth transport.AuthMethod, opts SyncOptions, log *slog.Logger, result *Result) {
+	if len(repo.Tags) == 0 {
+		return
+	}
+
+	fetched, upToDate, obsolete, pruned, err := syncTags(ctx, r, repo, auth, opts.Prune, opts.DryRun, log)
+	if err != nil {
+		log.Error("tag sync failed", "error", err)
+		telemetry.SyncFailuresTotal.WithLabelValues(repo.Name, "tag_sync").Inc()
+		if result.Err == nil {
+			result.Err = fmt.Errorf("tag sync: %w", err)
+		}
+	}
+	result.TagsFetched = fetched
+	result.TagsUpToDate = upToDate
+	result.TagsObsolete = obsolete
+	result.TagsPruned = pruned
+}
+
+func (s *Syncer) handleCheckout(r *git.Repository, repo *config.RepoConfig, log *slog.Logger, result *Result) {
+	if repo.Checkout == "" {
+		return
+	}
+
+	if err := checkoutRef(r, repo.Checkout, log); err != nil {
+		log.Error("failed to checkout", "ref", repo.Checkout, "error", err)
+		if result.Err == nil {
+			result.Err = fmt.Errorf("checkout %s: %w", repo.Checkout, err)
+		}
+	} else {
+		result.Checkout = repo.Checkout
+	}
+}
+
 // ensureCloned opens an existing repo or inits an empty one with the remote configured.
 // Actual fetching is deferred to syncBranch/syncTags which use narrow refspecs.
-func ensureCloned(ctx context.Context, repo *config.RepoConfig, auth transport.AuthMethod) (*git.Repository, error) {
+func ensureCloned(_ context.Context, repo *config.RepoConfig, auth transport.AuthMethod) (*git.Repository, error) {
 	if _, err := os.Stat(repo.LocalPath); err == nil {
 		return git.PlainOpen(repo.LocalPath)
 	}

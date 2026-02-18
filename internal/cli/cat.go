@@ -13,7 +13,7 @@ func newCatCmd() *cobra.Command {
 		Use:   "cat",
 		Short: "Print the resolved configuration as YAML",
 		Long:  "Loads the configuration (file or directory), applies global defaults, validates, and prints the fully resolved config to stdout.",
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			cfg, err := config.Load(configPath)
 			if err != nil {
 				return fmt.Errorf("loading config: %w", err)
@@ -25,7 +25,7 @@ func newCatCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("marshaling config: %w", err)
 			}
-			fmt.Print(string(out))
+			cmd.Print(string(out))
 			return nil
 		},
 	}
