@@ -302,34 +302,71 @@ func TestPruneStaleBranches(t *testing.T) {
 	tmpClone := t.TempDir()
 	clone, err := git.PlainClone(tmpClone, false, &git.CloneOptions{URL: bareDir})
 	if err != nil {
-		clone, _ = git.PlainInit(tmpClone, false)
-		clone.CreateRemote(&gitconfig.RemoteConfig{Name: "origin", URLs: []string{bareDir}})
+		clone, err = git.PlainInit(tmpClone, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = clone.CreateRemote(&gitconfig.RemoteConfig{Name: "origin", URLs: []string{bareDir}})
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
-	wt, _ := clone.Worktree()
-	os.WriteFile(filepath.Join(tmpClone, "file"), []byte("data"), 0644)
-	wt.Add("file")
-	hash, _ := wt.Commit("stale commit", &git.CommitOptions{Author: signature, Committer: signature})
-	clone.Push(&git.PushOptions{})
+	wt, err := clone.Worktree()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpClone, "file"), []byte("data"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := wt.Add("file"); err != nil {
+		t.Fatal(err)
+	}
+	hash, err := wt.Commit("stale commit", &git.CommitOptions{Author: signature, Committer: signature})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := clone.Push(&git.PushOptions{}); err != nil {
+		t.Fatal(err)
+	}
 
 	// Create a stale branch pointing to this commit.
 	staleBranch := "stale-branch"
-	bare.Storer.SetReference(plumbing.NewHashReference(plumbing.NewBranchReferenceName(staleBranch), hash))
+	if err := bare.Storer.SetReference(plumbing.NewHashReference(plumbing.NewBranchReferenceName(staleBranch), hash)); err != nil {
+		t.Fatal(err)
+	}
 
 	// Create a fresh commit on main.
-	os.WriteFile(filepath.Join(tmpClone, "file"), []byte("new data"), 0644)
-	wt.Add("file")
-	wt.Commit("fresh commit", &git.CommitOptions{Author: &object.Signature{Name: "test", Email: "test@test.com", When: time.Now()}})
-	clone.Push(&git.PushOptions{})
+	if err := os.WriteFile(filepath.Join(tmpClone, "file"), []byte("new data"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := wt.Add("file"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := wt.Commit("fresh commit", &git.CommitOptions{Author: &object.Signature{Name: "test", Email: "test@test.com", When: time.Now()}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := clone.Push(&git.PushOptions{}); err != nil {
+		t.Fatal(err)
+	}
 
 	// Local mirror.
-	local, _ := git.PlainClone(localDir, false, &git.CloneOptions{URL: bareDir})
+	local, err := git.PlainClone(localDir, false, &git.CloneOptions{URL: bareDir})
+	if err != nil {
+		t.Fatal(err)
+	}
 	// Fetch stale branch locally.
-	local.Fetch(&git.FetchOptions{RefSpecs: []gitconfig.RefSpec{"+refs/heads/stale-branch:refs/remotes/origin/stale-branch"}})
-	local.Storer.SetReference(plumbing.NewHashReference(plumbing.NewBranchReferenceName(staleBranch), hash))
+	if err := local.Fetch(&git.FetchOptions{RefSpecs: []gitconfig.RefSpec{"+refs/heads/stale-branch:refs/remotes/origin/stale-branch"}}); err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) {
+		t.Fatal(err)
+	}
+	if err := local.Storer.SetReference(plumbing.NewHashReference(plumbing.NewBranchReferenceName(staleBranch), hash)); err != nil {
+		t.Fatal(err)
+	}
 
 	// Provide a fake SSH key to pass validation.
 	sshKey := filepath.Join(t.TempDir(), "id_rsa")
-	os.WriteFile(sshKey, []byte("fake"), 0600)
+	if err := os.WriteFile(sshKey, []byte("fake"), 0600); err != nil {
+		t.Fatal(err)
+	}
 
 	syncer := New(slog.Default())
 	repoConfig := &config.RepoConfig{

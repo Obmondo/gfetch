@@ -12,8 +12,12 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// DefaultPollInterval is used when a repo does not specify a poll interval.
-const DefaultPollInterval = 2 * time.Minute
+const (
+	// DefaultPollInterval is used when a repo does not specify a poll interval.
+	DefaultPollInterval = 2 * time.Minute
+
+	hoursPerDay = 24
+)
 
 // Config is the top-level configuration.
 type Config struct {
@@ -146,7 +150,7 @@ func ParseDuration(s string) (time.Duration, error) {
 	var multiplier time.Duration
 	switch {
 	case strings.HasSuffix(s, "d"):
-		multiplier = 24 * time.Hour
+		multiplier = hoursPerDay * time.Hour
 		s = s[:len(s)-1]
 	default:
 		return time.ParseDuration(s)
