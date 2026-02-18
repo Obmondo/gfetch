@@ -64,6 +64,15 @@ func (s *Syncer) SyncRepo(ctx context.Context, repo *config.RepoConfig, opts Syn
 	metrics.SyncsTotal.WithLabelValues(repo.Name).Inc()
 	log.Info("starting sync")
 
+	if repo.IsHTTPS() {
+		if err := config.CheckHTTPSAccessible(repo.Name, repo.URL); err != nil {
+			log.Warn("HTTPS URL not accessible, skipping sync", "url", repo.URL, "error", err)
+			metrics.SyncFailuresTotal.WithLabelValues(repo.Name, "clone").Inc()
+			result.Err = err
+			return result
+		}
+	}
+
 	if repo.OpenVox {
 		log.Info("using openvox mode")
 		return s.syncRepoOpenVox(ctx, repo, opts)

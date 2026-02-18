@@ -38,10 +38,10 @@ func buildKnownHostsCallback(extraEntries string) (ssh.HostKeyCallback, error) {
 	if err != nil {
 		return nil, fmt.Errorf("creating temp known_hosts file: %w", err)
 	}
-	defer os.Remove(tmpFile.Name())
+	defer func() { _ = os.Remove(tmpFile.Name()) }()
 
 	if _, err := tmpFile.WriteString(merged); err != nil {
-		tmpFile.Close()
+		_ = tmpFile.Close()
 		return nil, fmt.Errorf("writing temp known_hosts file: %w", err)
 	}
 	if err := tmpFile.Close(); err != nil {
