@@ -137,10 +137,17 @@ func loadFile(path string) (*Config, error) {
 		return nil, fmt.Errorf("reading config file: %w", err)
 	}
 
-	// Support top-level ssh_known_hosts in single-file mode for backwards compatibility.
+	// Global defaults can be placed at the top level in single-file mode.
+	// Any field set here is applied to repos that do not have that field set.
 	var raw struct {
-		SSHKnownHosts string       `yaml:"ssh_known_hosts"`
-		Repos         []RepoConfig `yaml:"repos"`
+		SSHKeyPath    string        `yaml:"ssh_key_path"`
+		SSHKnownHosts string        `yaml:"ssh_known_hosts"`
+		LocalPath     string        `yaml:"local_path"`
+		PollInterval  time.Duration `yaml:"poll_interval"`
+		Branches      []Pattern     `yaml:"branches"`
+		Tags          []Pattern     `yaml:"tags"`
+		OpenVox       *bool         `yaml:"openvox"`
+		Repos         []RepoConfig  `yaml:"repos"`
 	}
 	if err := yaml.Unmarshal(data, &raw); err != nil {
 		return nil, fmt.Errorf("parsing config file: %w", err)
@@ -148,9 +155,19 @@ func loadFile(path string) (*Config, error) {
 
 	cfg := &Config{Repos: raw.Repos}
 
-	// If top-level ssh_known_hosts is set, apply it as a default to repos missing it.
-	if raw.SSHKnownHosts != "" {
-		defaults := &RepoDefaults{SSHKnownHosts: raw.SSHKnownHosts}
+	// If any top-level default field is set, apply it as a default to repos missing that field.
+	hasDefaults := raw.SSHKeyPath != "" || raw.SSHKnownHosts != "" || raw.LocalPath != "" ||
+		raw.PollInterval != 0 || len(raw.Branches) > 0 || len(raw.Tags) > 0 || raw.OpenVox != nil
+	if hasDefaults {
+		defaults := &RepoDefaults{
+			SSHKeyPath:    raw.SSHKeyPath,
+			SSHKnownHosts: raw.SSHKnownHosts,
+			LocalPath:     raw.LocalPath,
+			PollInterval:  raw.PollInterval,
+			Branches:      raw.Branches,
+			Tags:          raw.Tags,
+			OpenVox:       raw.OpenVox,
+		}
 		cfg.Defaults = defaults
 		for i := range cfg.Repos {
 			applyDefaults(&cfg.Repos[i], defaults)
