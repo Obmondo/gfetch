@@ -156,7 +156,7 @@ func (s *Syncer) syncBranches(ctx context.Context, r *git.Repository, repo *conf
 	}
 }
 
-func (s *Syncer) pruneBranches(r *git.Repository, repo *config.RepoConfig, obsolete []string, opts SyncOptions, log *slog.Logger, result *Result) {
+func (*Syncer) pruneBranches(r *git.Repository, repo *config.RepoConfig, obsolete []string, opts SyncOptions, log *slog.Logger, result *Result) {
 	for _, branch := range obsolete {
 		if repo.Checkout != "" && branch == repo.Checkout {
 			log.Info("skipping prune of checkout branch", "branch", branch)
@@ -179,7 +179,7 @@ func (s *Syncer) pruneBranches(r *git.Repository, repo *config.RepoConfig, obsol
 	}
 }
 
-func (s *Syncer) syncTagsWrapper(ctx context.Context, r *git.Repository, repo *config.RepoConfig, auth transport.AuthMethod, opts SyncOptions, log *slog.Logger, result *Result) {
+func (*Syncer) syncTagsWrapper(ctx context.Context, r *git.Repository, repo *config.RepoConfig, auth transport.AuthMethod, opts SyncOptions, log *slog.Logger, result *Result) {
 	if len(repo.Tags) == 0 {
 		return
 	}
@@ -198,7 +198,7 @@ func (s *Syncer) syncTagsWrapper(ctx context.Context, r *git.Repository, repo *c
 	result.TagsPruned = pruned
 }
 
-func (s *Syncer) handleCheckout(r *git.Repository, repo *config.RepoConfig, log *slog.Logger, result *Result) {
+func (*Syncer) handleCheckout(r *git.Repository, repo *config.RepoConfig, log *slog.Logger, result *Result) {
 	if repo.Checkout == "" {
 		return
 	}

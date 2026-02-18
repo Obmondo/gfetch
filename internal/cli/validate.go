@@ -12,7 +12,7 @@ func newValidateCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "validate-config",
 		Short: "Validate the config file and exit",
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			cfg, err := config.Load(configPath)
 			if err != nil {
 				return err

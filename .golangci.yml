@@ -1,3 +1,5 @@
+version: "2"
+
 run:
   go: "1.25"
 
@@ -5,6 +7,7 @@ linters:
   # The below linters are 'additional' linters that are enabled over and
   # above the default linters mentioned in: https://golangci-lint.run/usage/linters/
   enable:
+    - usetesting
     - unparam
     - usestdlibvars
     - reassign
@@ -15,12 +18,14 @@ linters:
     - makezero
     - maintidx
     - importas
+    - mnd
     - godox
     - goconst
     - gocognit
     - gocyclo
     - forcetypeassert
     - forbidigo
+    - copyloopvar
     - errorlint
     - dupword
     - revive
