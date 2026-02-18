@@ -22,15 +22,28 @@ repos:
 
 The top-level key is `repos`, a list of repository configurations.
 
-You can also set a top-level `ssh_known_hosts` key that applies to all repos in the file (per-repo values override it):
+### Global defaults (single-file mode)
+
+Any `RepoDefaults` field can be placed at the top level of the file. Values set there are applied to every repo that does not have that field set — per-repo values always take precedence.
 
 ```yaml
+# Global defaults applied to all repos in this file
+ssh_key_path: /home/user/.ssh/id_ed25519
 ssh_known_hosts: |
   custom-git.example.com ssh-ed25519 AAAA...
+local_path: /var/repos
+poll_interval: 5m
+openvox: false
+branches:
+  - main
+tags:
+  - /^v[0-9]+\./
 
 repos:
   - name: my-repo
-    ...
+    url: git@github.com:org/my-repo.git
+    # inherits all global defaults above; override any field here to take precedence
+    local_path: /var/repos/my-repo   # override local_path for this repo
 ```
 
 ## Directory mode
@@ -58,9 +71,14 @@ ssh_known_hosts: |
   custom-git.example.com ssh-ed25519 AAAA...
 poll_interval: 5m
 local_path: /var/repos
+openvox: false
+branches:
+  - main
+tags:
+  - /^v[0-9]+\./
 ```
 
-Supported global fields: `ssh_key_path`, `ssh_known_hosts`, `poll_interval`, `local_path`.
+Supported global fields: `ssh_key_path`, `ssh_known_hosts`, `poll_interval`, `local_path`, `branches`, `tags`, `openvox`.
 
 ### Per-repo config
 
@@ -182,7 +200,7 @@ Host key verification is always enabled using built-in keys. To add extra host k
 
 ```yaml
 - name: private-repo
-  url: git@github.com:ashish1099/my-service.git
+  url: git@github.com:obmondo/my-service.git
   ssh_key_path: /home/user/.ssh/id_ed25519
   ssh_known_hosts: |              # optional: extra host keys
     custom-git.example.com ssh-ed25519 AAAA...
@@ -239,7 +257,7 @@ gfetch cat -c config.d/         # directory mode
 repos:
   # Private repo via SSH (requires ssh_key_path)
   - name: my-service
-    url: git@github.com:ashish1099/my-service.git
+    url: git@github.com:obmondo/my-service.git
     ssh_key_path: /home/ashish/.ssh/id_ed25519
     local_path: /var/repos/my-service
     poll_interval: 5m
