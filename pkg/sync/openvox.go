@@ -9,11 +9,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/obmondo/gfetch/pkg/config"
-	"github.com/obmondo/gfetch/pkg/metrics"
 	git "github.com/go-git/go-git/v5"
 	gitconfig "github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing/transport"
+	"github.com/obmondo/gfetch/pkg/config"
+	"github.com/obmondo/gfetch/pkg/metrics"
 )
 
 // metaDir is the hidden directory used to store the resolver repo for listing remote refs.

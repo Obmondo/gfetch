@@ -6,12 +6,12 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/obmondo/gfetch/pkg/config"
-	"github.com/obmondo/gfetch/pkg/metrics"
 	git "github.com/go-git/go-git/v5"
 	gitconfig "github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/transport"
+	"github.com/obmondo/gfetch/pkg/config"
+	"github.com/obmondo/gfetch/pkg/metrics"
 )
 
 // syncBranch fetches a single branch and hard-resets the local branch to match remote.

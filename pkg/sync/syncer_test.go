@@ -7,11 +7,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/obmondo/gfetch/pkg/config"
 	git "github.com/go-git/go-git/v5"
 	gitconfig "github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
+	"github.com/obmondo/gfetch/pkg/config"
 )
 
 func TestMatchesAnyPattern(t *testing.T) {
