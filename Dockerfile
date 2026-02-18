@@ -23,9 +23,10 @@ RUN go build -ldflags "-s -w \
 # Stage 2 — runtime
 FROM alpine:3.23
 
+# uid/gid 999 is on purpose, cause puppetserver runs as 999(puppet) user
 RUN apk add --no-cache git openssh-client ca-certificates \
-    && addgroup -g 1000 gfetch \
-    && adduser -D -u 1000 -G gfetch -h /home/gfetch gfetch
+    && addgroup -g 999 gfetch \
+    && adduser -D -u 999 -G gfetch -h /home/gfetch gfetch
 
 COPY --from=builder /usr/local/bin/gfetch /usr/local/bin/gfetch
 
