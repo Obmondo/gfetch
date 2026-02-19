@@ -3,9 +3,11 @@
   "checkpoint_id": "a2e76e4b7e90",
   "strategy": "manual-commit",
   "branch": "master",
-  "checkpoints_count": 1,
+  "checkpoints_count": 2,
   "files_touched": [
-    "pkg/config/config.go"
+    "pkg/config/config.go",
+    "pkg/gsync/openvox.go",
+    "pkg/gsync/openvox_test.go"
   ],
   "sessions": [
     {
@@ -14,13 +16,20 @@
       "context": "/a2/e76e4b7e90/0/context.md",
       "content_hash": "/a2/e76e4b7e90/0/content_hash.txt",
       "prompt": "/a2/e76e4b7e90/0/prompt.txt"
+    },
+    {
+      "metadata": "/a2/e76e4b7e90/1/metadata.json",
+      "transcript": "/a2/e76e4b7e90/1/full.jsonl",
+      "context": "/a2/e76e4b7e90/1/context.md",
+      "content_hash": "/a2/e76e4b7e90/1/content_hash.txt",
+      "prompt": "/a2/e76e4b7e90/1/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 12,
-    "cache_creation_tokens": 12544,
-    "cache_read_tokens": 267353,
-    "output_tokens": 1212,
-    "api_call_count": 10
+    "input_tokens": 24,
+    "cache_creation_tokens": 25966,
+    "cache_read_tokens": 484227,
+    "output_tokens": 1474,
+    "api_call_count": 18
   }
 }

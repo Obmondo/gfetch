@@ -1,0 +1,64 @@
+Implement the following plan:
+
+# Enhance `SanitizeName` to Handle All Non-Alphanumeric Characters
+
+## Context
+
+`SanitizeName` in `pkg/gsync/openvox.go` converts Git ref names into Puppet environment directory names. Puppet environments only allow `[a-zA-Z0-9_]`. Currently the function only replaces `-` and `.` with `_`, but Git branch names can contain `/` (e.g., `feature/login`), `@`, `~`, `^`, `+`, spaces, and other characters. A branch like `feature/my-branch` would currently create a nested subdirectory instead of a flat sanitized name.
+
+## Changes
+
+### 1. Rewrite `SanitizeName` (`pkg/gsync/openvox.go:26-30`)
+
+Replace `strings.NewReplacer` with `strings.Map` using an allowlist approach — any character not in `[a-zA-Z0-9_]` becomes `_`:
+
+```go
+// SanitizeName converts a Git ref name into a valid Puppet environment name.
+// Puppet environments only allow [a-zA-Z0-9_]. Any character outside this set
+// is replaced with an underscore.
+func SanitizeName(name string) string {
+	return strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' {
+			return r
+		}
+		return '_'
+	}, name)
+}
+```
+
+This is a superset of current behavior — all existing replacements still hold, plus `/`, `@`, and everything else is now handled. No import changes needed.
+
+### 2. Add test cases (`pkg/gsync/openvox_test.go`)
+
+Add to `TestSanitizeName` table (lines 12-22):
+- `"feature/my-branch"` → `"feature_my_branch"` (forward slash)
+- `"bugfix/auth/login"` → `"bugfix_auth_login"` (nested slashes)
+- `"user@domain"` → `"user_domain"` (at sign)
+- `"release/v1.0.0-rc1"` → `"release_v1_0_0_rc1"` (mixed)
+- `"branch~1"` → `"branch_1"` (tilde)
+- `"branch^2"` → `"branch_2"` (caret)
+- `"my branch"` → `"my_branch"` (space)
+- `"a//b"` → `"a__b"` (consecutive slashes → consecutive underscores)
+
+Add to `TestDetectCollisions` (after line 70):
+- Slash vs hyphen collision: `"feature/auth"` and `"feature-auth"` both sanitize to `"feature_auth"`
+
+### No other changes needed
+
+- `detectCollisions` already calls `SanitizeName` — works automatically
+- All callers (`syncOneOpenVoxBranch`, `syncOneOpenVoxTag`) are unchanged
+- No new imports
+
+## Verification
+
+```bash
+go test ./pkg/gsync/... -run "TestSanitizeName|TestDetectCollisions" -v
+go test ./...
+```
+
+
+If you need specific details from before exiting plan mode (like exact code snippets, error messages, or content you generated), read the full transcript at: /home/ashish/.claude/projects/-home-ashish-gitea-gfetch/124746fc-58bb-477e-a507-2aaecb46cbe6.jsonl
+
+---
+
+commit this and its already in staged
