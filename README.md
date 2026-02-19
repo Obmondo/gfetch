@@ -3,6 +3,8 @@
 [![GitHub Tests](https://github.com/obmondo/gfetch/actions/workflows/test.yml/badge.svg)](https://github.com/obmondo/gfetch/actions/workflows/test.yml)
 [![GitHub Docker](https://github.com/obmondo/gfetch/actions/workflows/docker.yml/badge.svg)](https://github.com/obmondo/gfetch/actions/workflows/docker.yml)
 [![Go Report Card](https://goreportcard.com/badge/github.com/obmondo/gfetch)](https://goreportcard.com/report/github.com/obmondo/gfetch)
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/Obmondo/gfetch)
+
 
 A CLI tool that selectively mirrors remote Git repositories to local paths based on YAML configuration.
 
