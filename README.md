@@ -12,7 +12,7 @@ A CLI tool that selectively mirrors remote Git repositories to local paths based
 
 - **Selective sync** — choose exactly which branches and tags to mirror using exact names, wildcards (`*`), or regex patterns
 - **Pruning** — detect and remove local branches/tags that no longer match any configured pattern
-- **Stale pruning** — optionally remove inactive branches that have no new commits in a specified period (e.g., last 6 months)
+- **Stale pruning** — optionally remove inactive branches that have no new commits in a specified period (e.g., last 6 months); when both `--prune` and `--prune-stale` are enabled, stale branches are skipped before branch sync
 - **Daemon mode** — run as a foreground polling service with per-repo poll intervals
 - **SSH and HTTPS auth** — private repos via SSH key, public repos via anonymous HTTPS
 - **Working tree checkout** — optionally keep a working tree checked out on a specific branch or tag
@@ -145,13 +145,14 @@ gfetch sync --prune            # sync and remove obsolete branches/tags
 gfetch sync --prune-stale      # sync and remove branches with no commits in 6 months
 gfetch sync --stale-age 30d    # custom threshold for stale pruning
 gfetch sync --prune --dry-run  # show what would be pruned without deleting
+gfetch sync --prune --prune-stale  # also skips stale branches before branch sync
 ```
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--repo` | *(empty)* | Sync only the named repo |
 | `--prune` | `false` | Delete local branches/tags that no longer match any pattern |
-| `--prune-stale` | `false` | Delete local branches with no commits in the last 6 months |
+| `--prune-stale` | `false` | Delete local branches with no commits in the last 6 months; with `--prune`, stale branches are skipped before branch sync |
 | `--stale-age` | `180d` | Custom age threshold for stale pruning (e.g., `30d`) |
 | `--dry-run` | `false` | Show what would be pruned without actually deleting |
 

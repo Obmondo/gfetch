@@ -42,7 +42,7 @@ repos:
 | `tags` | list of patterns | At least one of `branches` or `tags` | Tag names or patterns to sync from the remote. |
 | `checkout` | string | No | A literal branch or tag name to check out in the working tree. |
 | `openvox` | bool | No | Enable OpenVox mode. Each matching branch/tag gets its own subdirectory. |
-| `prune_stale` | bool | No | If true, local branches matching patterns but with no commits in `stale_age` will be pruned during sync. Default `false`. |
+| `prune_stale` | bool | No | If true, local branches matching patterns but with no commits in `stale_age` will be pruned during sync. When combined with `prune`, stale branches are also skipped before branch sync. Default `false`. |
 | `stale_age` | duration | No | The period of inactivity (based on committer date) after which a branch is considered stale. Default `180d`. |
 
 ## Stale Pruning
@@ -52,6 +52,7 @@ Stale pruning allows gfetch to remove inactive branches from the local mirror, e
 - **Check**: gfetch inspects the **committer date** of the tip of each local branch.
 - **Threshold**: If the latest commit is older than `stale_age` (relative to the current time), the branch is identified as stale.
 - **Action**: When `--prune-stale` is used (or `prune_stale: true` is set in the config), these branches are deleted.
+- **Pre-sync optimization**: When both `--prune` and `--prune-stale` are enabled, stale branches are skipped before branch sync instead of being synced first and removed later.
 - **Safety**: The branch currently specified in the `checkout` field is **never** pruned, even if it is stale.
 
 ## Duration units
@@ -76,6 +77,9 @@ A hidden `.gfetch-meta` directory is created under `local_path` to store a resol
 When `openvox` is enabled, the `checkout` field is ignored (a warning is logged if both are set).
 
 Pruning (`--prune`) in OpenVox mode removes directories that no longer correspond to any matched ref.
+
+Stale pruning (`--prune-stale`) in OpenVox mode removes per-ref directories whose checked-out commit is older than `stale_age`.
+When both `--prune` and `--prune-stale` are enabled, stale branches are also skipped before per-branch sync in OpenVox mode.
 
 ```yaml
 repos:

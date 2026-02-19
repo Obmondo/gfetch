@@ -26,9 +26,11 @@ pkg/gsync/
   auth.go                     # resolveAuth() — SSH key or nil (HTTPS)
   known_hosts.go              # SSH known_hosts callback helper
   syncer.go                   # Syncer, SyncAll(), SyncRepo(), syncBranches(), syncTagsWrapper(), handleCheckout(), ensureCloned()
-  branch.go                   # syncBranch(), findObsoleteBranches(), checkoutRef(), deleteBranch()
+  refs.go                     # resolveBranches/resolveTags/default branch + staleness and branch discovery helpers
+  prune.go                    # shared prune helpers (PruneItems, deleteBranch, pruneOpenVoxDirs)
+  branch.go                   # syncBranch(), checkoutRef()
   tag.go                      # syncTags(), resolveAndFilterTags(), fetchTags(), handleObsoleteTags()
-  openvox.go                  # OpenVox mode sync logic (SanitizeName, syncRepoOpenVox, and helpers)
+  openvox.go                  # OpenVox sync flow and per-ref directory sync/prune logic
   syncer_test.go              # Integration tests using in-process bare repos
 pkg/telemetry/
   telemetry.go                # Prometheus metrics definitions and registration
@@ -50,6 +52,7 @@ renovate.json                 # Renovate config (gomod, dockerfile, github-actio
 
 - **No full clone**: repos are initialized empty via `git.PlainInit` + `CreateRemote`, then only configured refs are fetched with narrow refspecs. This avoids downloading unnecessary data.
 - **Ref-level sync**: branches are updated by setting local refs directly to remote hashes — no merge/pull. The working tree is only touched when `checkout` is configured.
+- **Pre-sync stale skip**: when both prune and stale pruning are enabled, stale branches are skipped before branch sync to avoid unnecessary fetch/sync work.
 - **One goroutine per repo in daemon**: each repo polls independently with its own `time.Ticker`. Shutdown is via context cancellation on SIGINT/SIGTERM.
 - **Pruning disabled in daemon mode**: daemon always uses `SyncOptions{}` (prune=false, pruneStale=false). Pruning is only available in the `sync` subcommand.
 - **Package Naming**: `pkg/gsync` is used for git sync logic to avoid conflict with the standard `sync` package. `pkg/telemetry` is used for metrics.
