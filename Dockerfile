@@ -21,12 +21,16 @@ RUN go build -ldflags "-s -w \
     -o /usr/local/bin/gfetch ./cmd/gfetch
 
 # Stage 2 — runtime
-FROM alpine:3.23
+FROM debian:bookworm-slim
 
 # uid/gid 999 is on purpose, cause puppetserver runs as 999(puppet) user
-RUN apk add --no-cache git openssh-client ca-certificates \
-    && addgroup -g 999 gfetch \
-    && adduser -D -u 999 -G gfetch -h /home/gfetch gfetch
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    openssh-client \
+    ca-certificates \
+    && groupadd -g 999 gfetch \
+    && useradd -m -u 999 -g gfetch -s /bin/bash gfetch \
+    && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /usr/local/bin/gfetch /usr/local/bin/gfetch
 
