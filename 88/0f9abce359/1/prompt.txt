@@ -1,0 +1,132 @@
+Implement the following plan:
+
+# Issue #1: Stale pruning for OpenVox + remove top-level backward compat
+
+## Context
+
+**Issue**: [#1](https://github.com/Obmondo/gfetch/issues/1) — In OpenVox mode, `checkout` is ignored (each branch gets its own directory). The stale-prune safety check in normal mode relies on `repo.Checkout` to protect a branch from pruning, which doesn't work for OpenVox. Additionally, `syncRepoOpenVox` currently ignores `opts.PruneStale` entirely — no stale pruning happens in OpenVox mode at all.
+
+**Fix**: Add stale directory pruning to OpenVox mode, protecting the remote's default branch (HEAD) instead of `checkout`. Also remove the top-level backward compatibility block in config loading.
+
+---
+
+## Change 1: Add stale pruning to OpenVox mode
+
+### Files: `pkg/gsync/openvox.go`, `pkg/gsync/syncer.go`
+
+#### 1a. Add `resolveDefaultBranch` helper (`pkg/gsync/syncer.go`)
+
+New function after `resolveBranches` (~line 313). Uses the existing `remote.ListContext` pattern to find the HEAD symbolic ref and return the default branch name:
+
+```go
+func resolveDefaultBranch(ctx context.Context, repo *git.Repository, auth transport.AuthMethod) string {
+    remote, err := repo.Remote("origin")
+    if err != nil {
+        return ""
+    }
+    refs, err := remote.ListContext(ctx, &git.ListOptions{Auth: auth})
+    if err != nil {
+        return ""
+    }
+    for _, ref := range refs {
+        if ref.Name() == plumbing.HEAD {
+            return ref.Target().Short()
+        }
+    }
+    return ""
+}
+```
+
+#### 1b. Add `pruneStaleOpenVoxDirs` (`pkg/gsync/openvox.go`)
+
+New function after `pruneOpenVoxDirs` (~line 337). Opens each active branch's repo, checks the tip commit's committer date, removes directories older than `staleAge`, skips the default branch:
+
+```go
+func pruneStaleOpenVoxDirs(repo *config.RepoConfig, activeNames map[string]string, staleAge time.Duration, dryRun bool, defaultBranch string, log *slog.Logger, result *Result) {
+    if staleAge == 0 {
+        return
+    }
+    cutoff := time.Now().Add(-staleAge)
+    for sanitized, original := range activeNames {
+        if original == defaultBranch {
+            log.Info("skipping stale prune of default branch", "branch", original)
+            continue
+        }
+        dirPath := filepath.Join(repo.LocalPath, sanitized)
+        r, err := git.PlainOpen(dirPath)
+        if err != nil {
+            log.Error("failed to open repo for stale check", "dir", sanitized, "error", err)
+            continue
+        }
+        head, err := r.Head()
+        if err != nil {
+            continue
+        }
+        commit, err := r.CommitObject(head.Hash())
+        if err != nil {
+            continue
+        }
+        if commit.Committer.When.Before(cutoff) {
+            if dryRun {
+                log.Info("stale directory would be pruned (dry-run)", "dir", sanitized, "branch", original)
+            } else {
+                if err := os.RemoveAll(dirPath); err != nil {
+                    log.Error("failed to prune stale directory", "dir", sanitized, "error", err)
+                    continue
+                }
+                log.Info("stale directory pruned", "dir", sanitized, "branch", original)
+            }
+            result.BranchesStale = append(result.BranchesStale, original)
+            result.BranchesPruned = append(result.BranchesPruned, original)
+        }
+    }
+}
+```
+
+#### 1c. Wire into `syncRepoOpenVox` (`pkg/gsync/openvox.go:76-79`)
+
+Add after the existing `pruneOpenVoxDirs` block:
+
+```go
+if opts.PruneStale {
+    defaultBranch := resolveDefaultBranch(ctx, resolverRepo, auth)
+    pruneStaleOpenVoxDirs(repo, sanitizedToOriginal, opts.StaleAge, opts.DryRun, defaultBranch, log, &result)
+}
+```
+
+### Tests: `pkg/gsync/openvox_test.go`
+
+- `TestPruneStaleOpenVoxDirs` — create per-branch directories with git repos having old/new commits, verify stale ones are removed and the default branch is preserved
+
+---
+
+## Change 2: Remove top-level backward compatibility
+
+### File: `pkg/config/config.go`
+
+**Delete lines 193-226** — the entire `raw` struct and backward compat block that supports top-level `ssh_key_path`, `ssh_known_hosts`, `local_path`, etc. without the `defaults:` wrapper. Users must use the `defaults:` key.
+
+### File: `pkg/config/config_test.go`
+
+**Delete `TestLoad_FileWithTopLevelSSHKnownHosts`** (lines 662-689) — this test validates the backward compat behavior being removed.
+
+---
+
+## Verification
+
+```bash
+go test ./pkg/gsync/... -v
+go test ./pkg/config/... -v
+go test ./...
+```
+
+
+If you need specific details from before exiting plan mode (like exact code snippets, error messages, or content you generated), read the full transcript at: /home/ashish/.claude/projects/-home-ashish-gitea-gfetch/452c1f21-1e66-463a-8365-ef7ca431eb35.jsonl
+
+---
+
+[Request interrupted by user for tool use]
+
+---
+
+the current code has multiple func which does the same job, like the git fetch is written in openvox and without openvox mode ?

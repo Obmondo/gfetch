@@ -5,8 +5,11 @@
   "branch": "master",
   "checkpoints_count": 0,
   "files_touched": [
+    "pkg/config/config.go",
+    "pkg/config/config_test.go",
     "pkg/gsync/openvox.go",
-    "pkg/gsync/openvox_test.go"
+    "pkg/gsync/openvox_test.go",
+    "pkg/gsync/syncer.go"
   ],
   "sessions": [
     {
@@ -15,13 +18,20 @@
       "context": "/88/0f9abce359/0/context.md",
       "content_hash": "/88/0f9abce359/0/content_hash.txt",
       "prompt": "/88/0f9abce359/0/prompt.txt"
+    },
+    {
+      "metadata": "/88/0f9abce359/1/metadata.json",
+      "transcript": "/88/0f9abce359/1/full.jsonl",
+      "context": "/88/0f9abce359/1/context.md",
+      "content_hash": "/88/0f9abce359/1/content_hash.txt",
+      "prompt": "/88/0f9abce359/1/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 21,
-    "cache_creation_tokens": 27403,
-    "cache_read_tokens": 869495,
-    "output_tokens": 3965,
-    "api_call_count": 19
+    "input_tokens": 47,
+    "cache_creation_tokens": 88146,
+    "cache_read_tokens": 2042813,
+    "output_tokens": 11139,
+    "api_call_count": 40
   }
 }
