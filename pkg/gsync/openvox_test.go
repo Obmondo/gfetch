@@ -20,6 +20,14 @@ func TestSanitizeName(t *testing.T) {
 		{"---", "___"},
 		{"...", "___"},
 		{"a-b-c.d.e", "a_b_c_d_e"},
+		{"feature/my-branch", "feature_my_branch"},
+		{"bugfix/auth/login", "bugfix_auth_login"},
+		{"user@domain", "user_domain"},
+		{"release/v1.0.0-rc1", "release_v1_0_0_rc1"},
+		{"branch~1", "branch_1"},
+		{"branch^2", "branch_2"},
+		{"my branch", "my_branch"},
+		{"a//b", "a__b"},
 	}
 
 	for _, tt := range tests {
@@ -58,6 +66,15 @@ func TestDetectCollisions(t *testing.T) {
 		msg := detectCollisions([]string{"feature.1"}, m)
 		if msg == "" {
 			t.Error("expected collision between feature-1 (branch) and feature.1 (tag)")
+		}
+	})
+
+	t.Run("slash vs hyphen collision", func(t *testing.T) {
+		m := make(map[string]string)
+		names := []string{"feature/auth", "feature-auth"}
+		msg := detectCollisions(names, m)
+		if msg == "" {
+			t.Error("expected collision between feature/auth and feature-auth")
 		}
 	})
 

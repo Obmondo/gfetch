@@ -23,10 +23,16 @@ const (
 	defaultDirMode = 0755
 )
 
-// SanitizeName replaces hyphens and dots with underscores for OpenVox environment names.
+// SanitizeName converts a Git ref name into a valid Puppet environment name.
+// Puppet environments only allow [a-zA-Z0-9_]. Any character outside this set
+// is replaced with an underscore.
 func SanitizeName(name string) string {
-	r := strings.NewReplacer("-", "_", ".", "_")
-	return r.Replace(name)
+	return strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' {
+			return r
+		}
+		return '_'
+	}, name)
 }
 
 // syncRepoOpenVox syncs a repository in OpenVox mode: each matching branch/tag gets
