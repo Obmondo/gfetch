@@ -1,0 +1,51 @@
+Implement the following plan:
+
+# Fix: `gfetch cat` doesn't show global ssh_known_hosts
+
+## Context
+When using directory-mode config with a `global.yaml` that sets `ssh_known_hosts`, the `gfetch cat` command doesn't display the global value. This is because the `Config` struct (`pkg/config/config.go:20-22`) only has `Repos []RepoConfig` — the global defaults from `global.yaml` (or top-level single-file fields) are applied to repos via `applyDefaults` but then discarded. The marshaled output only shows per-repo fields.
+
+Similarly, in single-file mode, the top-level `ssh_known_hosts` is parsed into a local `raw` struct in `loadFile` and not preserved.
+
+## Plan
+
+### 1. Add global defaults to `Config` struct
+**File:** `pkg/config/config.go`
+
+Add a `Defaults` field to the `Config` struct to preserve global defaults:
+
+```go
+type Config struct {
+    Defaults *RepoDefaults `yaml:"defaults,omitempty"`
+    Repos    []RepoConfig  `yaml:"repos"`
+}
+```
+
+### 2. Preserve defaults during loading
+
+**In `loadDir`** (line ~156): After loading `global.yaml` into `defaults`, store it on `cfg.Defaults`:
+```go
+cfg.Defaults = &defaults
+```
+
+**In `loadFile`** (line ~127): After parsing top-level `ssh_known_hosts`, store it similarly:
+```go
+if raw.SSHKnownHosts != "" {
+    cfg.Defaults = &RepoDefaults{SSHKnownHosts: raw.SSHKnownHosts}
+}
+```
+
+### 3. No changes needed to `cat.go`
+The `cat` command already marshals the full `Config` struct, so the new `Defaults` field will automatically appear in the YAML output.
+
+## Files to modify
+- `pkg/config/config.go` — Add `Defaults` field to `Config`, preserve it in `loadDir` and `loadFile`
+
+## Verification
+1. Create a directory-mode config with `global.yaml` containing `ssh_known_hosts`
+2. Run `gfetch cat --config <dir>` and verify the global `ssh_known_hosts` appears in the output under `defaults:`
+3. Run `gfetch validate-config` to ensure no validation regressions
+4. Run existing tests: `go test ./...`
+
+
+If you need specific details from before exiting plan mode (like exact code snippets, error messages, or content you generated), read the full transcript at: /home/ashish/.claude/projects/-home-ashish-gitea-gfetch/623fbeec-d3b4-4180-9ac9-a299d30fe8ea.jsonl
