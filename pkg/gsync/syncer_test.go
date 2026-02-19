@@ -38,8 +38,8 @@ func TestMatchesAnyPattern(t *testing.T) {
 		{"v0.1-beta", true},
 	}
 	for _, tt := range tests {
-		if got := matchesAnyPattern(tt.name, patterns); got != tt.expect {
-			t.Errorf("matchesAnyPattern(%q) = %v, want %v", tt.name, got, tt.expect)
+		if got := config.MatchesAny(tt.name, patterns); got != tt.expect {
+			t.Errorf("config.MatchesAny(%q) = %v, want %v", tt.name, got, tt.expect)
 		}
 	}
 }
@@ -66,8 +66,8 @@ func TestMatchesAnyPattern_Branches(t *testing.T) {
 		{"main2", false},
 	}
 	for _, tt := range tests {
-		if got := matchesAnyPattern(tt.name, patterns); got != tt.expect {
-			t.Errorf("matchesAnyPattern(%q) = %v, want %v", tt.name, got, tt.expect)
+		if got := config.MatchesAny(tt.name, patterns); got != tt.expect {
+			t.Errorf("config.MatchesAny(%q) = %v, want %v", tt.name, got, tt.expect)
 		}
 	}
 }
@@ -411,4 +411,118 @@ func TestPruneStaleBranches(t *testing.T) {
 	if !found {
 		t.Errorf("expected %s in pruned list, got %v", staleBranch, result.BranchesPruned)
 	}
+}
+func TestSyncSkippingStaleBranches(t *testing.T) {
+	bareDir := t.TempDir()
+	localDir := filepath.Join(t.TempDir(), "local") // Subdir to ensure it doesn't exist yet
+
+	// Init bare remote.
+	_, err := git.PlainInit(bareDir, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Create commits using a temp clone
+	tmpClone := t.TempDir()
+	r, err := git.PlainInit(tmpClone, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = r.CreateRemote(&gitconfig.RemoteConfig{
+		Name: "origin",
+		URLs: []string{bareDir},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wt, err := r.Worktree()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Create root commit
+	os.WriteFile(filepath.Join(tmpClone, "README"), []byte("root"), 0644)
+	wt.Add("README")
+	rootSig := &object.Signature{Name: "root", Email: "root@test.com", When: time.Now().Add(-400 * 24 * time.Hour)}
+	wt.Commit("root", &git.CommitOptions{Author: rootSig, Committer: rootSig})
+
+	// 1. Create stale branch
+	if err := wt.Checkout(&git.CheckoutOptions{Branch: plumbing.NewBranchReferenceName("stale-branch"), Create: true}); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(tmpClone, "stale"), []byte("stale"), 0644)
+	wt.Add("stale")
+	past := time.Now().Add(-365 * 24 * time.Hour)
+	staleSig := &object.Signature{Name: "stale", Email: "stale@test.com", When: past}
+	staleHash, err := wt.Commit("stale commit", &git.CommitOptions{Author: staleSig, Committer: staleSig})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Push(&git.PushOptions{RemoteName: "origin", RefSpecs: []gitconfig.RefSpec{"refs/heads/stale-branch:refs/heads/stale-branch"}}); err != nil {
+		t.Fatal(err)
+	}
+
+	// 2. Create fresh branch
+	if err := wt.Checkout(&git.CheckoutOptions{Branch: plumbing.NewBranchReferenceName("fresh-branch"), Create: true}); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(tmpClone, "fresh"), []byte("fresh"), 0644)
+	wt.Add("fresh")
+	freshSig := &object.Signature{Name: "fresh", Email: "fresh@test.com", When: time.Now()}
+	freshHash, err := wt.Commit("fresh commit", &git.CommitOptions{Author: freshSig, Committer: freshSig})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Push(&git.PushOptions{RemoteName: "origin", RefSpecs: []gitconfig.RefSpec{"refs/heads/fresh-branch:refs/heads/fresh-branch"}}); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Logf("Stale hash: %s", staleHash)
+	t.Logf("Fresh hash: %s", freshHash)
+
+	// Setup Config
+	syncer := New(slog.Default())
+	repoConfig := &config.RepoConfig{
+		Name:       "test-skip",
+		URL:        bareDir,
+		LocalPath:  localDir,
+		Branches:   []config.Pattern{{Raw: "*"}},
+		PruneStale: true,
+		StaleAge:   config.Duration(180 * 24 * time.Hour), // 6 months
+	}
+
+	opts := SyncOptions{
+		Prune:      true,
+		PruneStale: true,
+		StaleAge:   180 * 24 * time.Hour,
+	}
+
+	// Run Sync
+	result := syncer.SyncRepo(context.Background(), repoConfig, opts)
+	if result.Err != nil {
+		t.Fatalf("SyncRepo failed: %v", result.Err)
+	}
+
+	// Verify local repo
+	local, err := git.PlainOpen(localDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Check fresh branch exists
+	if _, err := local.Reference(plumbing.NewBranchReferenceName("fresh-branch"), true); err != nil {
+		t.Error("fresh-branch should exist")
+	}
+
+	// Check stale branch does NOT exist
+	if _, err := local.Reference(plumbing.NewBranchReferenceName("stale-branch"), true); err == nil {
+		t.Error("stale-branch should NOT exist (should have been skipped)")
+	} else if err != plumbing.ErrReferenceNotFound {
+		t.Errorf("unexpected error checking stale-branch: %v", err)
+	}
+
+	// Check if stale branch was pruned or stale list in result?
+	// Since we skipped it, it shouldn't be in Pruned or Stale lists (as those operate on local branches)
+	// But we can check logs if we captured them, or just rely on existence.
 }

@@ -11,7 +11,6 @@ import (
 	gitconfig "github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/transport"
-	"github.com/obmondo/gfetch/pkg/config"
 	"github.com/obmondo/gfetch/pkg/telemetry"
 )
 
@@ -58,63 +57,6 @@ func syncBranch(ctx context.Context, repo *git.Repository, branch, _ string, aut
 	return true, nil
 }
 
-// findObsoleteBranches returns local branches that don't match any configured pattern.
-func findObsoleteBranches(repo *git.Repository, patterns []config.Pattern) ([]string, error) {
-	branches, err := repo.Branches()
-	if err != nil {
-		return nil, fmt.Errorf("listing local branches: %w", err)
-	}
-
-	var obsolete []string
-	err = branches.ForEach(func(ref *plumbing.Reference) error {
-		name := ref.Name().Short()
-		if !matchesAnyPattern(name, patterns) {
-			obsolete = append(obsolete, name)
-		}
-		return nil
-	})
-	if err != nil {
-		return nil, fmt.Errorf("iterating local branches: %w", err)
-	}
-	return obsolete, nil
-}
-
-// findStaleBranches returns local branches that match configured patterns but have no commits in the last age duration.
-func findStaleBranches(repo *git.Repository, patterns []config.Pattern, age time.Duration) ([]string, error) {
-	if age == 0 {
-		return nil, nil
-	}
-
-	branches, err := repo.Branches()
-	if err != nil {
-		return nil, fmt.Errorf("listing local branches: %w", err)
-	}
-
-	var stale []string
-	cutoff := time.Now().Add(-age)
-
-	err = branches.ForEach(func(ref *plumbing.Reference) error {
-		name := ref.Name().Short()
-		if !matchesAnyPattern(name, patterns) {
-			return nil
-		}
-
-		commit, err := repo.CommitObject(ref.Hash())
-		if err != nil {
-			return fmt.Errorf("getting commit for %s: %w", name, err)
-		}
-
-		if commit.Committer.When.Before(cutoff) {
-			stale = append(stale, name)
-		}
-		return nil
-	})
-	if err != nil {
-		return nil, fmt.Errorf("iterating local branches: %w", err)
-	}
-	return stale, nil
-}
-
 // checkoutRef checks out the named branch or tag and hard-resets the working tree.
 func checkoutRef(repo *git.Repository, name string, log *slog.Logger) error {
 	// Try branch first, then tag.
@@ -156,21 +98,5 @@ func checkoutRef(repo *git.Repository, name string, log *slog.Logger) error {
 	}
 
 	log.Info("checked out ref", "ref", name, "hash", hash.String()[:12])
-	return nil
-}
-
-// deleteBranch removes a local branch and its remote tracking ref.
-func deleteBranch(repo *git.Repository, branch string) error {
-	localRef := plumbing.NewBranchReferenceName(branch)
-	if err := repo.Storer.RemoveReference(localRef); err != nil {
-		return fmt.Errorf("deleting local branch ref %s: %w", branch, err)
-	}
-
-	remoteRef := plumbing.NewRemoteReferenceName("origin", branch)
-	if _, err := repo.Reference(remoteRef, true); err == nil {
-		if err := repo.Storer.RemoveReference(remoteRef); err != nil {
-			return fmt.Errorf("deleting remote tracking ref %s: %w", branch, err)
-		}
-	}
 	return nil
 }

@@ -58,7 +58,7 @@ func resolveAndFilterTags(ctx context.Context, repo *git.Repository, repoConfig 
 			continue
 		}
 		tagName := name.Short()
-		if !matchesAnyPattern(tagName, repoConfig.Tags) {
+		if !config.MatchesAny(tagName, repoConfig.Tags) {
 			continue
 		}
 
@@ -105,7 +105,7 @@ func handleObsoleteTags(repo *git.Repository, repoConfig *config.RepoConfig, pru
 	}
 	err = tagRefs.ForEach(func(ref *plumbing.Reference) error {
 		tagName := ref.Name().Short()
-		if !matchesAnyPattern(tagName, repoConfig.Tags) {
+		if !config.MatchesAny(tagName, repoConfig.Tags) {
 			obsolete = append(obsolete, tagName)
 		}
 		return nil

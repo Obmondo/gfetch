@@ -126,8 +126,8 @@ func (p *Pattern) Compile() error {
 	return nil
 }
 
-// matchesAny returns true if the given name matches any of the patterns.
-func matchesAny(name string, patterns []Pattern) bool {
+// MatchesAny returns true if the given name matches any of the patterns.
+func MatchesAny(name string, patterns []Pattern) bool {
 	for i := range patterns {
 		if patterns[i].Matches(name) {
 			return true
@@ -188,41 +188,6 @@ func loadFile(path string) (*Config, error) {
 	var cfg Config
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parsing config file: %w", err)
-	}
-
-	// Also support top-level fields for backward compatibility.
-	var raw struct {
-		SSHKeyPath    string    `yaml:"ssh_key_path"`
-		SSHKnownHosts string    `yaml:"ssh_known_hosts"`
-		LocalPath     string    `yaml:"local_path"`
-		PollInterval  Duration  `yaml:"poll_interval"`
-		Branches      []Pattern `yaml:"branches"`
-		Tags          []Pattern `yaml:"tags"`
-		OpenVox       *bool     `yaml:"openvox"`
-		PruneStale    *bool     `yaml:"prune_stale"`
-		StaleAge      Duration  `yaml:"stale_age"`
-	}
-	if err := yaml.Unmarshal(data, &raw); err == nil {
-		// If explicit defaults key is missing, but top-level fields are present, use them.
-		if cfg.Defaults == nil {
-			hasTopLevel := raw.SSHKeyPath != "" || raw.SSHKnownHosts != "" || raw.LocalPath != "" ||
-				raw.PollInterval != 0 || len(raw.Branches) > 0 || len(raw.Tags) > 0 || raw.OpenVox != nil ||
-				raw.PruneStale != nil || raw.StaleAge != 0
-
-			if hasTopLevel {
-				cfg.Defaults = &RepoDefaults{
-					SSHKeyPath:    raw.SSHKeyPath,
-					SSHKnownHosts: raw.SSHKnownHosts,
-					LocalPath:     raw.LocalPath,
-					PollInterval:  Duration(raw.PollInterval),
-					Branches:      raw.Branches,
-					Tags:          raw.Tags,
-					OpenVox:       raw.OpenVox,
-					PruneStale:    raw.PruneStale,
-					StaleAge:      Duration(raw.StaleAge),
-				}
-			}
-		}
 	}
 
 	// Apply defaults to each repo.
@@ -378,7 +343,7 @@ func (c *Config) validateRepo(r *RepoConfig, index int, names map[string]bool) e
 	}
 
 	if r.Checkout != "" && !r.OpenVox {
-		if !matchesAny(r.Checkout, r.Branches) && !matchesAny(r.Checkout, r.Tags) {
+		if !MatchesAny(r.Checkout, r.Branches) && !MatchesAny(r.Checkout, r.Tags) {
 			return fmt.Errorf("repo %s: checkout %q does not match any configured branch or tag pattern", r.Name, r.Checkout)
 		}
 	}

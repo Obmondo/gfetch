@@ -64,7 +64,6 @@ func (s *Syncer) SyncRepo(ctx context.Context, repo *config.RepoConfig, opts Syn
 	result := Result{RepoName: repo.Name}
 	log := s.logger.With("repo", repo.Name)
 
-	// Merge repo-specific config into options if not explicitly set.
 	if repo.PruneStale && !opts.PruneStale {
 		opts.PruneStale = true
 	}
@@ -145,7 +144,13 @@ func (s *Syncer) syncBranches(ctx context.Context, r *git.Repository, repo *conf
 		return
 	}
 
-	for _, branch := range branches {
+	for _, ref := range branches {
+		branch := ref.Name().Short()
+
+		if opts.PruneStale && opts.Prune && IsStale(ctx, r, ref, opts.StaleAge, auth, log) {
+			continue
+		}
+
 		synced, err := syncBranch(ctx, r, branch, repo.URL, auth, repo.Name, log)
 		if err != nil {
 			log.Error("branch sync failed", "branch", branch, "error", err)
@@ -186,14 +191,14 @@ func (*Syncer) pruneStaleBranches(r *git.Repository, repo *config.RepoConfig, st
 		if opts.DryRun {
 			log.Info("stale branch would be pruned (dry-run)", "branch", branch)
 			result.BranchesPruned = append(result.BranchesPruned, branch)
-		} else {
-			if err := deleteBranch(r, branch); err != nil {
-				log.Error("failed to prune stale branch", "branch", branch, "error", err)
-				continue
-			}
-			log.Info("stale branch pruned", "branch", branch)
-			result.BranchesPruned = append(result.BranchesPruned, branch)
+			continue
 		}
+		if err := deleteBranch(r, branch); err != nil {
+			log.Error("failed to prune stale branch", "branch", branch, "error", err)
+			continue
+		}
+		log.Info("stale branch pruned", "branch", branch)
+		result.BranchesPruned = append(result.BranchesPruned, branch)
 	}
 }
 
@@ -205,7 +210,7 @@ func (*Syncer) pruneBranches(r *git.Repository, repo *config.RepoConfig, obsolet
 		}
 		switch {
 		case !opts.Prune:
-			// just reported as obsolete, no action
+			// only report as obsolete
 		case opts.DryRun:
 			log.Info("branch would be pruned (dry-run)", "branch", branch)
 			result.BranchesPruned = append(result.BranchesPruned, branch)
@@ -249,9 +254,9 @@ func (*Syncer) handleCheckout(r *git.Repository, repo *config.RepoConfig, log *s
 		if result.Err == nil {
 			result.Err = fmt.Errorf("checkout %s: %w", repo.Checkout, err)
 		}
-	} else {
-		result.Checkout = repo.Checkout
+		return
 	}
+	result.Checkout = repo.Checkout
 }
 
 // ensureCloned opens an existing repo or inits an empty one with the remote configured.
@@ -275,49 +280,4 @@ func ensureCloned(_ context.Context, repo *config.RepoConfig, _ transport.AuthMe
 	}
 
 	return r, nil
-}
-
-// resolveBranches lists remote branches and returns names matching any of the configured patterns.
-func resolveBranches(ctx context.Context, repo *git.Repository, patterns []config.Pattern, auth transport.AuthMethod) ([]string, error) {
-	remote, err := repo.Remote("origin")
-	if err != nil {
-		return nil, fmt.Errorf("getting remote: %w", err)
-	}
-
-	refs, err := remote.ListContext(ctx, &git.ListOptions{Auth: auth})
-	if err != nil {
-		return nil, fmt.Errorf("listing remote refs: %w", err)
-	}
-
-	var matched []string
-	seen := make(map[string]bool)
-	for _, ref := range refs {
-		name := ref.Name()
-		if name.IsBranch() {
-			branchName := name.Short()
-			if seen[branchName] {
-				continue
-			}
-			if matchesAnyPattern(branchName, patterns) {
-				matched = append(matched, branchName)
-				seen[branchName] = true
-			}
-		}
-	}
-
-	// Also match against symbolic refs like HEAD that resolve to branches.
-	// For refs/heads/* references, Short() already gives us the branch name.
-	// If a pattern is a literal (non-regex) and didn't match any remote branch, skip silently.
-
-	return matched, nil
-}
-
-// matchesAnyPattern returns true if the given name matches any of the patterns.
-func matchesAnyPattern(name string, patterns []config.Pattern) bool {
-	for i := range patterns {
-		if patterns[i].Matches(name) {
-			return true
-		}
-	}
-	return false
 }

@@ -659,31 +659,3 @@ repos:
 	}
 }
 
-func TestLoad_FileWithTopLevelSSHKnownHosts(t *testing.T) {
-	content := `ssh_known_hosts: |
-  example.com ssh-ed25519 AAAA...
-
-repos:
-  - name: test-repo
-    url: git@github.com:test/repo.git
-    ssh_key_path: /tmp/test_key
-    local_path: /tmp/test_repo
-    poll_interval: 1m
-    branches:
-      - main
-`
-	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "config.yaml")
-	if err := os.WriteFile(cfgPath, []byte(content), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	cfg, err := Load(cfgPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if cfg.Repos[0].SSHKnownHosts == "" {
-		t.Error("expected top-level ssh_known_hosts to be applied to repo")
-	}
-}

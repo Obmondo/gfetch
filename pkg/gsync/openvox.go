@@ -67,7 +67,7 @@ func (s *Syncer) syncRepoOpenVox(ctx context.Context, repo *config.RepoConfig, o
 	// Track sanitized name -> original name for collision detection.
 	sanitizedToOriginal := make(map[string]string)
 
-	if err := s.syncOpenVoxBranches(ctx, resolverRepo, repo, auth, sanitizedToOriginal, log, &result); err != nil {
+	if err := s.syncOpenVoxBranches(ctx, resolverRepo, repo, opts, auth, sanitizedToOriginal, log, &result); err != nil {
 		return result
 	}
 
@@ -78,11 +78,17 @@ func (s *Syncer) syncRepoOpenVox(ctx context.Context, repo *config.RepoConfig, o
 		pruneOpenVoxDirs(repo.LocalPath, sanitizedToOriginal, opts.DryRun, log, &result)
 	}
 
+	// Prune directories whose latest commit is older than staleAge.
+	if opts.PruneStale {
+		defaultBranch := resolveDefaultBranch(ctx, resolverRepo, auth)
+		pruneStaleOpenVoxDirs(repo, sanitizedToOriginal, opts.StaleAge, opts.DryRun, defaultBranch, log, &result)
+	}
+
 	s.recordOpenVoxMetrics(repo, start, &result, log)
 	return result
 }
 
-func (s *Syncer) syncOpenVoxBranches(ctx context.Context, resolverRepo *git.Repository, repo *config.RepoConfig, auth transport.AuthMethod, sanitizedToOriginal map[string]string, log *slog.Logger, result *Result) error {
+func (s *Syncer) syncOpenVoxBranches(ctx context.Context, resolverRepo *git.Repository, repo *config.RepoConfig, opts SyncOptions, auth transport.AuthMethod, sanitizedToOriginal map[string]string, log *slog.Logger, result *Result) error {
 	if len(repo.Branches) == 0 {
 		return nil
 	}
@@ -95,12 +101,23 @@ func (s *Syncer) syncOpenVoxBranches(ctx context.Context, resolverRepo *git.Repo
 		return result.Err
 	}
 
-	if collision := detectCollisions(branches, sanitizedToOriginal); collision != "" {
+	var branchNames []string
+	for _, b := range branches {
+		branchNames = append(branchNames, b.Name().Short())
+	}
+
+	if collision := detectCollisions(branchNames, sanitizedToOriginal); collision != "" {
 		result.Err = fmt.Errorf("name collision after sanitization: %s", collision)
 		return result.Err
 	}
 
-	for _, branch := range branches {
+	for _, ref := range branches {
+		branch := ref.Name().Short()
+
+		if opts.PruneStale && opts.Prune && IsStale(ctx, resolverRepo, ref, opts.StaleAge, auth, log) {
+			continue
+		}
+
 		s.syncOneOpenVoxBranch(ctx, repo, branch, auth, log, result)
 	}
 	return nil
@@ -237,36 +254,6 @@ func ensureResolverRepo(_ context.Context, path, remoteURL string, _ transport.A
 	return r, nil
 }
 
-// resolveTags lists remote tags and returns names matching any of the configured patterns.
-func resolveTags(ctx context.Context, repo *git.Repository, patterns []config.Pattern, auth transport.AuthMethod) ([]string, error) {
-	remote, err := repo.Remote("origin")
-	if err != nil {
-		return nil, fmt.Errorf("getting remote: %w", err)
-	}
-
-	refs, err := remote.ListContext(ctx, &git.ListOptions{Auth: auth})
-	if err != nil {
-		return nil, fmt.Errorf("listing remote refs: %w", err)
-	}
-
-	var matched []string
-	seen := make(map[string]bool)
-	for _, ref := range refs {
-		name := ref.Name()
-		if name.IsTag() {
-			tagName := name.Short()
-			if seen[tagName] {
-				continue
-			}
-			if matchesAnyPattern(tagName, patterns) {
-				matched = append(matched, tagName)
-				seen[tagName] = true
-			}
-		}
-	}
-	return matched, nil
-}
-
 // syncOpenVoxTag fetches a single tag into a per-directory repo and checks it out.
 func syncOpenVoxTag(ctx context.Context, r *git.Repository, tag string, auth transport.AuthMethod, log *slog.Logger) error {
 	refSpec := gitconfig.RefSpec(fmt.Sprintf("+refs/tags/%s:refs/tags/%s", tag, tag))
@@ -300,38 +287,44 @@ func detectCollisions(names []string, sanitizedToOriginal map[string]string) str
 	return ""
 }
 
-// pruneOpenVoxDirs removes directories under basePath that don't correspond to any active ref.
-func pruneOpenVoxDirs(basePath string, activeNames map[string]string, dryRun bool, log *slog.Logger, result *Result) {
-	entries, err := os.ReadDir(basePath)
-	if err != nil {
-		log.Error("failed to read local_path for pruning", "path", basePath, "error", err)
+// pruneStaleOpenVoxDirs removes per-branch directories whose tip commit is older than staleAge.
+// The remote's default branch is protected from stale pruning.
+func pruneStaleOpenVoxDirs(repo *config.RepoConfig, activeNames map[string]string, staleAge time.Duration, dryRun bool, defaultBranch string, log *slog.Logger, result *Result) {
+	if staleAge == 0 {
 		return
 	}
-
-	for _, entry := range entries {
-		if !entry.IsDir() {
+	cutoff := time.Now().Add(-staleAge)
+	for sanitized, original := range activeNames {
+		if original == defaultBranch {
+			log.Info("skipping stale prune of default branch", "branch", original)
 			continue
 		}
-		name := entry.Name()
-		// Skip hidden directories (includes .gfetch-meta).
-		if strings.HasPrefix(name, ".") {
+		dirPath := filepath.Join(repo.LocalPath, sanitized)
+		r, err := git.PlainOpen(dirPath)
+		if err != nil {
+			log.Error("failed to open repo for stale check", "dir", sanitized, "error", err)
 			continue
 		}
-		if _, active := activeNames[name]; active {
+		head, err := r.Head()
+		if err != nil {
 			continue
 		}
-
-		dirPath := filepath.Join(basePath, name)
-		if dryRun {
-			log.Info("directory would be pruned (dry-run)", "dir", name)
-		} else {
-			if err := os.RemoveAll(dirPath); err != nil {
-				log.Error("failed to prune directory", "dir", name, "error", err)
-				continue
+		commit, err := r.CommitObject(head.Hash())
+		if err != nil {
+			continue
+		}
+		if commit.Committer.When.Before(cutoff) {
+			if dryRun {
+				log.Info("stale directory would be pruned (dry-run)", "dir", sanitized, "branch", original)
+			} else {
+				if err := os.RemoveAll(dirPath); err != nil {
+					log.Error("failed to prune stale directory", "dir", sanitized, "error", err)
+					continue
+				}
+				log.Info("stale directory pruned", "dir", sanitized, "branch", original)
 			}
-			log.Info("directory pruned", "dir", name)
+			result.BranchesStale = append(result.BranchesStale, original)
+			result.BranchesPruned = append(result.BranchesPruned, original)
 		}
-
-		result.BranchesPruned = append(result.BranchesPruned, name)
 	}
 }
