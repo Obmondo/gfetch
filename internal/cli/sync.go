@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -95,49 +96,104 @@ func findRepo(cfg *config.Config, name string) *config.RepoConfig {
 }
 
 func printResult(cmd *cobra.Command, r gsync.Result, dryRun bool) {
-	cmd.Printf("Repo: %s\n", r.RepoName)
-	if len(r.BranchesSynced) > 0 {
-		cmd.Printf("  Branches synced: %v\n", r.BranchesSynced)
-	}
-	if len(r.BranchesUpToDate) > 0 {
-		cmd.Printf("  Branches up-to-date: %v\n", r.BranchesUpToDate)
-	}
-	if len(r.BranchesFailed) > 0 {
-		cmd.Printf("  Branches failed: %v\n", r.BranchesFailed)
-	}
-	if len(r.BranchesObsolete) > 0 {
-		cmd.Printf("  Branches obsolete: %v\n", r.BranchesObsolete)
-	}
-	if len(r.BranchesStale) > 0 {
-		cmd.Printf("  Branches stale: %v\n", r.BranchesStale)
-	}
-	if len(r.BranchesPruned) > 0 {
-		if dryRun {
-			cmd.Printf("  Branches to prune: %v\n", r.BranchesPruned)
-		} else {
-			cmd.Printf("  Branches pruned: %v\n", r.BranchesPruned)
-		}
-	}
-	if len(r.TagsFetched) > 0 {
-		cmd.Printf("  Tags fetched: %v\n", r.TagsFetched)
-	}
-	if len(r.TagsUpToDate) > 0 {
-		cmd.Printf("  Tags up-to-date: %v\n", r.TagsUpToDate)
-	}
-	if len(r.TagsObsolete) > 0 {
-		cmd.Printf("  Tags obsolete: %v\n", r.TagsObsolete)
-	}
-	if len(r.TagsPruned) > 0 {
-		if dryRun {
-			cmd.Printf("  Tags to prune: %v\n", r.TagsPruned)
-		} else {
-			cmd.Printf("  Tags pruned: %v\n", r.TagsPruned)
-		}
-	}
+	cmd.Printf("Repo: %s%s\n", r.RepoName, getSummary(r))
+
+	printSection(cmd, "Branches", []statusLine{
+		{"✓", "synced", r.BranchesSynced, false},
+		{"!", "failed", r.BranchesFailed, false},
+		{"-", "up-to-date", r.BranchesUpToDate, true},
+		{"!", "obsolete", r.BranchesObsolete, false},
+		{"-", "stale", r.BranchesStale, true},
+		{
+			getPruneSymbol(dryRun),
+			getPruneLabel(dryRun),
+			r.BranchesPruned,
+			false,
+		},
+	})
+
+	printSection(cmd, "Tags", []statusLine{
+		{"✓", "fetched", r.TagsFetched, false},
+		{"!", "failed", r.TagsFailed, false},
+		{"-", "up-to-date", r.TagsUpToDate, true},
+		{"!", "obsolete", r.TagsObsolete, false},
+		{
+			getPruneSymbol(dryRun),
+			getPruneLabel(dryRun),
+			r.TagsPruned,
+			false,
+		},
+	})
+
 	if r.Checkout != "" {
-		cmd.Printf("  Checkout: %s\n", r.Checkout)
+		cmd.Printf("  ✓ Checkout: %s\n", r.Checkout)
 	}
 	if r.Err != nil {
-		cmd.Printf("  Error: %v\n", r.Err)
+		cmd.Printf("  ! Error: %v\n", r.Err)
 	}
+}
+
+type statusLine struct {
+	symbol  string
+	label   string
+	items   []string
+	isQuiet bool
+}
+
+func getSummary(r gsync.Result) string {
+	branchSuccess := len(r.BranchesSynced) + len(r.BranchesUpToDate)
+	branchTotal := branchSuccess + len(r.BranchesFailed)
+	tagSuccess := len(r.TagsFetched) + len(r.TagsUpToDate)
+	tagTotal := tagSuccess + len(r.TagsFailed)
+
+	if branchTotal > 0 && tagTotal > 0 {
+		return fmt.Sprintf(" [%d/%d branches, %d/%d tags]", branchSuccess, branchTotal, tagSuccess, tagTotal)
+	}
+	if branchTotal > 0 {
+		return fmt.Sprintf(" [%d/%d branches]", branchSuccess, branchTotal)
+	}
+	if tagTotal > 0 {
+		return fmt.Sprintf(" [%d/%d tags]", tagSuccess, tagTotal)
+	}
+	return ""
+}
+
+func printSection(cmd *cobra.Command, title string, lines []statusLine) {
+	hasContent := false
+	for _, line := range lines {
+		if len(line.items) > 0 {
+			hasContent = true
+			break
+		}
+	}
+
+	if !hasContent {
+		return
+	}
+
+	cmd.Printf("  %s:\n", title)
+	for _, line := range lines {
+		if len(line.items) == 0 {
+			continue
+		}
+		content := strings.Join(line.items, ", ")
+		if line.isQuiet && len(line.items) > 5 {
+			content = fmt.Sprintf("%d items", len(line.items))
+		}
+		cmd.Printf("    %s %s: %s\n", line.symbol, line.label, content)
+	}
+}
+
+func getPruneSymbol(dryRun bool) string {
+	if dryRun {
+		return "!"
+	}
+	return "✓"
+}
+
+func getPruneLabel(dryRun bool) string {
+	if dryRun {
+		return "to prune (dry-run)"
+	}
+	return "pruned"
 }

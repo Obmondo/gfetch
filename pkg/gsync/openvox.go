@@ -101,12 +101,14 @@ func (s *Syncer) syncOpenVoxBranches(ctx context.Context, resolverRepo *git.Repo
 		return result.Err
 	}
 
+	log.Info("syncing branches", "count", len(branches))
 	var branchNames []string
 	for _, b := range branches {
 		branchNames = append(branchNames, b.Name().Short())
 	}
 
 	if collision := detectCollisions(branchNames, sanitizedToOriginal); collision != "" {
+
 		result.Err = fmt.Errorf("name collision after sanitization: %s", collision)
 		return result.Err
 	}
@@ -170,6 +172,7 @@ func (s *Syncer) syncOpenVoxTags(ctx context.Context, resolverRepo *git.Reposito
 		return
 	}
 
+	log.Info("syncing tags", "count", len(tags))
 	if collision := detectCollisions(tags, sanitizedToOriginal); collision != "" {
 		result.Err = fmt.Errorf("name collision after sanitization: %s", collision)
 		return
@@ -205,6 +208,7 @@ func (*Syncer) syncOneOpenVoxTag(ctx context.Context, repo *config.RepoConfig, t
 		if result.Err == nil {
 			result.Err = fmt.Errorf("tag sync %s: %w", tag, err)
 		}
+		result.TagsFailed = append(result.TagsFailed, tag)
 		return
 	}
 
@@ -217,15 +221,38 @@ func (*Syncer) recordOpenVoxMetrics(repo *config.RepoConfig, start time.Time, re
 
 	if result.Err != nil {
 		telemetry.LastFailureTimestamp.WithLabelValues(repo.Name).Set(float64(time.Now().Unix()))
+		log.Error("openvox sync failed", "error", result.Err, "duration", duration)
 	} else {
 		telemetry.SyncSuccessTotal.WithLabelValues(repo.Name).Inc()
 		telemetry.LastSuccessTimestamp.WithLabelValues(repo.Name).Set(float64(time.Now().Unix()))
+
+		branchSuccess := len(result.BranchesSynced) + len(result.BranchesUpToDate)
+		branchTotal := branchSuccess + len(result.BranchesFailed)
+		tagSuccess := len(result.TagsFetched) + len(result.TagsUpToDate)
+		tagTotal := tagSuccess + len(result.TagsFailed)
+
+		msg := "openvox sync successful"
+		level := slog.LevelInfo
+		if len(result.BranchesFailed) > 0 || len(result.TagsFailed) > 0 {
+			msg = "openvox sync partially done"
+			level = slog.LevelWarn
+		}
+
+		attrs := []any{"duration", duration}
+		if branchTotal > 0 {
+			attrs = append(attrs, "branches", fmt.Sprintf("[%d/%d]", branchSuccess, branchTotal))
+		}
+		if tagTotal > 0 {
+			attrs = append(attrs, "tags", fmt.Sprintf("[%d/%d]", tagSuccess, tagTotal))
+		}
+		log.Log(context.Background(), level, msg, attrs...)
 	}
 
-	log.Info("openvox sync complete",
+	log.Debug("openvox sync details",
 		"branches_synced", len(result.BranchesSynced),
 		"branches_failed", len(result.BranchesFailed),
 		"tags_fetched", len(result.TagsFetched),
+		"tags_failed", len(result.TagsFailed),
 		"branches_pruned", len(result.BranchesPruned),
 		"tags_pruned", len(result.TagsPruned),
 		"duration", duration,

@@ -30,6 +30,7 @@ type Result struct {
 	BranchesFailed   []string
 	TagsFetched      []string
 	TagsUpToDate     []string
+	TagsFailed       []string
 	TagsObsolete     []string
 	TagsPruned       []string
 	BranchesObsolete []string
@@ -72,7 +73,6 @@ func (s *Syncer) SyncRepo(ctx context.Context, repo *config.RepoConfig, opts Syn
 	}
 
 	telemetry.SyncsTotal.WithLabelValues(repo.Name).Inc()
-	log.Info("starting sync")
 
 	if repo.IsHTTPS() {
 		if err := config.CheckHTTPSAccessible(repo.Name, repo.URL); err != nil {
@@ -84,7 +84,7 @@ func (s *Syncer) SyncRepo(ctx context.Context, repo *config.RepoConfig, opts Syn
 	}
 
 	if repo.OpenVox {
-		log.Info("using openvox mode")
+		log.Debug("using openvox mode")
 		return s.syncRepoOpenVox(ctx, repo, opts)
 	}
 
@@ -111,12 +111,34 @@ func (s *Syncer) SyncRepo(ctx context.Context, repo *config.RepoConfig, opts Syn
 
 	if result.Err != nil {
 		telemetry.LastFailureTimestamp.WithLabelValues(repo.Name).Set(float64(time.Now().Unix()))
+		log.Error("sync failed", "error", result.Err, "duration", duration)
 	} else {
 		telemetry.SyncSuccessTotal.WithLabelValues(repo.Name).Inc()
 		telemetry.LastSuccessTimestamp.WithLabelValues(repo.Name).Set(float64(time.Now().Unix()))
+
+		branchSuccess := len(result.BranchesSynced) + len(result.BranchesUpToDate)
+		branchTotal := branchSuccess + len(result.BranchesFailed)
+		tagSuccess := len(result.TagsFetched) + len(result.TagsUpToDate)
+		tagTotal := tagSuccess + len(result.TagsFailed)
+
+		msg := "sync successful"
+		level := slog.LevelInfo
+		if len(result.BranchesFailed) > 0 || len(result.TagsFailed) > 0 {
+			msg = "sync partially done"
+			level = slog.LevelWarn
+		}
+
+		attrs := []any{"duration", duration}
+		if branchTotal > 0 {
+			attrs = append(attrs, "branches", fmt.Sprintf("[%d/%d]", branchSuccess, branchTotal))
+		}
+		if tagTotal > 0 {
+			attrs = append(attrs, "tags", fmt.Sprintf("[%d/%d]", tagSuccess, tagTotal))
+		}
+		log.Log(ctx, level, msg, attrs...)
 	}
 
-	log.Info("sync complete",
+	log.Debug("sync details",
 		"branches_synced", len(result.BranchesSynced),
 		"branches_up_to_date", len(result.BranchesUpToDate),
 		"branches_failed", len(result.BranchesFailed),
@@ -124,6 +146,7 @@ func (s *Syncer) SyncRepo(ctx context.Context, repo *config.RepoConfig, opts Syn
 		"branches_pruned", len(result.BranchesPruned),
 		"tags_fetched", len(result.TagsFetched),
 		"tags_up_to_date", len(result.TagsUpToDate),
+		"tags_failed", len(result.TagsFailed),
 		"tags_obsolete", len(result.TagsObsolete),
 		"tags_pruned", len(result.TagsPruned),
 		"duration", duration,
@@ -144,6 +167,7 @@ func (s *Syncer) syncBranches(ctx context.Context, r *git.Repository, repo *conf
 		return
 	}
 
+	log.Info("syncing branches", "count", len(branches))
 	for _, ref := range branches {
 		branch := ref.Name().Short()
 
@@ -230,7 +254,7 @@ func (*Syncer) syncTagsWrapper(ctx context.Context, r *git.Repository, repo *con
 		return
 	}
 
-	fetched, upToDate, obsolete, pruned, err := syncTags(ctx, r, repo, auth, opts.Prune, opts.DryRun, log)
+	fetched, upToDate, failed, obsolete, pruned, err := syncTags(ctx, r, repo, auth, opts.Prune, opts.DryRun, log)
 	if err != nil {
 		log.Error("tag sync failed", "error", err)
 		telemetry.SyncFailuresTotal.WithLabelValues(repo.Name, "tag_sync").Inc()
@@ -238,8 +262,11 @@ func (*Syncer) syncTagsWrapper(ctx context.Context, r *git.Repository, repo *con
 			result.Err = fmt.Errorf("tag sync: %w", err)
 		}
 	}
+
+	log.Info("syncing tags", "count", len(fetched)+len(upToDate)+len(failed))
 	result.TagsFetched = fetched
 	result.TagsUpToDate = upToDate
+	result.TagsFailed = failed
 	result.TagsObsolete = obsolete
 	result.TagsPruned = pruned
 }

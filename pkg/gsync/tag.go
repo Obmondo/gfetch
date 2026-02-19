@@ -17,28 +17,28 @@ import (
 )
 
 // syncTags lists remote tags, filters by patterns, and fetches new matching tags.
-func syncTags(ctx context.Context, repo *git.Repository, repoConfig *config.RepoConfig, auth transport.AuthMethod, pruneTags bool, dryRun bool, log *slog.Logger) (fetched, upToDate, obsolete, pruned []string, err error) {
+func syncTags(ctx context.Context, repo *git.Repository, repoConfig *config.RepoConfig, auth transport.AuthMethod, pruneTags bool, dryRun bool, log *slog.Logger) (fetched, upToDate, failed, obsolete, pruned []string, err error) {
 	start := time.Now()
 
 	fetched, upToDate, err = resolveAndFilterTags(ctx, repo, repoConfig, auth)
 	if err != nil {
-		return nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, err
 	}
 
 	if err = fetchTags(ctx, repo, fetched, auth, log); err != nil {
-		return nil, nil, nil, nil, err
+		return nil, upToDate, fetched, nil, nil, err
 	}
 
 	obsolete, pruned, err = handleObsoleteTags(repo, repoConfig, pruneTags, dryRun, log)
 	if err != nil {
-		return fetched, upToDate, nil, nil, err
+		return fetched, upToDate, nil, nil, nil, err
 	}
 
 	duration := time.Since(start)
 	telemetry.SyncDurationSeconds.WithLabelValues(repoConfig.Name, "tag").Observe(duration.Seconds())
-	log.Info("tags synced", "fetched", len(fetched), "duration", duration)
+	log.Debug("tags synced", "fetched", len(fetched), "duration", duration)
 
-	return fetched, upToDate, obsolete, pruned, nil
+	return fetched, upToDate, nil, obsolete, pruned, nil
 }
 
 func resolveAndFilterTags(ctx context.Context, repo *git.Repository, repoConfig *config.RepoConfig, auth transport.AuthMethod) (fetched, upToDate []string, err error) {
