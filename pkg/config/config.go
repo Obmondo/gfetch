@@ -54,24 +54,18 @@ type RepoDefaults struct {
 	Branches      []Pattern `yaml:"branches"`
 	Tags          []Pattern `yaml:"tags"`
 	OpenVox       *bool     `yaml:"openvox"`
+	Prune         *bool     `yaml:"prune"`
 	PruneStale    *bool     `yaml:"prune_stale"`
 	StaleAge      Duration  `yaml:"stale_age"`
 }
 
 // RepoConfig defines the sync configuration for a single repository.
+// Shared fields are inherited from RepoDefaults via embedding.
 type RepoConfig struct {
-	Name          string    `yaml:"-"`
-	URL           string    `yaml:"url"`
-	SSHKeyPath    string    `yaml:"ssh_key_path"`
-	SSHKnownHosts string    `yaml:"ssh_known_hosts"`
-	LocalPath     string    `yaml:"local_path"`
-	PollInterval  Duration  `yaml:"poll_interval"`
-	Branches      []Pattern `yaml:"branches"`
-	Tags          []Pattern `yaml:"tags"`
-	Checkout      string    `yaml:"checkout"`
-	OpenVox       bool      `yaml:"openvox"`
-	PruneStale    bool      `yaml:"prune_stale"`
-	StaleAge      Duration  `yaml:"stale_age"`
+	RepoDefaults `yaml:",inline"`
+	Name         string `yaml:"-"`
+	URL          string `yaml:"url"`
+	Checkout     string `yaml:"checkout"`
 }
 
 // Pattern represents a matching pattern, either literal or regex.
@@ -307,11 +301,14 @@ func applyDefaults(repo *RepoConfig, defaults *RepoDefaults) {
 	if len(repo.Tags) == 0 && len(defaults.Tags) > 0 {
 		repo.Tags = defaults.Tags
 	}
-	if defaults.OpenVox != nil && !repo.OpenVox {
-		repo.OpenVox = *defaults.OpenVox
+	if defaults.OpenVox != nil && repo.OpenVox == nil {
+		repo.OpenVox = defaults.OpenVox
 	}
-	if defaults.PruneStale != nil && !repo.PruneStale {
-		repo.PruneStale = *defaults.PruneStale
+	if defaults.Prune != nil && repo.Prune == nil {
+		repo.Prune = defaults.Prune
+	}
+	if defaults.PruneStale != nil && repo.PruneStale == nil {
+		repo.PruneStale = defaults.PruneStale
 	}
 	if repo.StaleAge == 0 && defaults.StaleAge != 0 {
 		repo.StaleAge = defaults.StaleAge
@@ -355,7 +352,7 @@ func (c *Config) validateRepo(r *RepoConfig) error {
 		return fmt.Errorf("repo %s: poll_interval must be at least 10s, got %s", r.Name, time.Duration(r.PollInterval))
 	}
 
-	if r.PruneStale && r.StaleAge == 0 {
+	if r.PruneStale != nil && *r.PruneStale && r.StaleAge == 0 {
 		// Default to 180 days (approx 6 months)
 		r.StaleAge = Duration(180 * 24 * time.Hour)
 	}
@@ -374,11 +371,11 @@ func (c *Config) validateRepo(r *RepoConfig) error {
 		}
 	}
 
-	if r.OpenVox && r.Checkout != "" {
+	if r.OpenVox != nil && *r.OpenVox && r.Checkout != "" {
 		slog.Warn("repo has both openvox and checkout set; checkout will be ignored in openvox mode", "repo", r.Name)
 	}
 
-	if r.Checkout != "" && !r.OpenVox {
+	if r.Checkout != "" && (r.OpenVox == nil || !*r.OpenVox) {
 		if !MatchesAny(r.Checkout, r.Branches) && !MatchesAny(r.Checkout, r.Tags) {
 			return fmt.Errorf("repo %s: checkout %q does not match any configured branch or tag pattern", r.Name, r.Checkout)
 		}

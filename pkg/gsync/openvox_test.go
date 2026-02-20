@@ -153,8 +153,8 @@ func TestPruneStaleOpenVoxDirs(t *testing.T) {
 	}
 
 	repo := &config.RepoConfig{
-		Name:      "test",
-		LocalPath: basePath,
+		RepoDefaults: config.RepoDefaults{LocalPath: basePath},
+		Name:         "test",
 	}
 
 	result := &Result{RepoName: "test"}
@@ -205,8 +205,8 @@ func TestPruneStaleOpenVoxDirs_DryRun(t *testing.T) {
 	}
 
 	repo := &config.RepoConfig{
-		Name:      "test",
-		LocalPath: basePath,
+		RepoDefaults: config.RepoDefaults{LocalPath: basePath},
+		Name:         "test",
 	}
 
 	result := &Result{RepoName: "test"}

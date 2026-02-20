@@ -75,11 +75,18 @@ func (s *Syncer) SyncRepo(ctx context.Context, repo *config.RepoConfig, opts Syn
 
 	log.Info("sync starting")
 
-	if repo.PruneStale && !opts.PruneStale {
+	if repo.Prune != nil && *repo.Prune && !opts.Prune {
+		opts.Prune = true
+	}
+	if repo.PruneStale != nil && *repo.PruneStale && !opts.PruneStale {
 		opts.PruneStale = true
 	}
 	if opts.StaleAge == 0 && repo.StaleAge != 0 {
 		opts.StaleAge = time.Duration(repo.StaleAge)
+	}
+	if !opts.Prune && opts.PruneStale {
+		log.Warn("prune_stale has no effect because prune is not enabled")
+		opts.PruneStale = false
 	}
 
 	telemetry.SyncsTotal.WithLabelValues(repo.Name).Inc()
@@ -93,7 +100,7 @@ func (s *Syncer) SyncRepo(ctx context.Context, repo *config.RepoConfig, opts Syn
 		}
 	}
 
-	if repo.OpenVox {
+	if repo.OpenVox != nil && *repo.OpenVox {
 		log.Debug("using openvox mode")
 		return s.syncRepoOpenVox(ctx, repo, opts)
 	}
