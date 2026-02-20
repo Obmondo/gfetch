@@ -8,6 +8,7 @@ defaults:
   tags:
     - /^v[0-9]+\./
   openvox: false
+  prune: true                   # prune obsolete refs (branches/tags no longer matching any pattern) in daemon mode
   prune_stale: true             # prune branches matching patterns but with no commits in 6 months
   stale_age: 180d               # custom threshold for staleness (d=days, mo=months, y=years)
 
@@ -24,6 +25,7 @@ repos:
   git-mirror:
     url: https://github.com/git/git.git
     local_path: /var/repos/mirror
+    prune: false                # override for this repo (no obsolete-ref pruning)
     prune_stale: false          # override for this repo
     branches:
       - main

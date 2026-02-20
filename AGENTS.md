@@ -18,7 +18,7 @@ internal/cli/
   cat.go                      # "cat" subcommand — print resolved config as YAML
   version.go                  # "version" subcommand + Version/Commit/Date vars
 pkg/config/
-  config.go                   # Config/RepoConfig/Pattern structs, Load(), Validate(), validateRepo(), validateAuth()
+  config.go                   # Config/RepoDefaults/RepoConfig/Pattern structs; RepoConfig embeds RepoDefaults inline; Load(), Validate(), validateRepo(), validateAuth()
   duration.go                 # ParseDuration() — support for s, m, h, d
   url.go                      # CheckHTTPSAccessible() helper
   config_test.go              # Config unit tests
@@ -54,7 +54,7 @@ renovate.json                 # Renovate config (gomod, dockerfile, github-actio
 - **Ref-level sync**: branches are updated by setting local refs directly to remote hashes — no merge/pull. The working tree is only touched when `checkout` is configured.
 - **Pre-sync stale skip**: when both prune and stale pruning are enabled, stale branches are skipped before branch sync to avoid unnecessary fetch/sync work.
 - **One goroutine per repo in daemon**: each repo polls independently with its own `time.Ticker`. Shutdown is via context cancellation on SIGINT/SIGTERM.
-- **Pruning disabled in daemon mode**: daemon always uses `SyncOptions{}` (prune=false, pruneStale=false). Pruning is only available in the `sync` subcommand.
+- **Pruning in daemon mode**: daemon passes `SyncOptions{}` to `SyncRepo`, which then promotes `repo.Prune`, `repo.PruneStale`, and `repo.StaleAge` from the repo config into the options. Set `prune: true` or `prune_stale: true` in config to enable pruning per-repo in daemon mode. `--prune` and `--dry-run` CLI flags remain exclusive to the `sync` subcommand.
 - **Package Naming**: `pkg/gsync` is used for git sync logic to avoid conflict with the standard `sync` package. `pkg/telemetry` is used for metrics.
 
 ## Build & Test
@@ -161,7 +161,8 @@ Commits should be logically atomic — one concern per commit. When a session to
 - `name` must be unique across repos
 - `poll_interval` minimum is `10s`
 - At least one of `branches` or `tags` must be non-empty
-- `prune_stale` (bool) and `stale_age` (duration) enable inactivity-based pruning
+- `prune` (bool) enables obsolete-ref pruning (branches/tags no longer matching any pattern); defaults to false
+- `prune_stale` (bool) and `stale_age` (duration) enable inactivity-based pruning; `prune_stale` only has effect when `prune: true` is also set (a warning is logged otherwise)
 - Regex patterns (wrapped in `/`) are compiled and validated
 - SSH URLs require `ssh_key_path` pointing to an existing file
 - HTTPS URLs must be publicly accessible (HEAD request returns 200)

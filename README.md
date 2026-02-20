@@ -12,7 +12,7 @@ A CLI tool that selectively mirrors remote Git repositories to local paths based
 
 - **Selective sync** — choose exactly which branches and tags to mirror using exact names, wildcards (`*`), or regex patterns
 - **Pruning** — detect and remove local branches/tags that no longer match any configured pattern
-- **Stale pruning** — optionally remove inactive branches that have no new commits in a specified period (e.g., last 6 months); when both `--prune` and `--prune-stale` are enabled, stale branches are skipped before branch sync
+- **Stale pruning** — optionally remove inactive branches that have no new commits in a specified period (e.g., last 6 months); `prune_stale` only takes effect when `prune` is also enabled — stale branches are skipped before branch sync when both are set
 - **Daemon mode** — run as a foreground polling service with per-repo poll intervals
 - **SSH and HTTPS auth** — private repos via SSH key, public repos via anonymous HTTPS
 - **Working tree checkout** — optionally keep a working tree checked out on a specific branch or tag
@@ -102,7 +102,8 @@ gfetch reads a YAML config file (default: `config.yaml` in the current directory
 defaults:
   ssh_key_path: /home/gfetch/.ssh/id_rsa
   poll_interval: 10m
-  prune_stale: true             # remove branches with no commits in 6 months
+  prune: true                   # remove branches/tags no longer matching any pattern
+  prune_stale: true             # remove branches with no commits in 6 months (requires prune: true)
   stale_age: 180d               # supports d (days)
 
 # TODO: Add integration tests for real SSH Git repositories.
@@ -165,7 +166,7 @@ gfetch daemon
 gfetch daemon --config /etc/gfetch/config.yaml --log-level debug
 ```
 
-Pruning is not performed in daemon mode. The daemon does not reload config on changes — restart it to pick up new configuration.
+Pruning is controlled via `prune` and `prune_stale` config fields per-repo. Set `prune: true` in config to enable obsolete-ref pruning; `prune_stale: true` (also requires `prune: true`) to additionally prune inactive branches. The daemon does not reload config on changes — restart it to pick up new configuration.
 
 ### `gfetch validate-config`
 

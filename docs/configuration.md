@@ -43,7 +43,8 @@ Using a map for `repos` allows Helm to merge multiple `values.yaml` files correc
 | `tags` | list of patterns | At least one of `branches` or `tags` | Tag names or patterns to sync from the remote. |
 | `checkout` | string | No | A literal branch or tag name to check out in the working tree. |
 | `openvox` | bool | No | Enable OpenVox mode. Each matching branch/tag gets its own subdirectory. |
-| `prune_stale` | bool | No | If true, local branches matching patterns but with no commits in `stale_age` will be pruned during sync. When combined with `prune`, stale branches are also skipped before branch sync. Default `false`. |
+| `prune` | bool | No | Remove local branches/tags no longer matching any configured pattern. Required for `prune_stale` to take effect. Default `false`. |
+| `prune_stale` | bool | No | If true, local branches matching patterns but with no commits in `stale_age` will be pruned during sync (requires `prune: true`). When both are enabled, stale branches are also skipped before branch sync. Default `false`. |
 | `stale_age` | duration | No | The period of inactivity (based on committer date) after which a branch is considered stale. Default `180d`. |
 
 ## Stale Pruning
@@ -53,7 +54,8 @@ Stale pruning allows gfetch to remove inactive branches from the local mirror, e
 - **Check**: gfetch inspects the **committer date** of the tip of each local branch.
 - **Threshold**: If the latest commit is older than `stale_age` (relative to the current time), the branch is identified as stale.
 - **Action**: When `--prune-stale` is used (or `prune_stale: true` is set in the config), these branches are deleted.
-- **Pre-sync optimization**: When both `--prune` and `--prune-stale` are enabled, stale branches are skipped before branch sync instead of being synced first and removed later.
+- **Gate**: `prune_stale` only takes effect when `prune` is also enabled (via `--prune` flag or `prune: true` in config). If `prune_stale` is enabled without `prune`, a warning is logged and stale pruning is skipped.
+- **Pre-sync optimization**: When both prune and prune-stale are enabled, stale branches are skipped before branch sync instead of being synced first and removed later. For the `sync` CLI this means passing both `--prune` and `--prune-stale`; in daemon/config mode, set both `prune: true` and `prune_stale: true`.
 - **Safety**: The branch currently specified in the `checkout` field is **never** pruned, even if it is stale.
 
 ## Duration units
@@ -77,10 +79,10 @@ A hidden `.gfetch-meta` directory is created under `local_path` to store a resol
 
 When `openvox` is enabled, the `checkout` field is ignored (a warning is logged if both are set).
 
-Pruning (`--prune`) in OpenVox mode removes directories that no longer correspond to any matched ref.
+Pruning (`prune: true` in config, or `--prune` via the sync CLI) in OpenVox mode removes directories that no longer correspond to any matched ref.
 
-Stale pruning (`--prune-stale`) in OpenVox mode removes per-ref directories whose checked-out commit is older than `stale_age`.
-When both `--prune` and `--prune-stale` are enabled, stale branches are also skipped before per-branch sync in OpenVox mode.
+Stale pruning (`prune_stale: true`, requires `prune: true`) in OpenVox mode removes per-ref directories whose checked-out commit is older than `stale_age`.
+When both prune and prune-stale are enabled, stale branches are also skipped before per-branch sync in OpenVox mode.
 
 ```yaml
 repos:
@@ -198,6 +200,7 @@ The config is validated when loaded. The following rules are enforced:
 - If `url` is an HTTPS URL, the repo must be publicly accessible (HTTP 200 on HEAD request).
 - If `checkout` is set, it must match at least one configured branch or tag pattern (not enforced when `openvox` is enabled).
 - If both `openvox` and `checkout` are set, a warning is logged and `checkout` is ignored.
+- `prune_stale: true` requires `prune: true` to take effect. If `prune_stale` is set without `prune`, a warning is logged and stale pruning is skipped.
 
 Run `gfetch validate-config` to check your config file without performing any sync.
 
@@ -219,6 +222,9 @@ defaults:
   ssh_key_path: /home/ashish/.ssh/id_ed25519
   poll_interval: 5m
   local_path: /var/repos
+  prune: true                    # remove refs no longer matching any pattern
+  prune_stale: true              # also remove inactive branches (requires prune: true)
+  stale_age: 180d
 
 repos:
   # Private repo via SSH (requires ssh_key_path)
