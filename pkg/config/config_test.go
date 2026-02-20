@@ -340,13 +340,13 @@ func TestApplyDefaults_PruneBoolOverride(t *testing.T) {
 	boolPtr := func(b bool) *bool { return &b }
 
 	tests := []struct {
-		name           string
-		defaultPrune   *bool
-		repoPrune      *bool
-		wantPrune      *bool
-		defaultStale   *bool
-		repoStale      *bool
-		wantStale      *bool
+		name         string
+		defaultPrune *bool
+		repoPrune    *bool
+		wantPrune    *bool
+		defaultStale *bool
+		repoStale    *bool
+		wantStale    *bool
 	}{
 		{
 			name:         "nil repo inherits default prune=true",
