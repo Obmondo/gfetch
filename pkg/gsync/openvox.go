@@ -101,7 +101,7 @@ func (s *Syncer) syncOpenVoxBranches(ctx context.Context, resolverRepo *git.Repo
 		return result.Err
 	}
 
-	log.Info("syncing branches", "count", len(branches))
+	log.Debug("syncing branches", "count", len(branches))
 	var branchNames []string
 	for _, b := range branches {
 		branchNames = append(branchNames, b.Name().Short())
@@ -141,7 +141,8 @@ func (*Syncer) syncOneOpenVoxBranch(ctx context.Context, repo *config.RepoConfig
 		return
 	}
 
-	if _, err := syncBranch(ctx, r, branch, repo.URL, auth, repo.Name, log); err != nil {
+	updated, err := syncBranch(ctx, r, branch, repo.URL, auth, repo.Name, log)
+	if err != nil {
 		log.Error("openvox branch sync failed", "branch", branch, "dir", dirName, "error", err)
 		telemetry.SyncFailuresTotal.WithLabelValues(repo.Name, "branch_sync").Inc()
 		result.BranchesFailed = append(result.BranchesFailed, branch)
@@ -154,7 +155,11 @@ func (*Syncer) syncOneOpenVoxBranch(ctx context.Context, repo *config.RepoConfig
 		return
 	}
 
-	result.BranchesSynced = append(result.BranchesSynced, branch)
+	if updated {
+		result.BranchesSynced = append(result.BranchesSynced, branch)
+	} else {
+		result.BranchesUpToDate = append(result.BranchesUpToDate, branch)
+	}
 }
 
 func (s *Syncer) syncOpenVoxTags(ctx context.Context, resolverRepo *git.Repository, repo *config.RepoConfig, auth transport.AuthMethod, sanitizedToOriginal map[string]string, log *slog.Logger, result *Result) {
@@ -172,7 +177,7 @@ func (s *Syncer) syncOpenVoxTags(ctx context.Context, resolverRepo *git.Reposito
 		return
 	}
 
-	log.Info("syncing tags", "count", len(tags))
+	log.Debug("syncing tags", "count", len(tags))
 	if collision := detectCollisions(tags, sanitizedToOriginal); collision != "" {
 		result.Err = fmt.Errorf("name collision after sanitization: %s", collision)
 		return
@@ -202,7 +207,8 @@ func (*Syncer) syncOneOpenVoxTag(ctx context.Context, repo *config.RepoConfig, t
 	}
 
 	// Single-tag fetch and checkout.
-	if err := syncOpenVoxTag(ctx, r, tag, auth, log); err != nil {
+	updated, err := syncOpenVoxTag(ctx, r, tag, auth, log)
+	if err != nil {
 		log.Error("openvox tag sync failed", "tag", tag, "dir", dirName, "error", err)
 		telemetry.SyncFailuresTotal.WithLabelValues(repo.Name, "tag_sync").Inc()
 		if result.Err == nil {
@@ -212,7 +218,11 @@ func (*Syncer) syncOneOpenVoxTag(ctx context.Context, repo *config.RepoConfig, t
 		return
 	}
 
-	result.TagsFetched = append(result.TagsFetched, tag)
+	if updated {
+		result.TagsFetched = append(result.TagsFetched, tag)
+	} else {
+		result.TagsUpToDate = append(result.TagsUpToDate, tag)
+	}
 }
 
 func (*Syncer) recordOpenVoxMetrics(repo *config.RepoConfig, start time.Time, result *Result, log *slog.Logger) {
@@ -226,11 +236,6 @@ func (*Syncer) recordOpenVoxMetrics(repo *config.RepoConfig, start time.Time, re
 		telemetry.SyncSuccessTotal.WithLabelValues(repo.Name).Inc()
 		telemetry.LastSuccessTimestamp.WithLabelValues(repo.Name).Set(float64(time.Now().Unix()))
 
-		branchSuccess := len(result.BranchesSynced) + len(result.BranchesUpToDate)
-		branchTotal := branchSuccess + len(result.BranchesFailed)
-		tagSuccess := len(result.TagsFetched) + len(result.TagsUpToDate)
-		tagTotal := tagSuccess + len(result.TagsFailed)
-
 		msg := "openvox sync successful"
 		level := slog.LevelInfo
 		if len(result.BranchesFailed) > 0 || len(result.TagsFailed) > 0 {
@@ -238,20 +243,39 @@ func (*Syncer) recordOpenVoxMetrics(repo *config.RepoConfig, start time.Time, re
 			level = slog.LevelWarn
 		}
 
-		attrs := []any{"duration", duration}
+		attrs := []any{"duration", duration.Round(time.Millisecond)}
+
+		// Branches summary
+		branchOutdated := len(result.BranchesSynced) + len(result.BranchesFailed)
+		branchTotal := branchOutdated + len(result.BranchesUpToDate)
 		if branchTotal > 0 {
-			attrs = append(attrs, "branches", fmt.Sprintf("[%d/%d]", branchSuccess, branchTotal))
+			if branchOutdated > 0 {
+				attrs = append(attrs, "branches", fmt.Sprintf("total=%d outdated=%d synced=%d", branchTotal, branchOutdated, len(result.BranchesSynced)))
+			} else {
+				attrs = append(attrs, "branches", fmt.Sprintf("total=%d", branchTotal))
+			}
 		}
+
+		// Tags summary
+		tagOutdated := len(result.TagsFetched) + len(result.TagsFailed)
+		tagTotal := tagOutdated + len(result.TagsUpToDate)
 		if tagTotal > 0 {
-			attrs = append(attrs, "tags", fmt.Sprintf("[%d/%d]", tagSuccess, tagTotal))
+			if tagOutdated > 0 {
+				attrs = append(attrs, "tags", fmt.Sprintf("total=%d outdated=%d synced=%d", tagTotal, tagOutdated, len(result.TagsFetched)))
+			} else {
+				attrs = append(attrs, "tags", fmt.Sprintf("total=%d", tagTotal))
+			}
 		}
+
 		log.Log(context.Background(), level, msg, attrs...)
 	}
 
 	log.Debug("openvox sync details",
 		"branches_synced", len(result.BranchesSynced),
+		"branches_up_to_date", len(result.BranchesUpToDate),
 		"branches_failed", len(result.BranchesFailed),
 		"tags_fetched", len(result.TagsFetched),
+		"tags_up_to_date", len(result.TagsUpToDate),
 		"tags_failed", len(result.TagsFailed),
 		"branches_pruned", len(result.BranchesPruned),
 		"tags_pruned", len(result.TagsPruned),
@@ -282,7 +306,8 @@ func ensureResolverRepo(_ context.Context, path, remoteURL string, _ transport.A
 }
 
 // syncOpenVoxTag fetches a single tag into a per-directory repo and checks it out.
-func syncOpenVoxTag(ctx context.Context, r *git.Repository, tag string, auth transport.AuthMethod, log *slog.Logger) error {
+// Returns true if the tag was updated, false if already up-to-date.
+func syncOpenVoxTag(ctx context.Context, r *git.Repository, tag string, auth transport.AuthMethod, log *slog.Logger) (bool, error) {
 	refSpec := gitconfig.RefSpec(fmt.Sprintf("+refs/tags/%s:refs/tags/%s", tag, tag))
 	err := r.FetchContext(ctx, &git.FetchOptions{
 		RemoteName: "origin",
@@ -291,14 +316,18 @@ func syncOpenVoxTag(ctx context.Context, r *git.Repository, tag string, auth tra
 		Tags:       git.NoTags,
 		Force:      true,
 	})
-	if err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) {
-		return fmt.Errorf("fetching tag %s: %w", tag, err)
+
+	updated := true
+	if errors.Is(err, git.NoErrAlreadyUpToDate) {
+		updated = false
+	} else if err != nil {
+		return false, fmt.Errorf("fetching tag %s: %w", tag, err)
 	}
 
 	if err := checkoutRef(r, tag, log); err != nil {
-		return fmt.Errorf("checkout tag %s: %w", tag, err)
+		return false, fmt.Errorf("checkout tag %s: %w", tag, err)
 	}
-	return nil
+	return updated, nil
 }
 
 // detectCollisions checks if any names collide after sanitization and adds them to the map.

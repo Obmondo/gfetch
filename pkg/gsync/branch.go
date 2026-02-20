@@ -97,6 +97,6 @@ func checkoutRef(repo *git.Repository, name string, log *slog.Logger) error {
 		return fmt.Errorf("reset %s: %w", name, err)
 	}
 
-	log.Info("checked out ref", "ref", name, "hash", hash.String()[:12])
+	log.Debug("checked out ref", "ref", name, "hash", hash.String()[:12])
 	return nil
 }

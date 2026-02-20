@@ -124,11 +124,6 @@ func (s *Syncer) SyncRepo(ctx context.Context, repo *config.RepoConfig, opts Syn
 		telemetry.SyncSuccessTotal.WithLabelValues(repo.Name).Inc()
 		telemetry.LastSuccessTimestamp.WithLabelValues(repo.Name).Set(float64(time.Now().Unix()))
 
-		branchSuccess := len(result.BranchesSynced) + len(result.BranchesUpToDate)
-		branchTotal := branchSuccess + len(result.BranchesFailed)
-		tagSuccess := len(result.TagsFetched) + len(result.TagsUpToDate)
-		tagTotal := tagSuccess + len(result.TagsFailed)
-
 		msg := "sync successful"
 		level := slog.LevelInfo
 		if len(result.BranchesFailed) > 0 || len(result.TagsFailed) > 0 {
@@ -136,13 +131,30 @@ func (s *Syncer) SyncRepo(ctx context.Context, repo *config.RepoConfig, opts Syn
 			level = slog.LevelWarn
 		}
 
-		attrs := []any{"duration", duration}
+		attrs := []any{"duration", duration.Round(time.Millisecond)}
+
+		// Branches summary
+		branchOutdated := len(result.BranchesSynced) + len(result.BranchesFailed)
+		branchTotal := branchOutdated + len(result.BranchesUpToDate)
 		if branchTotal > 0 {
-			attrs = append(attrs, "branches", fmt.Sprintf("[%d/%d]", branchSuccess, branchTotal))
+			if branchOutdated > 0 {
+				attrs = append(attrs, "branches", fmt.Sprintf("total=%d outdated=%d synced=%d", branchTotal, branchOutdated, len(result.BranchesSynced)))
+			} else {
+				attrs = append(attrs, "branches", fmt.Sprintf("total=%d", branchTotal))
+			}
 		}
+
+		// Tags summary
+		tagOutdated := len(result.TagsFetched) + len(result.TagsFailed)
+		tagTotal := tagOutdated + len(result.TagsUpToDate)
 		if tagTotal > 0 {
-			attrs = append(attrs, "tags", fmt.Sprintf("[%d/%d]", tagSuccess, tagTotal))
+			if tagOutdated > 0 {
+				attrs = append(attrs, "tags", fmt.Sprintf("total=%d outdated=%d synced=%d", tagTotal, tagOutdated, len(result.TagsFetched)))
+			} else {
+				attrs = append(attrs, "tags", fmt.Sprintf("total=%d", tagTotal))
+			}
 		}
+
 		log.Log(ctx, level, msg, attrs...)
 	}
 
@@ -175,7 +187,7 @@ func (s *Syncer) syncBranches(ctx context.Context, r *git.Repository, repo *conf
 		return
 	}
 
-	log.Info("syncing branches", "count", len(branches))
+	log.Debug("syncing branches", "count", len(branches))
 	for _, ref := range branches {
 		branch := ref.Name().Short()
 
@@ -271,7 +283,7 @@ func (*Syncer) syncTagsWrapper(ctx context.Context, r *git.Repository, repo *con
 		}
 	}
 
-	log.Info("syncing tags", "count", len(fetched)+len(upToDate)+len(failed))
+	log.Debug("syncing tags", "count", len(fetched)+len(upToDate)+len(failed))
 	result.TagsFetched = fetched
 	result.TagsUpToDate = upToDate
 	result.TagsFailed = failed
