@@ -87,10 +87,8 @@ func newSyncCmd() *cobra.Command {
 }
 
 func findRepo(cfg *config.Config, name string) *config.RepoConfig {
-	for i := range cfg.Repos {
-		if cfg.Repos[i].Name == name {
-			return &cfg.Repos[i]
-		}
+	if repo, ok := cfg.Repos[name]; ok {
+		return &repo
 	}
 	return nil
 }

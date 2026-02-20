@@ -13,7 +13,7 @@ defaults:
 
 repos:
   # Private repo via SSH
-  - name: my-service
+  my-service:
     url: git@github.com:obmondo/my-service.git
     # Inherits all fields from defaults
     branches:
@@ -21,7 +21,7 @@ repos:
       - /^release-.*/
 
   # Public repo via HTTPS (overrides some defaults)
-  - name: git
+  git-mirror:
     url: https://github.com/git/git.git
     local_path: /var/repos/mirror
     prune_stale: false          # override for this repo
@@ -36,7 +36,7 @@ repos:
 #   config.d/
 #   ├── global.yaml            # shared defaults (uses the same fields as the 'defaults:' key)
 #   ├── repo-a/
-#   │   └── config.yaml        # repos: [{ name: repo-a, url: ..., branches: [...] }]
+#   │   └── config.yaml        # repos: { repo-a: { url: ..., branches: [...] } }
 #   └── repo-b/
 #       └── config.yaml
 #

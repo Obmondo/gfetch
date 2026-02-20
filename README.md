@@ -28,7 +28,7 @@ go install github.com/obmondo/gfetch/cmd/gfetch@latest
 # Create a config file
 cat <<'EOF' > config.yaml
 repos:
-  - name: my-repo
+  my-repo:
     url: https://github.com/example/repo.git
     local_path: /var/repos/my-repo
     poll_interval: 5m
@@ -108,7 +108,7 @@ defaults:
 # TODO: Add integration tests for real SSH Git repositories.
 
 repos:
-  - name: my-service
+  my-service:
     url: git@github.com:obmondo/my-service.git
     branches:
       - main
@@ -116,7 +116,7 @@ repos:
     tags:
       - "*"                  # wildcard matches all tags
 
-  - name: internal-tool
+  internal-tool:
     url: git@github.com:org/tool.git
     prune_stale: false          # override default for this repo
     branches:

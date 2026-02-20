@@ -21,22 +21,16 @@ func newServer(s *gsync.Syncer, logger *slog.Logger, cfg *config.Config) http.Ha
 
 	mux.Handle("GET /metrics", promhttp.Handler())
 
-	// Build a map for quick repo lookup by name.
-	repoMap := make(map[string]*config.RepoConfig, len(cfg.Repos))
-	for i := range cfg.Repos {
-		repoMap[cfg.Repos[i].Name] = &cfg.Repos[i]
-	}
-
 	mux.HandleFunc("POST /sync/{repo}", func(w http.ResponseWriter, r *http.Request) {
 		repoName := r.PathValue("repo")
-		repo, ok := repoMap[repoName]
+		repo, ok := cfg.Repos[repoName]
 		if !ok {
 			http.Error(w, `{"error":"repo not found"}`, http.StatusNotFound)
 			return
 		}
 
 		logger.Info("manual sync triggered", "repo", repoName)
-		result := s.SyncRepo(r.Context(), repo, gsync.SyncOptions{})
+		result := s.SyncRepo(r.Context(), &repo, gsync.SyncOptions{})
 		writeResult(w, []gsync.Result{result})
 	})
 

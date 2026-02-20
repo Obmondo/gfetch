@@ -40,14 +40,14 @@ func (s *Scheduler) Run(ctx context.Context, cfg *config.Config) {
 		return
 	}
 
-	for i := range cfg.Repos {
-		repo := &cfg.Repos[i]
+	for name := range cfg.Repos {
+		repo := cfg.Repos[name]
 		interval := time.Duration(repo.PollInterval)
 
 		_, err := scheduler.NewJob(
 			gocron.DurationJob(interval),
 			gocron.NewTask(func() {
-				s.syncer.SyncRepo(ctx, repo, gsync.SyncOptions{})
+				s.syncer.SyncRepo(ctx, &repo, gsync.SyncOptions{})
 			}),
 			gocron.WithSingletonMode(gocron.LimitModeReschedule),
 			gocron.WithStartAt(gocron.WithStartImmediately()),

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"sort"
 	"time"
 
 	git "github.com/go-git/go-git/v5"
@@ -52,9 +53,16 @@ func New(logger *slog.Logger) *Syncer {
 
 // SyncAll syncs all repositories in the config.
 func (s *Syncer) SyncAll(ctx context.Context, cfg *config.Config, opts SyncOptions) []Result {
+	names := make([]string, 0, len(cfg.Repos))
+	for name := range cfg.Repos {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
 	results := make([]Result, 0, len(cfg.Repos))
-	for i := range cfg.Repos {
-		results = append(results, s.SyncRepo(ctx, &cfg.Repos[i], opts))
+	for _, name := range names {
+		repo := cfg.Repos[name]
+		results = append(results, s.SyncRepo(ctx, &repo, opts))
 	}
 	return results
 }

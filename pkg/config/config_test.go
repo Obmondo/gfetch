@@ -86,7 +86,7 @@ func TestPattern_MatchesBranches(t *testing.T) {
 
 func TestLoad(t *testing.T) {
 	content := `repos:
-  - name: test-repo
+  test-repo:
     url: git@github.com:test/repo.git
     ssh_key_path: /tmp/test_key
     local_path: /tmp/test_repo
@@ -112,36 +112,71 @@ func TestLoad(t *testing.T) {
 	if len(cfg.Repos) != 1 {
 		t.Fatalf("expected 1 repo, got %d", len(cfg.Repos))
 	}
-	r := cfg.Repos[0]
+	r, ok := cfg.Repos["test-repo"]
+	if !ok {
+		t.Fatal("repo test-repo not found in map")
+	}
 	if r.Name != "test-repo" {
 		t.Errorf("name = %q, want %q", r.Name, "test-repo")
 	}
 	if time.Duration(r.PollInterval) != time.Minute {
 		t.Errorf("poll_interval = %v, want %v", time.Duration(r.PollInterval), time.Minute)
 	}
-	if len(r.Branches) != 2 {
-		t.Fatalf("branches count = %d, want 2", len(r.Branches))
-	}
-	if r.Branches[0].Raw != branchMain {
-		t.Errorf("branches[0] = %q, want %q", r.Branches[0].Raw, branchMain)
-	}
-	if r.Branches[1].Raw != "/^release-.*/" {
-		t.Errorf("branches[1] = %q, want %q", r.Branches[1].Raw, "/^release-.*/")
-	}
-	if len(r.Tags) != 2 {
-		t.Errorf("tags count = %d, want 2", len(r.Tags))
-	}
 }
 
-func TestValidate_MissingFields(t *testing.T) {
-	cfg := &Config{}
-	if err := cfg.Validate(); err == nil {
-		t.Error("expected error for empty config")
+func TestLoad_NameValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		wantErr bool
+	}{
+		{
+			name: "valid name",
+			content: `repos:
+  valid.name-123_abc:
+    url: git@github.com:test/repo.git
+    local_path: /tmp/repo
+    branches: [main]
+    ssh_key_path: /tmp/key`,
+			wantErr: false,
+		},
+		{
+			name: "too long name",
+			content: `repos:
+  this-name-is-definitely-longer-than-sixty-four-characters-which-should-be-rejected:
+    url: git@github.com:test/repo.git
+    branches: [main]`,
+			wantErr: true,
+		},
+		{
+			name: "invalid characters",
+			content: `repos:
+  "invalid name":
+    url: git@github.com:test/repo.git
+    branches: [main]`,
+			wantErr: true,
+		},
+		{
+			name: "list not allowed",
+			content: `repos:
+  - name: repo1
+    url: git@github.com:test/repo.git`,
+			wantErr: true,
+		},
 	}
 
-	cfg = &Config{Repos: []RepoConfig{{Name: ""}}}
-	if err := cfg.Validate(); err == nil {
-		t.Error("expected error for missing name")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			cfgPath := filepath.Join(dir, "config.yaml")
+			if err := os.WriteFile(cfgPath, []byte(tt.content), 0644); err != nil {
+				t.Fatal(err)
+			}
+			_, err := Load(cfgPath)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Load() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
 	}
 }
 
@@ -151,7 +186,7 @@ func TestValidate_PollIntervalTooLow(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cfg := &Config{Repos: []RepoConfig{{
+	cfg := &Config{Repos: map[string]RepoConfig{"test": {
 		Name:         "test",
 		URL:          "git@github.com:test/repo.git",
 		SSHKeyPath:   keyFile,
@@ -165,24 +200,8 @@ func TestValidate_PollIntervalTooLow(t *testing.T) {
 	}
 }
 
-func TestValidate_DuplicateNames(t *testing.T) {
-	keyFile := filepath.Join(t.TempDir(), "key")
-	if err := os.WriteFile(keyFile, []byte("fake"), 0600); err != nil {
-		t.Fatal(err)
-	}
-
-	cfg := &Config{Repos: []RepoConfig{
-		{Name: "dup", URL: "git@a.git", SSHKeyPath: keyFile, LocalPath: "/tmp/a", PollInterval: Duration(30 * time.Second), Branches: []Pattern{{Raw: branchMain}}},
-		{Name: "dup", URL: "git@b.git", SSHKeyPath: keyFile, LocalPath: "/tmp/b", PollInterval: Duration(30 * time.Second), Branches: []Pattern{{Raw: branchMain}}},
-	}}
-	err := cfg.Validate()
-	if err == nil {
-		t.Error("expected error for duplicate names")
-	}
-}
-
 func TestValidate_HTTPSPublicRepo(t *testing.T) {
-	cfg := &Config{Repos: []RepoConfig{{
+	cfg := &Config{Repos: map[string]RepoConfig{"public-repo": {
 		Name:         "public-repo",
 		URL:          "https://github.com/git/git.git",
 		LocalPath:    "/tmp/test",
@@ -195,200 +214,15 @@ func TestValidate_HTTPSPublicRepo(t *testing.T) {
 	}
 }
 
-func TestValidate_SSHRepoRequiresKey(t *testing.T) {
-	cfg := &Config{Repos: []RepoConfig{{
-		Name:         "ssh-repo",
-		URL:          "git@github.com:test/repo.git",
-		LocalPath:    "/tmp/test",
-		PollInterval: Duration(30 * time.Second),
-		Branches:     []Pattern{{Raw: branchMain}},
-	}}}
-	err := cfg.Validate()
-	if err == nil {
-		t.Error("expected error for SSH URL without ssh_key_path")
-	}
-}
-
-func TestValidate_InvalidTagRegex(t *testing.T) {
-	keyFile := filepath.Join(t.TempDir(), "key")
-	if err := os.WriteFile(keyFile, []byte("fake"), 0600); err != nil {
-		t.Fatal(err)
-	}
-
-	cfg := &Config{Repos: []RepoConfig{{
-		Name:         "test",
-		URL:          "git@github.com:test/repo.git",
-		SSHKeyPath:   keyFile,
-		LocalPath:    "/tmp/test",
-		PollInterval: Duration(30 * time.Second),
-		Tags:         []Pattern{{Raw: "/[invalid/"}},
-	}}}
-	err := cfg.Validate()
-	if err == nil {
-		t.Error("expected error for invalid tag regex")
-	}
-}
-
-func TestValidate_CheckoutMatchesLiteralBranch(t *testing.T) {
-	keyFile := filepath.Join(t.TempDir(), "key")
-	if err := os.WriteFile(keyFile, []byte("fake"), 0600); err != nil {
-		t.Fatal(err)
-	}
-
-	cfg := &Config{Repos: []RepoConfig{{
-		Name:         "test",
-		URL:          "git@github.com:test/repo.git",
-		SSHKeyPath:   keyFile,
-		LocalPath:    "/tmp/test",
-		PollInterval: Duration(30 * time.Second),
-		Branches:     []Pattern{{Raw: "main"}, {Raw: "develop"}},
-		Checkout:     "main",
-	}}}
-	if err := cfg.Validate(); err != nil {
-		t.Errorf("expected checkout=main to pass validation, got: %v", err)
-	}
-}
-
-func TestValidate_CheckoutMatchesRegexBranch(t *testing.T) {
-	keyFile := filepath.Join(t.TempDir(), "key")
-	if err := os.WriteFile(keyFile, []byte("fake"), 0600); err != nil {
-		t.Fatal(err)
-	}
-
-	cfg := &Config{Repos: []RepoConfig{{
-		Name:         "test",
-		URL:          "git@github.com:test/repo.git",
-		SSHKeyPath:   keyFile,
-		LocalPath:    "/tmp/test",
-		PollInterval: Duration(30 * time.Second),
-		Branches:     []Pattern{{Raw: "/^release-.*/"}},
-		Checkout:     "release-1.0",
-	}}}
-	if err := cfg.Validate(); err != nil {
-		t.Errorf("expected checkout=release-1.0 to match regex pattern, got: %v", err)
-	}
-}
-
-func TestValidate_CheckoutMatchesTag(t *testing.T) {
-	keyFile := filepath.Join(t.TempDir(), "key")
-	if err := os.WriteFile(keyFile, []byte("fake"), 0600); err != nil {
-		t.Fatal(err)
-	}
-
-	cfg := &Config{Repos: []RepoConfig{{
-		Name:         "test",
-		URL:          "git@github.com:test/repo.git",
-		SSHKeyPath:   keyFile,
-		LocalPath:    "/tmp/test",
-		PollInterval: Duration(30 * time.Second),
-		Branches:     []Pattern{{Raw: "main"}},
-		Tags:         []Pattern{{Raw: "v1.0.0"}},
-		Checkout:     "v1.0.0",
-	}}}
-	if err := cfg.Validate(); err != nil {
-		t.Errorf("expected checkout=v1.0.0 to match tag pattern, got: %v", err)
-	}
-}
-
-func TestValidate_CheckoutNoMatch(t *testing.T) {
-	keyFile := filepath.Join(t.TempDir(), "key")
-	if err := os.WriteFile(keyFile, []byte("fake"), 0600); err != nil {
-		t.Fatal(err)
-	}
-
-	cfg := &Config{Repos: []RepoConfig{{
-		Name:         "test",
-		URL:          "git@github.com:test/repo.git",
-		SSHKeyPath:   keyFile,
-		LocalPath:    "/tmp/test",
-		PollInterval: Duration(30 * time.Second),
-		Branches:     []Pattern{{Raw: "main"}},
-		Checkout:     "nonexistent",
-	}}}
-	err := cfg.Validate()
-	if err == nil {
-		t.Error("expected error for checkout that doesn't match any branch or tag")
-	}
-}
-
-func TestValidate_CheckoutEmpty(t *testing.T) {
-	keyFile := filepath.Join(t.TempDir(), "key")
-	if err := os.WriteFile(keyFile, []byte("fake"), 0600); err != nil {
-		t.Fatal(err)
-	}
-
-	cfg := &Config{Repos: []RepoConfig{{
-		Name:         "test",
-		URL:          "git@github.com:test/repo.git",
-		SSHKeyPath:   keyFile,
-		LocalPath:    "/tmp/test",
-		PollInterval: Duration(30 * time.Second),
-		Branches:     []Pattern{{Raw: "main"}},
-		Checkout:     "",
-	}}}
-	if err := cfg.Validate(); err != nil {
-		t.Errorf("expected empty checkout to pass validation, got: %v", err)
-	}
-}
-
-func TestLoad_WithCheckout(t *testing.T) {
-	content := `repos:
-  - name: test-repo
-    url: git@github.com:test/repo.git
-    ssh_key_path: /tmp/test_key
-    local_path: /tmp/test_repo
-    poll_interval: 1m
-    checkout: main
-    branches:
-      - main
-      - develop
-`
-	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "config.yaml")
-	if err := os.WriteFile(cfgPath, []byte(content), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	cfg, err := Load(cfgPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if cfg.Repos[0].Checkout != branchMain {
-		t.Errorf("checkout = %q, want %q", cfg.Repos[0].Checkout, branchMain)
-	}
-}
-
-func TestValidate_InvalidBranchRegex(t *testing.T) {
-	keyFile := filepath.Join(t.TempDir(), "key")
-	if err := os.WriteFile(keyFile, []byte("fake"), 0600); err != nil {
-		t.Fatal(err)
-	}
-
-	cfg := &Config{Repos: []RepoConfig{{
-		Name:         "test",
-		URL:          "git@github.com:test/repo.git",
-		SSHKeyPath:   keyFile,
-		LocalPath:    "/tmp/test",
-		PollInterval: Duration(30 * time.Second),
-		Branches:     []Pattern{{Raw: "/[invalid/"}},
-	}}}
-	err := cfg.Validate()
-	if err == nil {
-		t.Error("expected error for invalid branch regex")
-	}
-}
-
 func TestLoad_Directory(t *testing.T) {
 	dir := t.TempDir()
 
-	// Create repo1/config.yaml
 	repo1Dir := filepath.Join(dir, "repo1")
 	if err := os.MkdirAll(repo1Dir, 0755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(repo1Dir, "config.yaml"), []byte(`repos:
-  - name: repo1
+  repo1:
     url: git@github.com:test/repo1.git
     ssh_key_path: /tmp/key1
     local_path: /tmp/repo1
@@ -399,13 +233,12 @@ func TestLoad_Directory(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Create repo2/config.yaml
 	repo2Dir := filepath.Join(dir, "repo2")
 	if err := os.MkdirAll(repo2Dir, 0755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(repo2Dir, "config.yaml"), []byte(`repos:
-  - name: repo2
+  repo2:
     url: git@github.com:test/repo2.git
     ssh_key_path: /tmp/key2
     local_path: /tmp/repo2
@@ -424,58 +257,36 @@ func TestLoad_Directory(t *testing.T) {
 	if len(cfg.Repos) != 2 {
 		t.Fatalf("expected 2 repos, got %d", len(cfg.Repos))
 	}
-
-	// repos are loaded in glob order (alphabetical by directory name)
-	names := map[string]bool{}
-	for _, r := range cfg.Repos {
-		names[r.Name] = true
+	if _, ok := cfg.Repos["repo1"]; !ok {
+		t.Error("repo1 not found")
 	}
-	if !names["repo1"] || !names["repo2"] {
-		t.Errorf("expected repos repo1 and repo2, got %v", names)
+	if _, ok := cfg.Repos["repo2"]; !ok {
+		t.Error("repo2 not found")
 	}
 }
 
 func TestLoad_DirectoryWithGlobal(t *testing.T) {
 	dir := t.TempDir()
 
-	// Create global.yaml with defaults
 	if err := os.WriteFile(filepath.Join(dir, "global.yaml"), []byte(`ssh_key_path: /tmp/global_key
-ssh_known_hosts: |
-  example.com ssh-ed25519 AAAA...
 local_path: /tmp/global_path
 poll_interval: 5m
 branches:
   - "*"
-tags:
-  - "*"
-openvox: true
 `), 0644); err != nil {
 		t.Fatal(err)
 	}
 
-	// Create repo1/config.yaml — overrides ssh_key_path and branches, inherits the rest
 	repo1Dir := filepath.Join(dir, "repo1")
 	if err := os.MkdirAll(repo1Dir, 0755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(repo1Dir, "config.yaml"), []byte(`repos:
-  - name: repo1
+  repo1:
     url: git@github.com:test/repo1.git
     ssh_key_path: /tmp/override_key
     branches:
       - main
-`), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	// Create repo2/config.yaml — inherits everything from global
-	repo2Dir := filepath.Join(dir, "repo2")
-	if err := os.MkdirAll(repo2Dir, 0755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(repo2Dir, "config.yaml"), []byte(`repos:
-  - name: repo2
-    url: git@github.com:test/repo2.git
 `), 0644); err != nil {
 		t.Fatal(err)
 	}
@@ -485,75 +296,28 @@ openvox: true
 		t.Fatal(err)
 	}
 
-	if len(cfg.Repos) != 2 {
-		t.Fatalf("expected 2 repos, got %d", len(cfg.Repos))
+	r1, ok := cfg.Repos["repo1"]
+	if !ok {
+		t.Fatal("repo1 not found")
 	}
-
-	// Find repos by name
-	repos := map[string]*RepoConfig{}
-	for i := range cfg.Repos {
-		repos[cfg.Repos[i].Name] = &cfg.Repos[i]
-	}
-
-	// repo1 should have overridden ssh_key_path and branches, inherited the rest
-	r1 := repos["repo1"]
 	if r1.SSHKeyPath != "/tmp/override_key" {
 		t.Errorf("repo1 ssh_key_path = %q, want /tmp/override_key", r1.SSHKeyPath)
 	}
 	if r1.LocalPath != "/tmp/global_path" {
 		t.Errorf("repo1 local_path = %q, want /tmp/global_path", r1.LocalPath)
 	}
-	if time.Duration(r1.PollInterval) != 5*time.Minute {
-		t.Errorf("repo1 poll_interval = %v, want 5m", time.Duration(r1.PollInterval))
-	}
-	if r1.SSHKnownHosts == "" {
-		t.Error("repo1 ssh_known_hosts should be inherited from global")
-	}
-	if len(r1.Branches) != 1 || r1.Branches[0].Raw != branchMain {
-		t.Errorf("repo1 branches should not be overridden, got %v", r1.Branches)
-	}
-	if len(r1.Tags) != 1 || r1.Tags[0].Raw != "*" {
-		t.Errorf("repo1 tags should be inherited from global, got %v", r1.Tags)
-	}
-	if !r1.OpenVox {
-		t.Error("repo1 openvox should be inherited from global")
-	}
-
-	// repo2 should inherit everything
-	r2 := repos["repo2"]
-	if r2.SSHKeyPath != "/tmp/global_key" {
-		t.Errorf("repo2 ssh_key_path = %q, want /tmp/global_key", r2.SSHKeyPath)
-	}
-	if r2.LocalPath != "/tmp/global_path" {
-		t.Errorf("repo2 local_path = %q, want /tmp/global_path", r2.LocalPath)
-	}
-	if time.Duration(r2.PollInterval) != 5*time.Minute {
-		t.Errorf("repo2 poll_interval = %v, want 5m", time.Duration(r2.PollInterval))
-	}
-	if len(r2.Branches) != 1 || r2.Branches[0].Raw != "*" {
-		t.Errorf("repo2 branches should be inherited from global, got %v", r2.Branches)
-	}
-	if len(r2.Tags) != 1 || r2.Tags[0].Raw != "*" {
-		t.Errorf("repo2 tags should be inherited from global, got %v", r2.Tags)
-	}
-	if !r2.OpenVox {
-		t.Error("repo2 openvox should be inherited from global")
-	}
 }
 
 func TestApplyDefaults(t *testing.T) {
 	openvoxTrue := true
 	defaults := &RepoDefaults{
-		SSHKeyPath:    "/tmp/default_key",
-		SSHKnownHosts: "example.com ssh-ed25519 AAAA...",
-		LocalPath:     "/tmp/default_path",
-		PollInterval:  Duration(3 * time.Minute),
-		Branches:      []Pattern{{Raw: "main"}, {Raw: "develop"}},
-		Tags:          []Pattern{{Raw: "*"}},
-		OpenVox:       &openvoxTrue,
+		SSHKeyPath:   "/tmp/default_key",
+		LocalPath:    "/tmp/default_path",
+		PollInterval: Duration(3 * time.Minute),
+		Branches:     []Pattern{{Raw: "main"}},
+		OpenVox:      &openvoxTrue,
 	}
 
-	// Repo with all fields empty — should inherit all defaults
 	repo := &RepoConfig{
 		Name: "test",
 		URL:  "git@github.com:test/repo.git",
@@ -563,99 +327,7 @@ func TestApplyDefaults(t *testing.T) {
 	if repo.SSHKeyPath != "/tmp/default_key" {
 		t.Errorf("ssh_key_path = %q, want /tmp/default_key", repo.SSHKeyPath)
 	}
-	if repo.SSHKnownHosts != "example.com ssh-ed25519 AAAA..." {
-		t.Errorf("ssh_known_hosts = %q, want default", repo.SSHKnownHosts)
-	}
-	if repo.LocalPath != "/tmp/default_path" {
-		t.Errorf("local_path = %q, want /tmp/default_path", repo.LocalPath)
-	}
-	if time.Duration(repo.PollInterval) != 3*time.Minute {
-		t.Errorf("poll_interval = %v, want 3m", time.Duration(repo.PollInterval))
-	}
-	if len(repo.Branches) != 2 || repo.Branches[0].Raw != "main" {
-		t.Errorf("branches should be inherited from defaults, got %v", repo.Branches)
-	}
-	if len(repo.Tags) != 1 || repo.Tags[0].Raw != "*" {
-		t.Errorf("tags should be inherited from defaults, got %v", repo.Tags)
-	}
 	if !repo.OpenVox {
 		t.Error("openvox should be inherited from defaults")
 	}
-
-	// Repo with fields set — should NOT be overridden
-	repo2 := &RepoConfig{
-		Name:          "test2",
-		URL:           "git@github.com:test/repo2.git",
-		SSHKeyPath:    "/tmp/my_key",
-		SSHKnownHosts: "custom.com ssh-rsa BBBB...",
-		LocalPath:     "/tmp/my_path",
-		PollInterval:  Duration(1 * time.Minute),
-		Branches:      []Pattern{{Raw: "main"}},
-		Tags:          []Pattern{{Raw: "v1.0.0"}},
-		OpenVox:       true,
-	}
-	applyDefaults(repo2, defaults)
-
-	if repo2.SSHKeyPath != "/tmp/my_key" {
-		t.Errorf("ssh_key_path should not be overridden, got %q", repo2.SSHKeyPath)
-	}
-	if repo2.SSHKnownHosts != "custom.com ssh-rsa BBBB..." {
-		t.Errorf("ssh_known_hosts should not be overridden, got %q", repo2.SSHKnownHosts)
-	}
-	if repo2.LocalPath != "/tmp/my_path" {
-		t.Errorf("local_path should not be overridden, got %q", repo2.LocalPath)
-	}
-	if time.Duration(repo2.PollInterval) != 1*time.Minute {
-		t.Errorf("poll_interval should not be overridden, got %v", time.Duration(repo2.PollInterval))
-	}
-	if len(repo2.Branches) != 1 || repo2.Branches[0].Raw != "main" {
-		t.Errorf("branches should not be overridden, got %v", repo2.Branches)
-	}
-	if len(repo2.Tags) != 1 || repo2.Tags[0].Raw != "v1.0.0" {
-		t.Errorf("tags should not be overridden, got %v", repo2.Tags)
-	}
 }
-
-func TestLoad_FileWithDefaultsKey(t *testing.T) {
-	content := `defaults:
-  ssh_key_path: /tmp/defaults_key
-  poll_interval: 15m
-  prune_stale: true
-  stale_age: 90d
-
-repos:
-  - name: test-repo
-    url: git@github.com:test/repo.git
-    local_path: /tmp/test_repo
-    branches:
-      - main
-`
-	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "config.yaml")
-	if err := os.WriteFile(cfgPath, []byte(content), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	cfg, err := Load(cfgPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if len(cfg.Repos) != 1 {
-		t.Fatalf("expected 1 repo, got %d", len(cfg.Repos))
-	}
-	r := cfg.Repos[0]
-	if r.SSHKeyPath != "/tmp/defaults_key" {
-		t.Errorf("ssh_key_path = %q, want /tmp/defaults_key", r.SSHKeyPath)
-	}
-	if time.Duration(r.PollInterval) != 15*time.Minute {
-		t.Errorf("poll_interval = %v, want 15m", time.Duration(r.PollInterval))
-	}
-	if !r.PruneStale {
-		t.Error("prune_stale should be true")
-	}
-	if time.Duration(r.StaleAge) != 90*24*time.Hour {
-		t.Errorf("stale_age = %v, want 90d", time.Duration(r.StaleAge))
-	}
-}
-

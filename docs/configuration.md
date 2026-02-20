@@ -4,35 +4,36 @@ gfetch is configured with a YAML file or a directory of YAML files. By default i
 
 ## Configuration structure
 
-gfetch supports two ways to organize your configuration.
+gfetch uses a `defaults` key for shared settings and a `repos` key for individual repositories. The `repos` field MUST be a map, where each key is the repository name.
 
 ### Single-file mode
-
-In single-file mode, you define a `defaults` key for shared settings and a `repos` key for individual repositories.
 
 ```yaml
 defaults:
   ssh_key_path: /home/gfetch/.ssh/id_rsa
   poll_interval: 10m
   local_path: /var/repos
-  prune_stale: true             # default for all repos
-  stale_age: 180d
 
 repos:
-  - name: my-repo
+  my-repo:
     url: git@github.com:org/my-repo.git
-    # inherits all defaults above
     branches:
       - main
+  another-repo:
+    url: git@github.com:org/another.git
+    branches:
+      - develop
 ```
 
-**Backward Compatibility**: Top-level fields are still supported (e.g., `ssh_key_path` directly at the top level), but grouping them under `defaults:` is the recommended approach.
+### Map format (Helm friendly)
+
+Using a map for `repos` allows Helm to merge multiple `values.yaml` files correctly. Lists in Helm are always overwritten, but maps are merged by key.
 
 ## Fields
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `name` | string | Yes | Unique identifier for the repo. Used with `--repo` flag to target a specific repo. |
+| (key) | string | Yes | The repository name. Max 64 characters. Allowed characters: `a-z`, `A-Z`, `0-9`, `.`, `_`, `-`. |
 | `url` | string | Yes | Remote repository URL. Prefix `https://` for HTTPS; anything else for SSH. |
 | `ssh_key_path` | string | Only for SSH | Absolute path to a private SSH key file. |
 | `ssh_known_hosts` | string | No | Extra SSH host key entries. Merged with built-in keys for GitHub, GitLab, Bitbucket, and Azure DevOps. |
@@ -83,7 +84,7 @@ When both `--prune` and `--prune-stale` are enabled, stale branches are also ski
 
 ```yaml
 repos:
-  - name: puppet-control
+  puppet-control:
     url: git@github.com:org/puppet-control.git
     ssh_key_path: /home/user/.ssh/id_ed25519
     local_path: /etc/puppetlabs/code/environments
@@ -103,7 +104,7 @@ This produces a layout like:
 ├── .gfetch-meta/          # internal resolver repo
 ├── main/                  # checked out from branch main
 ├── feature_foo/           # checked out from branch feature-foo
-└── v1_0_0/                # checked out from tag v1.0.0
+├── v1_0_0/                # checked out from tag v1.0.0
 ```
 
 ## Built-in SSH Host Keys
@@ -157,15 +158,16 @@ Use an SSH-style URL (e.g. `git@github.com:user/repo.git`) and provide `ssh_key_
 Host key verification is always enabled using built-in keys. To add extra host keys (e.g. for a self-hosted Git server), use `ssh_known_hosts`:
 
 ```yaml
-- name: private-repo
-  url: git@github.com:obmondo/my-service.git
-  ssh_key_path: /home/user/.ssh/id_ed25519
-  ssh_known_hosts: |              # optional: extra host keys
-    custom-git.example.com ssh-ed25519 AAAA...
-  local_path: /var/repos/my-service
-  poll_interval: 5m
-  branches:
-    - main
+repos:
+  private-repo:
+    url: git@github.com:obmondo/my-service.git
+    ssh_key_path: /home/user/.ssh/id_ed25519
+    ssh_known_hosts: |              # optional: extra host keys
+      custom-git.example.com ssh-ed25519 AAAA...
+    local_path: /var/repos/my-service
+    poll_interval: 5m
+    branches:
+      - main
 ```
 
 ### HTTPS (public repos only)
@@ -173,21 +175,22 @@ Host key verification is always enabled using built-in keys. To add extra host k
 Use an `https://` or `http://` URL. No `ssh_key_path` is needed — authentication is anonymous. Only publicly accessible repositories are supported over HTTPS. During validation, gfetch makes an HTTP HEAD request to confirm the repo is reachable.
 
 ```yaml
-- name: public-repo
-  url: https://github.com/git/git.git
-  local_path: /var/repos/git
-  poll_interval: 30m
-  branches:
-    - main
+repos:
+  public-repo:
+    url: https://github.com/git/git.git
+    local_path: /var/repos/git
+    poll_interval: 30m
+    branches:
+      - main
 ```
 
 ## Validation Rules
 
 The config is validated when loaded. The following rules are enforced:
 
-- `repos` must contain at least one entry.
-- Each repo must have `name`, `url`, `local_path`, and `poll_interval` set.
-- `name` must be unique across all repos.
+- `repos` must be a map and contain at least one entry.
+- Repository names (map keys) must be ≤ 64 characters and contain only alphanumeric characters, dots, underscores, or hyphens.
+- Each repo must have `url`, `local_path`, and `poll_interval` set.
 - `poll_interval` must be at least `10s`.
 - At least one of `branches` or `tags` must be non-empty.
 - All regex patterns must be valid Go regular expressions.
@@ -202,7 +205,7 @@ Run `gfetch validate-config` to check your config file without performing any sy
 
 ### `gfetch cat`
 
-Prints the fully resolved configuration as YAML. In directory mode, global defaults are applied to each repo before printing. Useful for verifying that inheritance works as expected.
+Prints the fully resolved configuration as YAML. In directory mode, global defaults are merged from subdirectories before printing.
 
 ```bash
 gfetch cat -c config.yaml       # single-file mode
@@ -212,13 +215,15 @@ gfetch cat -c config.d/         # directory mode
 ## Complete Example
 
 ```yaml
+defaults:
+  ssh_key_path: /home/ashish/.ssh/id_ed25519
+  poll_interval: 5m
+  local_path: /var/repos
+
 repos:
   # Private repo via SSH (requires ssh_key_path)
-  - name: my-service
+  my-service:
     url: git@github.com:obmondo/my-service.git
-    ssh_key_path: /home/ashish/.ssh/id_ed25519
-    local_path: /var/repos/my-service
-    poll_interval: 5m
     checkout: main                # working tree stays on this branch/tag
     branches:
       - main
@@ -229,7 +234,7 @@ repos:
       - /^v[0-9]+\./               # regex (delimited by /)
 
   # Public repo via HTTPS (no ssh_key_path needed)
-  - name: git
+  git-mirror:
     url: https://github.com/git/git.git
     local_path: /var/repos/git
     poll_interval: 30m

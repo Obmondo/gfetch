@@ -12,6 +12,8 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+var nameRegex = regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
+
 const (
 	// DefaultPollInterval is used when a repo does not specify a poll interval.
 	DefaultPollInterval = 2 * time.Minute
@@ -21,8 +23,8 @@ const (
 
 // Config is the top-level configuration.
 type Config struct {
-	Defaults *RepoDefaults `yaml:"defaults,omitempty"`
-	Repos    []RepoConfig  `yaml:"repos"`
+	Defaults *RepoDefaults         `yaml:"defaults,omitempty"`
+	Repos    map[string]RepoConfig `yaml:"repos"`
 }
 
 // Duration is a wrapper around time.Duration that supports extra units like 'd'.
@@ -58,7 +60,7 @@ type RepoDefaults struct {
 
 // RepoConfig defines the sync configuration for a single repository.
 type RepoConfig struct {
-	Name          string    `yaml:"name"`
+	Name          string    `yaml:"-"`
 	URL           string    `yaml:"url"`
 	SSHKeyPath    string    `yaml:"ssh_key_path"`
 	SSHKnownHosts string    `yaml:"ssh_known_hosts"`
@@ -177,6 +179,39 @@ func Load(path string) (*Config, error) {
 	return loadFile(path)
 }
 
+// UnmarshalYAML implements custom unmarshaling for Config to strictly support repos as a map.
+func (c *Config) UnmarshalYAML(value *yaml.Node) error {
+	var aux struct {
+		Defaults *RepoDefaults         `yaml:"defaults,omitempty"`
+		Repos    map[string]RepoConfig `yaml:"repos"`
+	}
+
+	if err := value.Decode(&aux); err != nil {
+		return err
+	}
+
+	c.Defaults = aux.Defaults
+	c.Repos = aux.Repos
+
+	if c.Repos == nil {
+		return nil
+	}
+
+	for name, repo := range c.Repos {
+		if len(name) > 64 {
+			return fmt.Errorf("repo name %q is too long (max 64 characters)", name)
+		}
+		if !nameRegex.MatchString(name) {
+			return fmt.Errorf("repo name %q contains invalid characters (only alphanumeric, dots, underscores, and hyphens allowed)", name)
+		}
+		// Populate internal Name field
+		repo.Name = name
+		c.Repos[name] = repo
+	}
+
+	return nil
+}
+
 // loadFile reads and parses a single YAML config file.
 func loadFile(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
@@ -184,7 +219,6 @@ func loadFile(path string) (*Config, error) {
 		return nil, fmt.Errorf("reading config file: %w", err)
 	}
 
-	// First try to unmarshal into the standard Config struct which has "defaults" key.
 	var cfg Config
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parsing config file: %w", err)
@@ -192,8 +226,9 @@ func loadFile(path string) (*Config, error) {
 
 	// Apply defaults to each repo.
 	if cfg.Defaults != nil {
-		for i := range cfg.Repos {
-			applyDefaults(&cfg.Repos[i], cfg.Defaults)
+		for name, repo := range cfg.Repos {
+			applyDefaults(&repo, cfg.Defaults)
+			cfg.Repos[name] = repo
 		}
 	}
 
@@ -222,7 +257,7 @@ func loadDir(dir string) (*Config, error) {
 		return nil, fmt.Errorf("scanning config directory: %w", err)
 	}
 
-	cfg := &Config{}
+	cfg := &Config{Repos: make(map[string]RepoConfig)}
 	if hasDefaults {
 		cfg.Defaults = &defaults
 	}
@@ -235,12 +270,18 @@ func loadDir(dir string) (*Config, error) {
 		if err := yaml.Unmarshal(data, &sub); err != nil {
 			return nil, fmt.Errorf("parsing %s: %w", match, err)
 		}
-		cfg.Repos = append(cfg.Repos, sub.Repos...)
+		for name, repo := range sub.Repos {
+			if _, exists := cfg.Repos[name]; exists {
+				return nil, fmt.Errorf("duplicate repo name %q across config files", name)
+			}
+			cfg.Repos[name] = repo
+		}
 	}
 
 	// Apply global defaults to each repo.
-	for i := range cfg.Repos {
-		applyDefaults(&cfg.Repos[i], &defaults)
+	for name, repo := range cfg.Repos {
+		applyDefaults(&repo, &defaults)
+		cfg.Repos[name] = repo
 	}
 
 	return cfg, nil
@@ -283,25 +324,20 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("no repos configured")
 	}
 
-	names := make(map[string]bool)
-	for i := range c.Repos {
-		r := &c.Repos[i]
-		if err := c.validateRepo(r, i, names); err != nil {
+	for name, r := range c.Repos {
+		if err := c.validateRepo(&r); err != nil {
 			return err
 		}
+		c.Repos[name] = r
 	}
 
 	return nil
 }
 
-func (c *Config) validateRepo(r *RepoConfig, index int, names map[string]bool) error {
+func (c *Config) validateRepo(r *RepoConfig) error {
 	if r.Name == "" {
-		return fmt.Errorf("repo at index %d: name is required", index)
+		return fmt.Errorf("repo name is required")
 	}
-	if names[r.Name] {
-		return fmt.Errorf("duplicate repo name: %s", r.Name)
-	}
-	names[r.Name] = true
 
 	if r.URL == "" {
 		return fmt.Errorf("repo %s: url is required", r.Name)
