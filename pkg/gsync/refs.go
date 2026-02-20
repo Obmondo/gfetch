@@ -119,7 +119,7 @@ func checkStaleness(ctx context.Context, repo *git.Repository, ref *plumbing.Ref
 	}
 
 	// Clean up the temporary ref defer-style or immediately.
-	defer repo.Storer.RemoveReference(plumbing.ReferenceName(tmpRef))
+	defer func() { _ = repo.Storer.RemoveReference(plumbing.ReferenceName(tmpRef)) }()
 
 	// After fetch, the object should be in the store.
 	commit, err = repo.CommitObject(ref.Hash())

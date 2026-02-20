@@ -130,45 +130,9 @@ func (s *Syncer) SyncRepo(ctx context.Context, repo *config.RepoConfig, opts Syn
 		telemetry.LastFailureTimestamp.WithLabelValues(repo.Name).Set(float64(time.Now().Unix()))
 		log.Error("sync failed", "error", result.Err, "duration", duration)
 	} else {
+		logSyncSuccess(ctx, log, result, duration)
 		telemetry.SyncSuccessTotal.WithLabelValues(repo.Name).Inc()
 		telemetry.LastSuccessTimestamp.WithLabelValues(repo.Name).Set(float64(time.Now().Unix()))
-
-		msg := "sync finished"
-		level := slog.LevelInfo
-		numErrors := len(result.BranchesFailed) + len(result.TagsFailed)
-		if numErrors > 0 {
-			msg = "sync finished with errors"
-			level = slog.LevelWarn
-		}
-
-		attrs := []any{"duration", duration.Round(time.Millisecond)}
-		if numErrors > 0 {
-			attrs = append(attrs, "errors", numErrors)
-		}
-
-		// Branches summary
-		branchOutdated := len(result.BranchesSynced) + len(result.BranchesFailed)
-		branchTotal := branchOutdated + len(result.BranchesUpToDate)
-		if branchTotal > 0 {
-			if branchOutdated > 0 {
-				attrs = append(attrs, "branches", fmt.Sprintf("total=%d outdated=%d synced=%d", branchTotal, branchOutdated, len(result.BranchesSynced)))
-			} else {
-				attrs = append(attrs, "branches", fmt.Sprintf("total=%d", branchTotal))
-			}
-		}
-
-		// Tags summary
-		tagOutdated := len(result.TagsFetched) + len(result.TagsFailed)
-		tagTotal := tagOutdated + len(result.TagsUpToDate)
-		if tagTotal > 0 {
-			if tagOutdated > 0 {
-				attrs = append(attrs, "tags", fmt.Sprintf("total=%d outdated=%d synced=%d", tagTotal, tagOutdated, len(result.TagsFetched)))
-			} else {
-				attrs = append(attrs, "tags", fmt.Sprintf("total=%d", tagTotal))
-			}
-		}
-
-		log.Log(ctx, level, msg, attrs...)
 	}
 
 	log.Debug("sync details",
@@ -237,6 +201,46 @@ func (s *Syncer) syncBranches(ctx context.Context, r *git.Repository, repo *conf
 			s.pruneStaleBranches(r, repo, stale, opts, log, result)
 		}
 	}
+}
+
+// logSyncSuccess logs the summary for a successful sync (no result.Err).
+func logSyncSuccess(ctx context.Context, log *slog.Logger, result Result, duration time.Duration) {
+	msg := "sync finished"
+	level := slog.LevelInfo
+	numErrors := len(result.BranchesFailed) + len(result.TagsFailed)
+	if numErrors > 0 {
+		msg = "sync finished with errors"
+		level = slog.LevelWarn
+	}
+
+	attrs := []any{"duration", duration.Round(time.Millisecond)}
+	if numErrors > 0 {
+		attrs = append(attrs, "errors", numErrors)
+	}
+
+	// Branches summary
+	branchOutdated := len(result.BranchesSynced) + len(result.BranchesFailed)
+	branchTotal := branchOutdated + len(result.BranchesUpToDate)
+	if branchTotal > 0 {
+		if branchOutdated > 0 {
+			attrs = append(attrs, "branches", fmt.Sprintf("total=%d outdated=%d synced=%d", branchTotal, branchOutdated, len(result.BranchesSynced)))
+		} else {
+			attrs = append(attrs, "branches", fmt.Sprintf("total=%d", branchTotal))
+		}
+	}
+
+	// Tags summary
+	tagOutdated := len(result.TagsFetched) + len(result.TagsFailed)
+	tagTotal := tagOutdated + len(result.TagsUpToDate)
+	if tagTotal > 0 {
+		if tagOutdated > 0 {
+			attrs = append(attrs, "tags", fmt.Sprintf("total=%d outdated=%d synced=%d", tagTotal, tagOutdated, len(result.TagsFetched)))
+		} else {
+			attrs = append(attrs, "tags", fmt.Sprintf("total=%d", tagTotal))
+		}
+	}
+
+	log.Log(ctx, level, msg, attrs...)
 }
 
 func (*Syncer) pruneStaleBranches(r *git.Repository, repo *config.RepoConfig, stale []string, opts SyncOptions, log *slog.Logger, result *Result) {

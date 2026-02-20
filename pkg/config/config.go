@@ -18,7 +18,8 @@ const (
 	// DefaultPollInterval is used when a repo does not specify a poll interval.
 	DefaultPollInterval = 2 * time.Minute
 
-	hoursPerDay = 24
+	hoursPerDay    = 24
+	maxRepoNameLen = 64
 )
 
 // Config is the top-level configuration.
@@ -192,8 +193,8 @@ func (c *Config) UnmarshalYAML(value *yaml.Node) error {
 	}
 
 	for name, repo := range c.Repos {
-		if len(name) > 64 {
-			return fmt.Errorf("repo name %q is too long (max 64 characters)", name)
+		if len(name) > maxRepoNameLen {
+			return fmt.Errorf("repo name %q is too long (max %d characters)", name, maxRepoNameLen)
 		}
 		if !nameRegex.MatchString(name) {
 			return fmt.Errorf("repo name %q contains invalid characters (only alphanumeric, dots, underscores, and hyphens allowed)", name)

@@ -233,45 +233,9 @@ func (*Syncer) recordOpenVoxMetrics(repo *config.RepoConfig, start time.Time, re
 		telemetry.LastFailureTimestamp.WithLabelValues(repo.Name).Set(float64(time.Now().Unix()))
 		log.Error("openvox sync failed", "error", result.Err, "duration", duration)
 	} else {
+		logSyncSuccess(context.Background(), log, *result, duration)
 		telemetry.SyncSuccessTotal.WithLabelValues(repo.Name).Inc()
 		telemetry.LastSuccessTimestamp.WithLabelValues(repo.Name).Set(float64(time.Now().Unix()))
-
-		msg := "sync finished"
-		level := slog.LevelInfo
-		numErrors := len(result.BranchesFailed) + len(result.TagsFailed)
-		if numErrors > 0 {
-			msg = "sync finished with errors"
-			level = slog.LevelWarn
-		}
-
-		attrs := []any{"duration", duration.Round(time.Millisecond)}
-		if numErrors > 0 {
-			attrs = append(attrs, "errors", numErrors)
-		}
-
-		// Branches summary
-		branchOutdated := len(result.BranchesSynced) + len(result.BranchesFailed)
-		branchTotal := branchOutdated + len(result.BranchesUpToDate)
-		if branchTotal > 0 {
-			if branchOutdated > 0 {
-				attrs = append(attrs, "branches", fmt.Sprintf("total=%d outdated=%d synced=%d", branchTotal, branchOutdated, len(result.BranchesSynced)))
-			} else {
-				attrs = append(attrs, "branches", fmt.Sprintf("total=%d", branchTotal))
-			}
-		}
-
-		// Tags summary
-		tagOutdated := len(result.TagsFetched) + len(result.TagsFailed)
-		tagTotal := tagOutdated + len(result.TagsUpToDate)
-		if tagTotal > 0 {
-			if tagOutdated > 0 {
-				attrs = append(attrs, "tags", fmt.Sprintf("total=%d outdated=%d synced=%d", tagTotal, tagOutdated, len(result.TagsFetched)))
-			} else {
-				attrs = append(attrs, "tags", fmt.Sprintf("total=%d", tagTotal))
-			}
-		}
-
-		log.Log(context.Background(), level, msg, attrs...)
 	}
 
 	log.Debug("openvox sync details",

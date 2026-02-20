@@ -447,17 +447,27 @@ func TestSyncSkippingStaleBranches(t *testing.T) {
 	}
 
 	// Create root commit
-	os.WriteFile(filepath.Join(tmpClone, "README"), []byte("root"), 0644)
-	wt.Add("README")
+	if err := os.WriteFile(filepath.Join(tmpClone, "README"), []byte("root"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := wt.Add("README"); err != nil {
+		t.Fatal(err)
+	}
 	rootSig := &object.Signature{Name: "root", Email: "root@test.com", When: time.Now().Add(-400 * 24 * time.Hour)}
-	wt.Commit("root", &git.CommitOptions{Author: rootSig, Committer: rootSig})
+	if _, err := wt.Commit("root", &git.CommitOptions{Author: rootSig, Committer: rootSig}); err != nil {
+		t.Fatal(err)
+	}
 
 	// 1. Create stale branch
 	if err := wt.Checkout(&git.CheckoutOptions{Branch: plumbing.NewBranchReferenceName("stale-branch"), Create: true}); err != nil {
 		t.Fatal(err)
 	}
-	os.WriteFile(filepath.Join(tmpClone, "stale"), []byte("stale"), 0644)
-	wt.Add("stale")
+	if err := os.WriteFile(filepath.Join(tmpClone, "stale"), []byte("stale"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := wt.Add("stale"); err != nil {
+		t.Fatal(err)
+	}
 	past := time.Now().Add(-365 * 24 * time.Hour)
 	staleSig := &object.Signature{Name: "stale", Email: "stale@test.com", When: past}
 	staleHash, err := wt.Commit("stale commit", &git.CommitOptions{Author: staleSig, Committer: staleSig})
@@ -472,8 +482,12 @@ func TestSyncSkippingStaleBranches(t *testing.T) {
 	if err := wt.Checkout(&git.CheckoutOptions{Branch: plumbing.NewBranchReferenceName("fresh-branch"), Create: true}); err != nil {
 		t.Fatal(err)
 	}
-	os.WriteFile(filepath.Join(tmpClone, "fresh"), []byte("fresh"), 0644)
-	wt.Add("fresh")
+	if err := os.WriteFile(filepath.Join(tmpClone, "fresh"), []byte("fresh"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := wt.Add("fresh"); err != nil {
+		t.Fatal(err)
+	}
 	freshSig := &object.Signature{Name: "fresh", Email: "fresh@test.com", When: time.Now()}
 	freshHash, err := wt.Commit("fresh commit", &git.CommitOptions{Author: freshSig, Committer: freshSig})
 	if err != nil {
@@ -526,7 +540,7 @@ func TestSyncSkippingStaleBranches(t *testing.T) {
 	// Check stale branch does NOT exist
 	if _, err := local.Reference(plumbing.NewBranchReferenceName("stale-branch"), true); err == nil {
 		t.Error("stale-branch should NOT exist (should have been skipped)")
-	} else if err != plumbing.ErrReferenceNotFound {
+	} else if !errors.Is(err, plumbing.ErrReferenceNotFound) {
 		t.Errorf("unexpected error checking stale-branch: %v", err)
 	}
 
