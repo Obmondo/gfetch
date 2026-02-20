@@ -236,14 +236,18 @@ func (*Syncer) recordOpenVoxMetrics(repo *config.RepoConfig, start time.Time, re
 		telemetry.SyncSuccessTotal.WithLabelValues(repo.Name).Inc()
 		telemetry.LastSuccessTimestamp.WithLabelValues(repo.Name).Set(float64(time.Now().Unix()))
 
-		msg := "openvox sync successful"
+		msg := "sync finished"
 		level := slog.LevelInfo
-		if len(result.BranchesFailed) > 0 || len(result.TagsFailed) > 0 {
-			msg = "openvox sync partially done"
+		numErrors := len(result.BranchesFailed) + len(result.TagsFailed)
+		if numErrors > 0 {
+			msg = "sync finished with errors"
 			level = slog.LevelWarn
 		}
 
 		attrs := []any{"duration", duration.Round(time.Millisecond)}
+		if numErrors > 0 {
+			attrs = append(attrs, "errors", numErrors)
+		}
 
 		// Branches summary
 		branchOutdated := len(result.BranchesSynced) + len(result.BranchesFailed)

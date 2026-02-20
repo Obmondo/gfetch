@@ -73,6 +73,8 @@ func (s *Syncer) SyncRepo(ctx context.Context, repo *config.RepoConfig, opts Syn
 	result := Result{RepoName: repo.Name}
 	log := s.logger.With("repo", repo.Name)
 
+	log.Info("sync starting")
+
 	if repo.PruneStale && !opts.PruneStale {
 		opts.PruneStale = true
 	}
@@ -124,14 +126,18 @@ func (s *Syncer) SyncRepo(ctx context.Context, repo *config.RepoConfig, opts Syn
 		telemetry.SyncSuccessTotal.WithLabelValues(repo.Name).Inc()
 		telemetry.LastSuccessTimestamp.WithLabelValues(repo.Name).Set(float64(time.Now().Unix()))
 
-		msg := "sync successful"
+		msg := "sync finished"
 		level := slog.LevelInfo
-		if len(result.BranchesFailed) > 0 || len(result.TagsFailed) > 0 {
-			msg = "sync partially done"
+		numErrors := len(result.BranchesFailed) + len(result.TagsFailed)
+		if numErrors > 0 {
+			msg = "sync finished with errors"
 			level = slog.LevelWarn
 		}
 
 		attrs := []any{"duration", duration.Round(time.Millisecond)}
+		if numErrors > 0 {
+			attrs = append(attrs, "errors", numErrors)
+		}
 
 		// Branches summary
 		branchOutdated := len(result.BranchesSynced) + len(result.BranchesFailed)
