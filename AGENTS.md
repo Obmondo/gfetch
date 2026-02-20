@@ -77,6 +77,13 @@ go test ./pkg/gsync/...
 
 # Build with version info (like GoReleaser does)
 go build -ldflags "-X github.com/obmondo/gfetch/internal/cli.Version=dev -X github.com/obmondo/gfetch/internal/cli.Commit=$(git rev-parse --short HEAD) -X github.com/obmondo/gfetch/internal/cli.Date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o gfetch ./cmd/gfetch
+
+# Format check (must be clean before committing)
+gofmt -l .           # list files with issues
+gofmt -w .           # fix in place
+
+# Lint (must pass before committing — config: .golangci.yml)
+golangci-lint run ./...
 ```
 
 ## Code Conventions
@@ -95,6 +102,7 @@ go build -ldflags "-X github.com/obmondo/gfetch/internal/cli.Version=dev -X gith
 
 - **Mandatory User Approval**: NEVER commit changes unless the user explicitly asks you to.
 - **Signed Commits**: Always sign commits when requested (ensure GPG signing is enabled or use `-S`).
+- **Pre-commit checks**: Before every commit, run `gofmt -w .` and `golangci-lint run ./...`. Both must be clean — no formatting diffs, no lint issues.
 - Follow [Conventional Commits](https://www.conventionalcommits.org/):
 
 ```
