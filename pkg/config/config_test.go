@@ -187,12 +187,14 @@ func TestValidate_PollIntervalTooLow(t *testing.T) {
 	}
 
 	cfg := &Config{Repos: map[string]RepoConfig{"test": {
-		Name:         "test",
-		URL:          "git@github.com:test/repo.git",
-		SSHKeyPath:   keyFile,
-		LocalPath:    "/tmp/test",
-		PollInterval: Duration(5 * time.Second),
-		Branches:     []Pattern{{Raw: branchMain}},
+		RepoDefaults: RepoDefaults{
+			SSHKeyPath:   keyFile,
+			LocalPath:    "/tmp/test",
+			PollInterval: Duration(5 * time.Second),
+			Branches:     []Pattern{{Raw: branchMain}},
+		},
+		Name: "test",
+		URL:  "git@github.com:test/repo.git",
 	}}}
 	err := cfg.Validate()
 	if err == nil {
@@ -202,11 +204,13 @@ func TestValidate_PollIntervalTooLow(t *testing.T) {
 
 func TestValidate_HTTPSPublicRepo(t *testing.T) {
 	cfg := &Config{Repos: map[string]RepoConfig{"public-repo": {
-		Name:         "public-repo",
-		URL:          "https://github.com/git/git.git",
-		LocalPath:    "/tmp/test",
-		PollInterval: Duration(30 * time.Second),
-		Branches:     []Pattern{{Raw: branchMain}},
+		RepoDefaults: RepoDefaults{
+			LocalPath:    "/tmp/test",
+			PollInterval: Duration(30 * time.Second),
+			Branches:     []Pattern{{Raw: branchMain}},
+		},
+		Name: "public-repo",
+		URL:  "https://github.com/git/git.git",
 	}}}
 	err := cfg.Validate()
 	if err != nil {
@@ -327,7 +331,89 @@ func TestApplyDefaults(t *testing.T) {
 	if repo.SSHKeyPath != "/tmp/default_key" {
 		t.Errorf("ssh_key_path = %q, want /tmp/default_key", repo.SSHKeyPath)
 	}
-	if !repo.OpenVox {
+	if repo.OpenVox == nil || !*repo.OpenVox {
 		t.Error("openvox should be inherited from defaults")
+	}
+}
+
+func TestApplyDefaults_PruneBoolOverride(t *testing.T) {
+	boolPtr := func(b bool) *bool { return &b }
+
+	tests := []struct {
+		name           string
+		defaultPrune   *bool
+		repoPrune      *bool
+		wantPrune      *bool
+		defaultStale   *bool
+		repoStale      *bool
+		wantStale      *bool
+	}{
+		{
+			name:         "nil repo inherits default prune=true",
+			defaultPrune: boolPtr(true),
+			repoPrune:    nil,
+			wantPrune:    boolPtr(true),
+			defaultStale: boolPtr(true),
+			repoStale:    nil,
+			wantStale:    boolPtr(true),
+		},
+		{
+			name:         "explicit prune=false blocks default prune=true",
+			defaultPrune: boolPtr(true),
+			repoPrune:    boolPtr(false),
+			wantPrune:    boolPtr(false),
+			defaultStale: boolPtr(true),
+			repoStale:    boolPtr(false),
+			wantStale:    boolPtr(false),
+		},
+		{
+			name:         "nil defaults leave repo nil",
+			defaultPrune: nil,
+			repoPrune:    nil,
+			wantPrune:    nil,
+			defaultStale: nil,
+			repoStale:    nil,
+			wantStale:    nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			defaults := &RepoDefaults{
+				SSHKeyPath:   "/tmp/key",
+				LocalPath:    "/tmp/path",
+				PollInterval: Duration(10 * time.Second),
+				Branches:     []Pattern{{Raw: "main"}},
+				Prune:        tt.defaultPrune,
+				PruneStale:   tt.defaultStale,
+			}
+			repo := &RepoConfig{
+				Name: "test",
+				URL:  "git@github.com:test/repo.git",
+				RepoDefaults: RepoDefaults{
+					Prune:      tt.repoPrune,
+					PruneStale: tt.repoStale,
+				},
+			}
+			applyDefaults(repo, defaults)
+
+			switch {
+			case tt.wantPrune == nil && repo.Prune != nil:
+				t.Errorf("prune: want nil, got %v", *repo.Prune)
+			case tt.wantPrune != nil && repo.Prune == nil:
+				t.Errorf("prune: want %v, got nil", *tt.wantPrune)
+			case tt.wantPrune != nil && *repo.Prune != *tt.wantPrune:
+				t.Errorf("prune: want %v, got %v", *tt.wantPrune, *repo.Prune)
+			}
+
+			switch {
+			case tt.wantStale == nil && repo.PruneStale != nil:
+				t.Errorf("prune_stale: want nil, got %v", *repo.PruneStale)
+			case tt.wantStale != nil && repo.PruneStale == nil:
+				t.Errorf("prune_stale: want %v, got nil", *tt.wantStale)
+			case tt.wantStale != nil && *repo.PruneStale != *tt.wantStale:
+				t.Errorf("prune_stale: want %v, got %v", *tt.wantStale, *repo.PruneStale)
+			}
+		})
 	}
 }

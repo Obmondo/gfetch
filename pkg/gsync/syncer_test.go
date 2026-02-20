@@ -265,10 +265,12 @@ func TestSyncHTTPS_Example(t *testing.T) {
 	syncer := New(slog.Default())
 	localDir := t.TempDir()
 	repoConfig := &config.RepoConfig{
-		Name:      "linuxaid-config-template",
-		URL:       "https://github.com/Obmondo/linuxaid-config-template.git",
-		LocalPath: localDir,
-		Branches:  []config.Pattern{{Raw: "main"}},
+		RepoDefaults: config.RepoDefaults{
+			LocalPath: localDir,
+			Branches:  []config.Pattern{{Raw: "main"}},
+		},
+		Name: "linuxaid-config-template",
+		URL:  "https://github.com/Obmondo/linuxaid-config-template.git",
 	}
 
 	result := syncer.SyncRepo(context.Background(), repoConfig, SyncOptions{})
@@ -369,14 +371,17 @@ func TestPruneStaleBranches(t *testing.T) {
 	}
 
 	syncer := New(slog.Default())
+	pruneStaleTrue := true
 	repoConfig := &config.RepoConfig{
-		Name:       "test",
-		URL:        bareDir,
-		LocalPath:  localDir,
-		SSHKeyPath: sshKey,
-		Branches:   []config.Pattern{{Raw: "*"}},
-		PruneStale: true,
-		StaleAge:   config.Duration(180 * 24 * time.Hour),
+		RepoDefaults: config.RepoDefaults{
+			LocalPath:  localDir,
+			SSHKeyPath: sshKey,
+			Branches:   []config.Pattern{{Raw: "*"}},
+			PruneStale: &pruneStaleTrue,
+			StaleAge:   config.Duration(180 * 24 * time.Hour),
+		},
+		Name: "test",
+		URL:  bareDir,
 	}
 
 	// First verify it's there.
@@ -384,8 +389,8 @@ func TestPruneStaleBranches(t *testing.T) {
 		t.Fatal("expected stale branch to exist before sync")
 	}
 
-	// Sync with prune-stale enabled.
-	result := syncer.SyncRepo(context.Background(), repoConfig, SyncOptions{PruneStale: true, StaleAge: 180 * 24 * time.Hour})
+	// Sync with prune-stale enabled (prune must also be true as it gates prune_stale).
+	result := syncer.SyncRepo(context.Background(), repoConfig, SyncOptions{Prune: true, PruneStale: true, StaleAge: 180 * 24 * time.Hour})
 
 	if result.Err != nil {
 		t.Fatalf("SyncRepo failed: %v", result.Err)
@@ -483,13 +488,16 @@ func TestSyncSkippingStaleBranches(t *testing.T) {
 
 	// Setup Config
 	syncer := New(slog.Default())
+	pruneStaleTrue2 := true
 	repoConfig := &config.RepoConfig{
-		Name:       "test-skip",
-		URL:        bareDir,
-		LocalPath:  localDir,
-		Branches:   []config.Pattern{{Raw: "*"}},
-		PruneStale: true,
-		StaleAge:   config.Duration(180 * 24 * time.Hour), // 6 months
+		RepoDefaults: config.RepoDefaults{
+			LocalPath:  localDir,
+			Branches:   []config.Pattern{{Raw: "*"}},
+			PruneStale: &pruneStaleTrue2,
+			StaleAge:   config.Duration(180 * 24 * time.Hour), // 6 months
+		},
+		Name: "test-skip",
+		URL:  bareDir,
 	}
 
 	opts := SyncOptions{
@@ -525,4 +533,101 @@ func TestSyncSkippingStaleBranches(t *testing.T) {
 	// Check if stale branch was pruned or stale list in result?
 	// Since we skipped it, it shouldn't be in Pruned or Stale lists (as those operate on local branches)
 	// But we can check logs if we captured them, or just rely on existence.
+}
+
+func TestPruneFalseOverridesDefault(t *testing.T) {
+	bareDir := filepath.Join(t.TempDir(), "bare.git")
+	localDir := filepath.Join(t.TempDir(), "local")
+
+	// Set up a bare remote with "master" and "extra-branch". Clone both locally.
+	local := initBareAndClone(t, bareDir, localDir, []string{"extra-branch"})
+
+	// Provide a fake SSH key to pass validation.
+	sshKey := filepath.Join(t.TempDir(), "id_rsa")
+	if err := os.WriteFile(sshKey, []byte("fake"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	pruneFalse := false
+	repoConfig := &config.RepoConfig{
+		RepoDefaults: config.RepoDefaults{
+			LocalPath:  localDir,
+			SSHKeyPath: sshKey,
+			Branches:   []config.Pattern{{Raw: "master"}}, // extra-branch does not match
+			Prune:      &pruneFalse,
+		},
+		Name: "test",
+		URL:  bareDir,
+	}
+
+	// Verify extra-branch exists before sync.
+	if _, err := local.Reference(plumbing.NewBranchReferenceName("extra-branch"), true); err != nil {
+		t.Fatal("expected extra-branch to exist before sync")
+	}
+
+	// Daemon-mode call: no CLI flags, pruning governed solely by repo config.
+	result := New(slog.Default()).SyncRepo(context.Background(), repoConfig, SyncOptions{})
+	if result.Err != nil {
+		t.Fatalf("SyncRepo failed: %v", result.Err)
+	}
+
+	// extra-branch must NOT be pruned because prune: false.
+	if _, err := local.Reference(plumbing.NewBranchReferenceName("extra-branch"), true); err != nil {
+		t.Error("extra-branch should NOT have been pruned (prune: false)")
+	}
+	if len(result.BranchesPruned) != 0 {
+		t.Errorf("expected no pruned branches, got %v", result.BranchesPruned)
+	}
+}
+
+func TestPruneTrueFromConfigIsApplied(t *testing.T) {
+	bareDir := filepath.Join(t.TempDir(), "bare.git")
+	localDir := filepath.Join(t.TempDir(), "local")
+
+	// Set up a bare remote with "master" and "extra-branch". Clone both locally.
+	local := initBareAndClone(t, bareDir, localDir, []string{"extra-branch"})
+
+	// Provide a fake SSH key to pass validation.
+	sshKey := filepath.Join(t.TempDir(), "id_rsa")
+	if err := os.WriteFile(sshKey, []byte("fake"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	pruneTrue := true
+	repoConfig := &config.RepoConfig{
+		RepoDefaults: config.RepoDefaults{
+			LocalPath:  localDir,
+			SSHKeyPath: sshKey,
+			Branches:   []config.Pattern{{Raw: "master"}}, // extra-branch does not match
+			Prune:      &pruneTrue,
+		},
+		Name: "test",
+		URL:  bareDir,
+	}
+
+	// Verify extra-branch exists before sync.
+	if _, err := local.Reference(plumbing.NewBranchReferenceName("extra-branch"), true); err != nil {
+		t.Fatal("expected extra-branch to exist before sync")
+	}
+
+	// Daemon-mode call: no CLI flags, pruning governed solely by repo config.
+	result := New(slog.Default()).SyncRepo(context.Background(), repoConfig, SyncOptions{})
+	if result.Err != nil {
+		t.Fatalf("SyncRepo failed: %v", result.Err)
+	}
+
+	// extra-branch must be pruned because prune: true.
+	if _, err := local.Reference(plumbing.NewBranchReferenceName("extra-branch"), true); err == nil {
+		t.Error("extra-branch should have been pruned (prune: true)")
+	}
+	found := false
+	for _, b := range result.BranchesPruned {
+		if b == "extra-branch" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected extra-branch in pruned list, got %v", result.BranchesPruned)
+	}
 }
