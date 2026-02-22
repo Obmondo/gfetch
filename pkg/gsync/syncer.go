@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"sort"
+	"sync"
 	"time"
 
 	git "github.com/go-git/go-git/v5"
@@ -44,6 +45,7 @@ type Result struct {
 // Syncer performs git sync operations.
 type Syncer struct {
 	logger *slog.Logger
+	mu     sync.Mutex
 }
 
 // New creates a new Syncer with the given logger.
@@ -151,6 +153,50 @@ func (s *Syncer) SyncRepo(ctx context.Context, repo *config.RepoConfig, opts Syn
 	return result
 }
 
+func (s *Syncer) addBranchSynced(result *Result, branch string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	result.BranchesSynced = append(result.BranchesSynced, branch)
+}
+
+func (s *Syncer) addBranchUpToDate(result *Result, branch string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	result.BranchesUpToDate = append(result.BranchesUpToDate, branch)
+}
+
+func (s *Syncer) addBranchFailed(result *Result, branch string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	result.BranchesFailed = append(result.BranchesFailed, branch)
+}
+
+func (s *Syncer) addTagFetched(result *Result, tag string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	result.TagsFetched = append(result.TagsFetched, tag)
+}
+
+func (s *Syncer) addTagUpToDate(result *Result, tag string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	result.TagsUpToDate = append(result.TagsUpToDate, tag)
+}
+
+func (s *Syncer) addTagFailed(result *Result, tag string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	result.TagsFailed = append(result.TagsFailed, tag)
+}
+
+func (s *Syncer) setErr(result *Result, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if result.Err == nil {
+		result.Err = err
+	}
+}
+
 func (s *Syncer) syncBranches(ctx context.Context, r *git.Repository, repo *config.RepoConfig, auth transport.AuthMethod, opts SyncOptions, log *slog.Logger, result *Result) {
 	if len(repo.Branches) == 0 {
 		return
@@ -160,7 +206,7 @@ func (s *Syncer) syncBranches(ctx context.Context, r *git.Repository, repo *conf
 	if err != nil {
 		log.Error("failed to resolve branches", "error", err)
 		telemetry.SyncFailuresTotal.WithLabelValues(repo.Name, "branch_sync").Inc()
-		result.Err = fmt.Errorf("resolving branches: %w", err)
+		s.setErr(result, fmt.Errorf("resolving branches: %w", err))
 		return
 	}
 
@@ -176,11 +222,11 @@ func (s *Syncer) syncBranches(ctx context.Context, r *git.Repository, repo *conf
 		if err != nil {
 			log.Error("branch sync failed", "branch", branch, "error", err)
 			telemetry.SyncFailuresTotal.WithLabelValues(repo.Name, "branch_sync").Inc()
-			result.BranchesFailed = append(result.BranchesFailed, branch)
+			s.addBranchFailed(result, branch)
 		} else if synced {
-			result.BranchesSynced = append(result.BranchesSynced, branch)
+			s.addBranchSynced(result, branch)
 		} else {
-			result.BranchesUpToDate = append(result.BranchesUpToDate, branch)
+			s.addBranchUpToDate(result, branch)
 		}
 	}
 
@@ -188,7 +234,9 @@ func (s *Syncer) syncBranches(ctx context.Context, r *git.Repository, repo *conf
 	if err != nil {
 		log.Error("failed to find obsolete branches", "error", err)
 	} else {
+		s.mu.Lock()
 		result.BranchesObsolete = obsolete
+		s.mu.Unlock()
 		s.pruneBranches(r, repo, obsolete, opts, log, result)
 	}
 
@@ -197,7 +245,9 @@ func (s *Syncer) syncBranches(ctx context.Context, r *git.Repository, repo *conf
 		if err != nil {
 			log.Error("failed to find stale branches", "error", err)
 		} else {
+			s.mu.Lock()
 			result.BranchesStale = stale
+			s.mu.Unlock()
 			s.pruneStaleBranches(r, repo, stale, opts, log, result)
 		}
 	}
@@ -249,7 +299,7 @@ func logSyncSuccess(ctx context.Context, log *slog.Logger, result Result, durati
 	log.Log(ctx, level, msg, attrs...)
 }
 
-func (*Syncer) pruneStaleBranches(r *git.Repository, repo *config.RepoConfig, stale []string, opts SyncOptions, log *slog.Logger, result *Result) {
+func (s *Syncer) pruneStaleBranches(r *git.Repository, repo *config.RepoConfig, stale []string, opts SyncOptions, log *slog.Logger, result *Result) {
 	for _, branch := range stale {
 		if repo.Checkout != "" && branch == repo.Checkout {
 			log.Info("skipping prune of checkout branch", "branch", branch)
@@ -257,7 +307,9 @@ func (*Syncer) pruneStaleBranches(r *git.Repository, repo *config.RepoConfig, st
 		}
 		if opts.DryRun {
 			log.Info("stale branch would be pruned (dry-run)", "branch", branch)
+			s.mu.Lock()
 			result.BranchesPruned = append(result.BranchesPruned, branch)
+			s.mu.Unlock()
 			continue
 		}
 		if err := deleteBranch(r, branch); err != nil {
@@ -265,11 +317,13 @@ func (*Syncer) pruneStaleBranches(r *git.Repository, repo *config.RepoConfig, st
 			continue
 		}
 		log.Info("stale branch pruned", "branch", branch)
+		s.mu.Lock()
 		result.BranchesPruned = append(result.BranchesPruned, branch)
+		s.mu.Unlock()
 	}
 }
 
-func (*Syncer) pruneBranches(r *git.Repository, repo *config.RepoConfig, obsolete []string, opts SyncOptions, log *slog.Logger, result *Result) {
+func (s *Syncer) pruneBranches(r *git.Repository, repo *config.RepoConfig, obsolete []string, opts SyncOptions, log *slog.Logger, result *Result) {
 	for _, branch := range obsolete {
 		if repo.Checkout != "" && branch == repo.Checkout {
 			log.Info("skipping prune of checkout branch", "branch", branch)
@@ -280,19 +334,23 @@ func (*Syncer) pruneBranches(r *git.Repository, repo *config.RepoConfig, obsolet
 			// only report as obsolete
 		case opts.DryRun:
 			log.Info("branch would be pruned (dry-run)", "branch", branch)
+			s.mu.Lock()
 			result.BranchesPruned = append(result.BranchesPruned, branch)
+			s.mu.Unlock()
 		default:
 			if err := deleteBranch(r, branch); err != nil {
 				log.Error("failed to prune branch", "branch", branch, "error", err)
 				continue
 			}
 			log.Info("branch pruned", "branch", branch)
+			s.mu.Lock()
 			result.BranchesPruned = append(result.BranchesPruned, branch)
+			s.mu.Unlock()
 		}
 	}
 }
 
-func (*Syncer) syncTagsWrapper(ctx context.Context, r *git.Repository, repo *config.RepoConfig, auth transport.AuthMethod, opts SyncOptions, log *slog.Logger, result *Result) {
+func (s *Syncer) syncTagsWrapper(ctx context.Context, r *git.Repository, repo *config.RepoConfig, auth transport.AuthMethod, opts SyncOptions, log *slog.Logger, result *Result) {
 	if len(repo.Tags) == 0 {
 		return
 	}
@@ -301,32 +359,32 @@ func (*Syncer) syncTagsWrapper(ctx context.Context, r *git.Repository, repo *con
 	if err != nil {
 		log.Error("tag sync failed", "error", err)
 		telemetry.SyncFailuresTotal.WithLabelValues(repo.Name, "tag_sync").Inc()
-		if result.Err == nil {
-			result.Err = fmt.Errorf("tag sync: %w", err)
-		}
+		s.setErr(result, fmt.Errorf("tag sync: %w", err))
 	}
 
 	log.Debug("syncing tags", "count", len(fetched)+len(upToDate)+len(failed))
+	s.mu.Lock()
 	result.TagsFetched = fetched
 	result.TagsUpToDate = upToDate
 	result.TagsFailed = failed
 	result.TagsObsolete = obsolete
 	result.TagsPruned = pruned
+	s.mu.Unlock()
 }
 
-func (*Syncer) handleCheckout(r *git.Repository, repo *config.RepoConfig, log *slog.Logger, result *Result) {
+func (s *Syncer) handleCheckout(r *git.Repository, repo *config.RepoConfig, log *slog.Logger, result *Result) {
 	if repo.Checkout == "" {
 		return
 	}
 
 	if err := checkoutRef(r, repo.Checkout, log); err != nil {
 		log.Error("failed to checkout", "ref", repo.Checkout, "error", err)
-		if result.Err == nil {
-			result.Err = fmt.Errorf("checkout %s: %w", repo.Checkout, err)
-		}
+		s.setErr(result, fmt.Errorf("checkout %s: %w", repo.Checkout, err))
 		return
 	}
+	s.mu.Lock()
 	result.Checkout = repo.Checkout
+	s.mu.Unlock()
 }
 
 // ensureCloned opens an existing repo or inits an empty one with the remote configured.

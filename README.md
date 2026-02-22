@@ -107,6 +107,8 @@ defaults:
   stale_age: 180d               # supports d (days)
 
 # TODO: Add integration tests for real SSH Git repositories.
+# TODO: Implement concurrent syncing for OpenVox mode to improve performance and reliability.
+# TODO: Add configurable concurrency limit per repository.
 
 repos:
   my-service:

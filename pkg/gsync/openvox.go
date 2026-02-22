@@ -8,10 +8,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	git "github.com/go-git/go-git/v5"
 	gitconfig "github.com/go-git/go-git/v5/config"
+	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	"github.com/obmondo/gfetch/pkg/config"
 	"github.com/obmondo/gfetch/pkg/telemetry"
@@ -21,7 +23,24 @@ import (
 const (
 	metaDir        = ".gfetch-meta"
 	defaultDirMode = 0755
+	maxWorkers     = 5
 )
+
+var (
+	// resolverMutexes protects the hidden resolver repo (.gfetch-meta) from concurrent
+	// access during staleness checks. Keyed by absolute path to the resolver repo.
+	resolverMutexes sync.Map // map[string]*sync.Mutex
+)
+
+func getResolverMutex(path string) *sync.Mutex {
+	m, _ := resolverMutexes.LoadOrStore(path, &sync.Mutex{})
+	mu, ok := m.(*sync.Mutex)
+	if !ok {
+		// Should never happen with LoadOrStore above
+		panic("resolverMutexes contained non-mutex value")
+	}
+	return mu
+}
 
 // SanitizeName converts a Git ref name into a valid Puppet environment name.
 // Puppet environments only allow [a-zA-Z0-9_]. Any character outside this set
@@ -97,7 +116,7 @@ func (s *Syncer) syncOpenVoxBranches(ctx context.Context, resolverRepo *git.Repo
 	if err != nil {
 		log.Error("failed to resolve branches", "error", err)
 		telemetry.SyncFailuresTotal.WithLabelValues(repo.Name, "branch_sync").Inc()
-		result.Err = fmt.Errorf("resolving branches: %w", err)
+		s.setErr(result, fmt.Errorf("resolving branches: %w", err))
 		return result.Err
 	}
 
@@ -108,24 +127,47 @@ func (s *Syncer) syncOpenVoxBranches(ctx context.Context, resolverRepo *git.Repo
 	}
 
 	if collision := detectCollisions(branchNames, sanitizedToOriginal); collision != "" {
-
-		result.Err = fmt.Errorf("name collision after sanitization: %s", collision)
+		s.setErr(result, fmt.Errorf("name collision after sanitization: %s", collision))
 		return result.Err
 	}
 
-	for _, ref := range branches {
-		branch := ref.Name().Short()
+	resolverPath := filepath.Join(repo.LocalPath, metaDir)
+	resolverMu := getResolverMutex(resolverPath)
 
-		if opts.PruneStale && opts.Prune && IsStale(ctx, resolverRepo, ref, opts.StaleAge, auth, log) {
-			continue
-		}
+	var wg sync.WaitGroup
+	jobs := make(chan *plumbing.Reference, len(branches))
 
-		s.syncOneOpenVoxBranch(ctx, repo, branch, auth, log, result)
+	for i := 0; i < maxWorkers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for ref := range jobs {
+				branch := ref.Name().Short()
+
+				// Protect resolverRepo access with mutex
+				resolverMu.Lock()
+				isStale := opts.PruneStale && opts.Prune && IsStale(ctx, resolverRepo, ref, opts.StaleAge, auth, log)
+				resolverMu.Unlock()
+
+				if isStale {
+					continue
+				}
+
+				s.syncOneOpenVoxBranch(ctx, repo, branch, auth, log, result)
+			}
+		}()
 	}
+
+	for _, ref := range branches {
+		jobs <- ref
+	}
+	close(jobs)
+	wg.Wait()
+
 	return nil
 }
 
-func (*Syncer) syncOneOpenVoxBranch(ctx context.Context, repo *config.RepoConfig, branch string, auth transport.AuthMethod, log *slog.Logger, result *Result) {
+func (s *Syncer) syncOneOpenVoxBranch(ctx context.Context, repo *config.RepoConfig, branch string, auth transport.AuthMethod, log *slog.Logger, result *Result) {
 	dirName := SanitizeName(branch)
 	dirPath := filepath.Join(repo.LocalPath, dirName)
 
@@ -137,7 +179,7 @@ func (*Syncer) syncOneOpenVoxBranch(ctx context.Context, repo *config.RepoConfig
 	if err != nil {
 		log.Error("openvox branch clone failed", "branch", branch, "dir", dirName, "error", err)
 		telemetry.SyncFailuresTotal.WithLabelValues(repo.Name, "branch_sync").Inc()
-		result.BranchesFailed = append(result.BranchesFailed, branch)
+		s.addBranchFailed(result, branch)
 		return
 	}
 
@@ -145,20 +187,20 @@ func (*Syncer) syncOneOpenVoxBranch(ctx context.Context, repo *config.RepoConfig
 	if err != nil {
 		log.Error("openvox branch sync failed", "branch", branch, "dir", dirName, "error", err)
 		telemetry.SyncFailuresTotal.WithLabelValues(repo.Name, "branch_sync").Inc()
-		result.BranchesFailed = append(result.BranchesFailed, branch)
+		s.addBranchFailed(result, branch)
 		return
 	}
 
 	if err := checkoutRef(r, branch, log); err != nil {
 		log.Error("openvox branch checkout failed", "branch", branch, "dir", dirName, "error", err)
-		result.BranchesFailed = append(result.BranchesFailed, branch)
+		s.addBranchFailed(result, branch)
 		return
 	}
 
 	if updated {
-		result.BranchesSynced = append(result.BranchesSynced, branch)
+		s.addBranchSynced(result, branch)
 	} else {
-		result.BranchesUpToDate = append(result.BranchesUpToDate, branch)
+		s.addBranchUpToDate(result, branch)
 	}
 }
 
@@ -171,24 +213,37 @@ func (s *Syncer) syncOpenVoxTags(ctx context.Context, resolverRepo *git.Reposito
 	if err != nil {
 		log.Error("failed to resolve tags", "error", err)
 		telemetry.SyncFailuresTotal.WithLabelValues(repo.Name, "tag_sync").Inc()
-		if result.Err == nil {
-			result.Err = fmt.Errorf("resolving tags: %w", err)
-		}
+		s.setErr(result, fmt.Errorf("resolving tags: %w", err))
 		return
 	}
 
 	log.Debug("syncing tags", "count", len(tags))
 	if collision := detectCollisions(tags, sanitizedToOriginal); collision != "" {
-		result.Err = fmt.Errorf("name collision after sanitization: %s", collision)
+		s.setErr(result, fmt.Errorf("name collision after sanitization: %s", collision))
 		return
 	}
 
-	for _, tag := range tags {
-		s.syncOneOpenVoxTag(ctx, repo, tag, auth, log, result)
+	var wg sync.WaitGroup
+	jobs := make(chan string, len(tags))
+
+	for i := 0; i < maxWorkers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for tag := range jobs {
+				s.syncOneOpenVoxTag(ctx, repo, tag, auth, log, result)
+			}
+		}()
 	}
+
+	for _, tag := range tags {
+		jobs <- tag
+	}
+	close(jobs)
+	wg.Wait()
 }
 
-func (*Syncer) syncOneOpenVoxTag(ctx context.Context, repo *config.RepoConfig, tag string, auth transport.AuthMethod, log *slog.Logger, result *Result) {
+func (s *Syncer) syncOneOpenVoxTag(ctx context.Context, repo *config.RepoConfig, tag string, auth transport.AuthMethod, log *slog.Logger, result *Result) {
 	dirName := SanitizeName(tag)
 	dirPath := filepath.Join(repo.LocalPath, dirName)
 
@@ -200,9 +255,7 @@ func (*Syncer) syncOneOpenVoxTag(ctx context.Context, repo *config.RepoConfig, t
 	if err != nil {
 		log.Error("openvox tag clone failed", "tag", tag, "dir", dirName, "error", err)
 		telemetry.SyncFailuresTotal.WithLabelValues(repo.Name, "tag_sync").Inc()
-		if result.Err == nil {
-			result.Err = fmt.Errorf("tag sync %s: %w", tag, err)
-		}
+		s.setErr(result, fmt.Errorf("tag sync %s: %w", tag, err))
 		return
 	}
 
@@ -211,17 +264,15 @@ func (*Syncer) syncOneOpenVoxTag(ctx context.Context, repo *config.RepoConfig, t
 	if err != nil {
 		log.Error("openvox tag sync failed", "tag", tag, "dir", dirName, "error", err)
 		telemetry.SyncFailuresTotal.WithLabelValues(repo.Name, "tag_sync").Inc()
-		if result.Err == nil {
-			result.Err = fmt.Errorf("tag sync %s: %w", tag, err)
-		}
-		result.TagsFailed = append(result.TagsFailed, tag)
+		s.setErr(result, fmt.Errorf("tag sync %s: %w", tag, err))
+		s.addTagFailed(result, tag)
 		return
 	}
 
 	if updated {
-		result.TagsFetched = append(result.TagsFetched, tag)
+		s.addTagFetched(result, tag)
 	} else {
-		result.TagsUpToDate = append(result.TagsUpToDate, tag)
+		s.addTagUpToDate(result, tag)
 	}
 }
 
