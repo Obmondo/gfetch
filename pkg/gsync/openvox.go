@@ -320,7 +320,7 @@ func pruneStaleOpenVoxDirs(repo *config.RepoConfig, activeNames map[string]strin
 	cutoff := time.Now().Add(-staleAge)
 	for sanitized, original := range activeNames {
 		if original == defaultBranch {
-			log.Info("skipping stale prune of default branch", "branch", original)
+			log.Debug("skipping stale prune of default branch", "branch", original)
 			continue
 		}
 		dirPath := filepath.Join(repo.LocalPath, sanitized)
