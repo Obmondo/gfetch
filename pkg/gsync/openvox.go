@@ -326,6 +326,11 @@ func pruneStaleOpenVoxDirs(repo *config.RepoConfig, activeNames map[string]strin
 		dirPath := filepath.Join(repo.LocalPath, sanitized)
 		r, err := git.PlainOpen(dirPath)
 		if err != nil {
+			if errors.Is(err, git.ErrRepositoryNotExists) {
+				if _, statErr := os.Stat(dirPath); os.IsNotExist(statErr) {
+					continue
+				}
+			}
 			log.Warn("skipping stale check: directory exists but is not a git repo", "dir", sanitized, "error", err)
 			continue
 		}

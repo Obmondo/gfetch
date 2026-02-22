@@ -140,7 +140,7 @@ func IsStale(ctx context.Context, repo *git.Repository, ref *plumbing.Reference,
 		return false
 	}
 	if stale {
-		log.Info("skipping stale branch sync", "branch", ref.Name().Short())
+		log.Info("skipping stale branch: no commits within age threshold", "branch", ref.Name().Short(), "max_age", age)
 		return true
 	}
 	return false

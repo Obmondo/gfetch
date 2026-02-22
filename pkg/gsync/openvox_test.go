@@ -223,3 +223,28 @@ func TestPruneStaleOpenVoxDirs_DryRun(t *testing.T) {
 		t.Errorf("expected old-branch in stale list, got %v", result.BranchesStale)
 	}
 }
+
+func TestPruneStaleOpenVoxDirs_MissingDir(t *testing.T) {
+	basePath := t.TempDir()
+	log := slog.Default()
+	staleAge := 180 * 24 * time.Hour
+
+	activeNames := map[string]string{
+		"missing_branch": "missing-branch",
+	}
+
+	repo := &config.RepoConfig{
+		RepoDefaults: config.RepoDefaults{LocalPath: basePath},
+		Name:         "test",
+	}
+
+	result := &Result{RepoName: "test"}
+
+	// Should NOT log a warning or fail if the directory is missing.
+	// We can't easily check logs here without a custom handler, but we can ensure it doesn't crash or add to results.
+	pruneStaleOpenVoxDirs(repo, activeNames, staleAge, false, "", log, result)
+
+	if len(result.BranchesPruned) != 0 {
+		t.Errorf("expected no branches pruned, got %v", result.BranchesPruned)
+	}
+}
