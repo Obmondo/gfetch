@@ -219,24 +219,30 @@ func logSyncSuccess(ctx context.Context, log *slog.Logger, result Result, durati
 	}
 
 	// Branches summary
-	branchOutdated := len(result.BranchesSynced) + len(result.BranchesFailed)
-	branchTotal := branchOutdated + len(result.BranchesUpToDate)
+	branchTotal := len(result.BranchesSynced) + len(result.BranchesFailed) + len(result.BranchesUpToDate)
 	if branchTotal > 0 {
-		if branchOutdated > 0 {
-			attrs = append(attrs, "branches", fmt.Sprintf("total=%d outdated=%d synced=%d", branchTotal, branchOutdated, len(result.BranchesSynced)))
+		if len(result.BranchesSynced) > 0 || len(result.BranchesFailed) > 0 {
+			s := fmt.Sprintf("total=%d updated=%d", branchTotal, len(result.BranchesSynced))
+			if len(result.BranchesFailed) > 0 {
+				s += fmt.Sprintf(" failed=%d", len(result.BranchesFailed))
+			}
+			attrs = append(attrs, "branches", s)
 		} else {
-			attrs = append(attrs, "branches", fmt.Sprintf("total=%d", branchTotal))
+			attrs = append(attrs, "branches", branchTotal)
 		}
 	}
 
 	// Tags summary
-	tagOutdated := len(result.TagsFetched) + len(result.TagsFailed)
-	tagTotal := tagOutdated + len(result.TagsUpToDate)
+	tagTotal := len(result.TagsFetched) + len(result.TagsFailed) + len(result.TagsUpToDate)
 	if tagTotal > 0 {
-		if tagOutdated > 0 {
-			attrs = append(attrs, "tags", fmt.Sprintf("total=%d outdated=%d synced=%d", tagTotal, tagOutdated, len(result.TagsFetched)))
+		if len(result.TagsFetched) > 0 || len(result.TagsFailed) > 0 {
+			s := fmt.Sprintf("total=%d updated=%d", tagTotal, len(result.TagsFetched))
+			if len(result.TagsFailed) > 0 {
+				s += fmt.Sprintf(" failed=%d", len(result.TagsFailed))
+			}
+			attrs = append(attrs, "tags", s)
 		} else {
-			attrs = append(attrs, "tags", fmt.Sprintf("total=%d", tagTotal))
+			attrs = append(attrs, "tags", tagTotal)
 		}
 	}
 
