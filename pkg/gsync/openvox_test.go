@@ -1,6 +1,8 @@
 package gsync
 
 import (
+	"context"
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -12,6 +14,79 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/obmondo/gfetch/pkg/config"
 )
+
+func TestEnsureClonedOpenVox_RecreatesNonRepoDir(t *testing.T) {
+	basePath := t.TempDir()
+	localPath := filepath.Join(basePath, "main")
+
+	if err := os.MkdirAll(localPath, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(localPath, "README.txt"), []byte("not a git repo"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	repoCfg := &config.RepoConfig{
+		RepoDefaults: config.RepoDefaults{LocalPath: localPath},
+		Name:         "test",
+		URL:          "https://example.com/repo.git",
+	}
+
+	r, err := ensureClonedOpenVox(context.Background(), repoCfg, nil, slog.Default())
+	if err != nil {
+		t.Fatalf("ensureClonedOpenVox failed: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(localPath, ".git")); err != nil {
+		t.Fatalf("expected .git to exist after recovery: %v", err)
+	}
+
+	remote, err := r.Remote("origin")
+	if err != nil {
+		t.Fatalf("expected origin remote: %v", err)
+	}
+	if len(remote.Config().URLs) != 1 || remote.Config().URLs[0] != repoCfg.URL {
+		t.Fatalf("origin URL = %v, want [%s]", remote.Config().URLs, repoCfg.URL)
+	}
+}
+
+func TestAcquireOpenVoxFileLock_Exclusive(t *testing.T) {
+	lockPath := filepath.Join(t.TempDir(), "main.gfetch.lock")
+
+	first, err := acquireOpenVoxFileLock(context.Background(), lockPath)
+	if err != nil {
+		t.Fatalf("acquire first lock failed: %v", err)
+	}
+	defer func() {
+		if err := first.Release(); err != nil {
+			t.Fatalf("release first lock failed: %v", err)
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	_, err = acquireOpenVoxFileLock(ctx, lockPath)
+	if err == nil {
+		t.Fatal("expected second lock acquisition to time out while first lock is held")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected deadline exceeded, got: %v", err)
+	}
+
+	if err := first.Release(); err != nil {
+		t.Fatalf("release first lock failed: %v", err)
+	}
+	first = nil
+
+	second, err := acquireOpenVoxFileLock(context.Background(), lockPath)
+	if err != nil {
+		t.Fatalf("acquire second lock after release failed: %v", err)
+	}
+	if err := second.Release(); err != nil {
+		t.Fatalf("release second lock failed: %v", err)
+	}
+}
 
 func TestSanitizeName(t *testing.T) {
 	tests := []struct {

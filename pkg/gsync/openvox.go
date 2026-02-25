@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	git "github.com/go-git/go-git/v5"
@@ -21,10 +22,87 @@ import (
 
 // metaDir is the hidden directory used to store the resolver repo for listing remote refs.
 const (
-	metaDir        = ".gfetch-meta"
-	defaultDirMode = 0755
-	maxWorkers     = 5
+	metaDir             = ".gfetch-meta"
+	defaultDirMode      = 0755
+	defaultLockFileMode = os.FileMode(0o644)
+	maxWorkers          = 5
+	lockPollDelay       = 100 * time.Millisecond
 )
+
+var (
+	// resolverMutexes protects the hidden resolver repo (.gfetch-meta) from concurrent
+	// access during staleness checks. Keyed by absolute path to the resolver repo.
+	resolverMutexes sync.Map // map[string]*sync.Mutex
+	// openVoxDirMutexes protects per-ref OpenVox directories from concurrent access.
+	// Keyed by absolute path to the per-ref directory.
+	openVoxDirMutexes sync.Map // map[string]*sync.Mutex
+)
+
+func getResolverMutex(path string) *sync.Mutex {
+	m, _ := resolverMutexes.LoadOrStore(path, &sync.Mutex{})
+	mu, ok := m.(*sync.Mutex)
+	if !ok {
+		// Should never happen with LoadOrStore above
+		panic("resolverMutexes contained non-mutex value")
+	}
+	return mu
+}
+
+func getOpenVoxDirMutex(path string) *sync.Mutex {
+	m, _ := openVoxDirMutexes.LoadOrStore(path, &sync.Mutex{})
+	mu, ok := m.(*sync.Mutex)
+	if !ok {
+		panic("openVoxDirMutexes contained non-mutex value")
+	}
+	return mu
+}
+
+type fileLock struct {
+	file *os.File
+}
+
+func openVoxLockPath(dirPath string) string {
+	return dirPath + ".gfetch.lock"
+}
+
+func acquireOpenVoxFileLock(ctx context.Context, lockPath string) (*fileLock, error) {
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, defaultLockFileMode)
+	if err != nil {
+		return nil, fmt.Errorf("opening lock file %s: %w", lockPath, err)
+	}
+
+	for {
+		err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		if err == nil {
+			return &fileLock{file: f}, nil
+		}
+		if !errors.Is(err, syscall.EWOULDBLOCK) && !errors.Is(err, syscall.EAGAIN) {
+			_ = f.Close()
+			return nil, fmt.Errorf("acquiring file lock %s: %w", lockPath, err)
+		}
+
+		select {
+		case <-ctx.Done():
+			_ = f.Close()
+			return nil, fmt.Errorf("waiting for file lock %s: %w", lockPath, ctx.Err())
+		case <-time.After(lockPollDelay):
+		}
+	}
+}
+
+func (l *fileLock) Release() error {
+	if l == nil || l.file == nil {
+		return nil
+	}
+	if err := syscall.Flock(int(l.file.Fd()), syscall.LOCK_UN); err != nil {
+		_ = l.file.Close()
+		return fmt.Errorf("releasing file lock: %w", err)
+	}
+	if err := l.file.Close(); err != nil {
+		return fmt.Errorf("closing lock file: %w", err)
+	}
+	return nil
+}
 
 // SanitizeName converts a Git ref name into a valid Puppet environment name.
 // Puppet environments only allow [a-zA-Z0-9_]. Any character outside this set
@@ -162,12 +240,27 @@ func (s *Syncer) syncOpenVoxBranches(ctx context.Context, resolverRepo *git.Repo
 func (s *Syncer) syncOneOpenVoxBranch(ctx context.Context, repo *config.RepoConfig, branch string, auth transport.AuthMethod, log *slog.Logger, result *Result) {
 	dirName := SanitizeName(branch)
 	dirPath := filepath.Join(repo.LocalPath, dirName)
+	dirMu := getOpenVoxDirMutex(dirPath)
+	dirMu.Lock()
+	defer dirMu.Unlock()
+
+	processLock, err := acquireOpenVoxFileLock(ctx, openVoxLockPath(dirPath))
+	if err != nil {
+		log.Error("openvox branch lock failed", "branch", branch, "dir", dirName, "error", err)
+		s.addBranchFailed(result, branch)
+		return
+	}
+	defer func() {
+		if relErr := processLock.Release(); relErr != nil {
+			log.Warn("failed to release openvox branch lock", "branch", branch, "dir", dirName, "error", relErr)
+		}
+	}()
 
 	// Build a sub-config pointing at the per-branch directory.
 	subCfg := *repo
 	subCfg.LocalPath = dirPath
 
-	r, err := ensureCloned(ctx, &subCfg, auth)
+	r, err := ensureClonedOpenVox(ctx, &subCfg, auth, log)
 	if err != nil {
 		log.Error("openvox branch clone failed", "branch", branch, "dir", dirName, "error", err)
 		telemetry.SyncFailuresTotal.WithLabelValues(repo.Name, "branch_sync").Inc()
@@ -238,12 +331,27 @@ func (s *Syncer) syncOpenVoxTags(ctx context.Context, resolverRepo *git.Reposito
 func (s *Syncer) syncOneOpenVoxTag(ctx context.Context, repo *config.RepoConfig, tag string, auth transport.AuthMethod, log *slog.Logger, result *Result) {
 	dirName := SanitizeName(tag)
 	dirPath := filepath.Join(repo.LocalPath, dirName)
+	dirMu := getOpenVoxDirMutex(dirPath)
+	dirMu.Lock()
+	defer dirMu.Unlock()
+
+	processLock, err := acquireOpenVoxFileLock(ctx, openVoxLockPath(dirPath))
+	if err != nil {
+		log.Error("openvox tag lock failed", "tag", tag, "dir", dirName, "error", err)
+		s.addTagFailed(result, tag)
+		return
+	}
+	defer func() {
+		if relErr := processLock.Release(); relErr != nil {
+			log.Warn("failed to release openvox tag lock", "tag", tag, "dir", dirName, "error", relErr)
+		}
+	}()
 
 	// Build a sub-config pointing at the per-tag directory.
 	subCfg := *repo
 	subCfg.LocalPath = dirPath
 
-	r, err := ensureCloned(ctx, &subCfg, auth)
+	r, err := ensureClonedOpenVox(ctx, &subCfg, auth, log)
 	if err != nil {
 		log.Error("openvox tag clone failed", "tag", tag, "dir", dirName, "error", err)
 		telemetry.SyncFailuresTotal.WithLabelValues(repo.Name, "tag_sync").Inc()
@@ -266,6 +374,31 @@ func (s *Syncer) syncOneOpenVoxTag(ctx context.Context, repo *config.RepoConfig,
 	} else {
 		s.addTagUpToDate(result, tag)
 	}
+}
+
+// ensureClonedOpenVox opens/initializes a per-ref OpenVox repo and self-heals
+// directories that exist but are not valid git repositories.
+func ensureClonedOpenVox(ctx context.Context, repo *config.RepoConfig, auth transport.AuthMethod, log *slog.Logger) (*git.Repository, error) {
+	r, err := ensureCloned(ctx, repo, auth)
+	if err == nil {
+		return r, nil
+	}
+
+	if !errors.Is(err, git.ErrRepositoryNotExists) {
+		return nil, err
+	}
+
+	log.Warn("openvox directory is not a git repo, recreating", "path", repo.LocalPath)
+	if rmErr := os.RemoveAll(repo.LocalPath); rmErr != nil {
+		return nil, fmt.Errorf("removing non-repo path %s: %w", repo.LocalPath, rmErr)
+	}
+
+	r, err = ensureCloned(ctx, repo, auth)
+	if err != nil {
+		return nil, fmt.Errorf("recreating repo at %s: %w", repo.LocalPath, err)
+	}
+
+	return r, nil
 }
 
 func (*Syncer) recordOpenVoxMetrics(repo *config.RepoConfig, start time.Time, result *Result, log *slog.Logger) {
