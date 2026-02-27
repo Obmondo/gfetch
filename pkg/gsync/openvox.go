@@ -163,7 +163,7 @@ func (s *Syncer) syncRepoOpenVox(ctx context.Context, repo *config.RepoConfig, o
 		return result
 	}
 
-	s.ensureProductionAlias(ctx, repo, defaultBranch, remoteBranches, log)
+	ensureProductionAlias(ctx, repo, defaultBranch, remoteBranches, log)
 
 	s.syncOpenVoxTags(ctx, resolverRepo, repo, auth, sanitizedToOriginal, log, &result)
 
@@ -208,7 +208,7 @@ func resolveRemoteBranchState(ctx context.Context, repo *git.Repository, auth tr
 	return defaultBranch, branches, nil
 }
 
-func (s *Syncer) ensureProductionAlias(ctx context.Context, repo *config.RepoConfig, defaultBranch string, remoteBranches map[string]struct{}, log *slog.Logger) {
+func ensureProductionAlias(ctx context.Context, repo *config.RepoConfig, defaultBranch string, remoteBranches map[string]struct{}, log *slog.Logger) {
 	if repo.ProductionAlias == nil || !*repo.ProductionAlias {
 		return
 	}

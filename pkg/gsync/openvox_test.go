@@ -15,6 +15,8 @@ import (
 	"github.com/obmondo/gfetch/pkg/config"
 )
 
+const testDefaultBranch = "main"
+
 func TestEnsureClonedOpenVox_RecreatesNonRepoDir(t *testing.T) {
 	basePath := t.TempDir()
 	localPath := filepath.Join(basePath, "main")
@@ -90,7 +92,7 @@ func TestAcquireOpenVoxFileLock_Exclusive(t *testing.T) {
 
 func TestEnsureProductionAlias(t *testing.T) {
 	basePath := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(basePath, "main"), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Join(basePath, testDefaultBranch), 0755); err != nil {
 		t.Fatal(err)
 	}
 
@@ -105,10 +107,9 @@ func TestEnsureProductionAlias(t *testing.T) {
 		Name: "test",
 	}
 
-	s := New(slog.Default())
 	log := slog.Default()
 
-	s.ensureProductionAlias(context.Background(), repo, "main", map[string]struct{}{"main": {}}, log)
+	ensureProductionAlias(context.Background(), repo, testDefaultBranch, map[string]struct{}{testDefaultBranch: {}}, log)
 
 	aliasPath := filepath.Join(basePath, "production")
 	aliasInfo, err := os.Lstat(aliasPath)
@@ -122,14 +123,14 @@ func TestEnsureProductionAlias(t *testing.T) {
 	if err != nil {
 		t.Fatalf("readlink failed: %v", err)
 	}
-	if target != "main" {
-		t.Fatalf("production target = %q, want %q", target, "main")
+	if target != testDefaultBranch {
+		t.Fatalf("production target = %q, want %q", target, testDefaultBranch)
 	}
 }
 
 func TestEnsureProductionAlias_SkipsWhenProductionBranchExists(t *testing.T) {
 	basePath := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(basePath, "main"), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Join(basePath, testDefaultBranch), 0755); err != nil {
 		t.Fatal(err)
 	}
 
@@ -144,9 +145,8 @@ func TestEnsureProductionAlias_SkipsWhenProductionBranchExists(t *testing.T) {
 		Name: "test",
 	}
 
-	s := New(slog.Default())
 	log := slog.Default()
-	s.ensureProductionAlias(context.Background(), repo, "main", map[string]struct{}{"main": {}, "production": {}}, log)
+	ensureProductionAlias(context.Background(), repo, testDefaultBranch, map[string]struct{}{testDefaultBranch: {}, productionAliasName: {}}, log)
 
 	if _, err := os.Lstat(filepath.Join(basePath, "production")); !os.IsNotExist(err) {
 		t.Fatalf("expected no production alias when production branch exists upstream, got err=%v", err)
@@ -160,7 +160,7 @@ func TestEnsureSymlink_UpdatesExistingTarget(t *testing.T) {
 	if err := os.Symlink("master", linkPath); err != nil {
 		t.Fatal(err)
 	}
-	if err := ensureSymlink(linkPath, "main"); err != nil {
+	if err := ensureSymlink(linkPath, testDefaultBranch); err != nil {
 		t.Fatalf("ensureSymlink failed: %v", err)
 	}
 
@@ -168,8 +168,8 @@ func TestEnsureSymlink_UpdatesExistingTarget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("readlink failed: %v", err)
 	}
-	if target != "main" {
-		t.Fatalf("symlink target = %q, want %q", target, "main")
+	if target != testDefaultBranch {
+		t.Fatalf("symlink target = %q, want %q", target, testDefaultBranch)
 	}
 }
 
