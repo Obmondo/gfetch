@@ -170,6 +170,8 @@ gfetch daemon --config /etc/gfetch/config.yaml --log-level debug
 
 Pruning is controlled via `prune` and `prune_stale` config fields per-repo. Set `prune: true` in config to enable obsolete-ref pruning; `prune_stale: true` (also requires `prune: true`) to additionally prune inactive branches. The daemon does not reload config on changes — restart it to pick up new configuration.
 
+The daemon exposes `GET /health` on the listen address (default `:8080`) and returns `200` with `{"status":"ok"}` when running. You can use this endpoint as a readiness probe.
+
 ### `gfetch validate-config`
 
 Validate the config file and exit.
