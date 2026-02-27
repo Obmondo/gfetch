@@ -48,16 +48,17 @@ func (d Duration) MarshalYAML() (interface{}, error) {
 
 // RepoDefaults holds default values that are applied to repos missing those fields.
 type RepoDefaults struct {
-	SSHKeyPath    string    `yaml:"ssh_key_path"`
-	SSHKnownHosts string    `yaml:"ssh_known_hosts"`
-	LocalPath     string    `yaml:"local_path"`
-	PollInterval  Duration  `yaml:"poll_interval"`
-	Branches      []Pattern `yaml:"branches"`
-	Tags          []Pattern `yaml:"tags"`
-	OpenVox       *bool     `yaml:"openvox"`
-	Prune         *bool     `yaml:"prune"`
-	PruneStale    *bool     `yaml:"prune_stale"`
-	StaleAge      Duration  `yaml:"stale_age"`
+	SSHKeyPath      string    `yaml:"ssh_key_path"`
+	SSHKnownHosts   string    `yaml:"ssh_known_hosts"`
+	LocalPath       string    `yaml:"local_path"`
+	PollInterval    Duration  `yaml:"poll_interval"`
+	Branches        []Pattern `yaml:"branches"`
+	Tags            []Pattern `yaml:"tags"`
+	OpenVox         *bool     `yaml:"openvox"`
+	ProductionAlias *bool     `yaml:"production_alias"`
+	Prune           *bool     `yaml:"prune"`
+	PruneStale      *bool     `yaml:"prune_stale"`
+	StaleAge        Duration  `yaml:"stale_age"`
 }
 
 // RepoConfig defines the sync configuration for a single repository.
@@ -305,6 +306,9 @@ func applyDefaults(repo *RepoConfig, defaults *RepoDefaults) {
 	if defaults.OpenVox != nil && repo.OpenVox == nil {
 		repo.OpenVox = defaults.OpenVox
 	}
+	if defaults.ProductionAlias != nil && repo.ProductionAlias == nil {
+		repo.ProductionAlias = defaults.ProductionAlias
+	}
 	if defaults.Prune != nil && repo.Prune == nil {
 		repo.Prune = defaults.Prune
 	}
@@ -374,6 +378,9 @@ func (c *Config) validateRepo(r *RepoConfig) error {
 
 	if r.OpenVox != nil && *r.OpenVox && r.Checkout != "" {
 		slog.Warn("repo has both openvox and checkout set; checkout will be ignored in openvox mode", "repo", r.Name)
+	}
+	if r.ProductionAlias != nil && *r.ProductionAlias && (r.OpenVox == nil || !*r.OpenVox) {
+		return fmt.Errorf("repo %s: production_alias requires openvox=true", r.Name)
 	}
 
 	if r.Checkout != "" && (r.OpenVox == nil || !*r.OpenVox) {

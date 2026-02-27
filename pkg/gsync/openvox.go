@@ -23,6 +23,7 @@ import (
 // metaDir is the hidden directory used to store the resolver repo for listing remote refs.
 const (
 	metaDir             = ".gfetch-meta"
+	productionAliasName = "production"
 	defaultDirMode      = 0755
 	defaultLockFileMode = os.FileMode(0o644)
 	maxWorkers          = 5
@@ -148,9 +149,21 @@ func (s *Syncer) syncRepoOpenVox(ctx context.Context, repo *config.RepoConfig, o
 	// Track sanitized name -> original name for collision detection.
 	sanitizedToOriginal := make(map[string]string)
 
+	defaultBranch := ""
+	remoteBranches := map[string]struct{}{}
+	if repo.ProductionAlias != nil && *repo.ProductionAlias {
+		var stateErr error
+		defaultBranch, remoteBranches, stateErr = resolveRemoteBranchState(ctx, resolverRepo, auth)
+		if stateErr != nil {
+			log.Warn("failed to resolve remote branch state for production alias", "error", stateErr)
+		}
+	}
+
 	if err := s.syncOpenVoxBranches(ctx, resolverRepo, repo, opts, auth, sanitizedToOriginal, log, &result); err != nil {
 		return result
 	}
+
+	s.ensureProductionAlias(ctx, repo, defaultBranch, remoteBranches, log)
 
 	s.syncOpenVoxTags(ctx, resolverRepo, repo, auth, sanitizedToOriginal, log, &result)
 
@@ -167,6 +180,117 @@ func (s *Syncer) syncRepoOpenVox(ctx context.Context, repo *config.RepoConfig, o
 
 	s.recordOpenVoxMetrics(repo, start, &result, log)
 	return result
+}
+
+func resolveRemoteBranchState(ctx context.Context, repo *git.Repository, auth transport.AuthMethod) (string, map[string]struct{}, error) {
+	remote, err := repo.Remote("origin")
+	if err != nil {
+		return "", nil, fmt.Errorf("getting remote: %w", err)
+	}
+
+	refs, err := remote.ListContext(ctx, &git.ListOptions{Auth: auth})
+	if err != nil {
+		return "", nil, fmt.Errorf("listing remote refs: %w", err)
+	}
+
+	branches := make(map[string]struct{})
+	defaultBranch := ""
+	for _, ref := range refs {
+		if ref.Name() == plumbing.HEAD {
+			defaultBranch = ref.Target().Short()
+			continue
+		}
+		if ref.Name().IsBranch() {
+			branches[ref.Name().Short()] = struct{}{}
+		}
+	}
+
+	return defaultBranch, branches, nil
+}
+
+func (s *Syncer) ensureProductionAlias(ctx context.Context, repo *config.RepoConfig, defaultBranch string, remoteBranches map[string]struct{}, log *slog.Logger) {
+	if repo.ProductionAlias == nil || !*repo.ProductionAlias {
+		return
+	}
+
+	if _, hasProduction := remoteBranches[productionAliasName]; hasProduction {
+		log.Debug("skipping production alias: upstream production branch exists")
+		return
+	}
+
+	if defaultBranch == "" {
+		log.Warn("skipping production alias: remote default branch not found")
+		return
+	}
+
+	sourceDirName := SanitizeName(defaultBranch)
+	aliasDirName := SanitizeName(productionAliasName)
+	if sourceDirName == aliasDirName {
+		return
+	}
+
+	sourcePath := filepath.Join(repo.LocalPath, sourceDirName)
+	if _, err := os.Stat(sourcePath); err != nil {
+		log.Warn("skipping production alias: source directory not available", "source_branch", defaultBranch, "source_dir", sourceDirName, "error", err)
+		return
+	}
+
+	aliasPath := filepath.Join(repo.LocalPath, aliasDirName)
+	dirMu := getOpenVoxDirMutex(aliasPath)
+	dirMu.Lock()
+	defer dirMu.Unlock()
+
+	processLock, err := acquireOpenVoxFileLock(ctx, openVoxLockPath(aliasPath))
+	if err != nil {
+		log.Warn("failed to acquire production alias lock", "error", err)
+		return
+	}
+	defer func() {
+		if relErr := processLock.Release(); relErr != nil {
+			log.Warn("failed to release production alias lock", "error", relErr)
+		}
+	}()
+
+	if err := ensureSymlink(aliasPath, sourceDirName); err != nil {
+		log.Warn("failed to ensure production alias", "source_branch", defaultBranch, "source_dir", sourceDirName, "alias", aliasDirName, "error", err)
+		return
+	}
+
+	log.Debug("production alias ensured", "alias", aliasDirName, "target", sourceDirName)
+}
+
+func ensureSymlink(linkPath, target string) error {
+	info, err := os.Lstat(linkPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			if err := os.Symlink(target, linkPath); err != nil {
+				return fmt.Errorf("creating symlink %s -> %s: %w", linkPath, target, err)
+			}
+			return nil
+		}
+		return fmt.Errorf("lstat %s: %w", linkPath, err)
+	}
+
+	if info.Mode()&os.ModeSymlink == 0 {
+		return fmt.Errorf("path %s exists and is not a symlink", linkPath)
+	}
+
+	currentTarget, err := os.Readlink(linkPath)
+	if err != nil {
+		return fmt.Errorf("reading symlink %s: %w", linkPath, err)
+	}
+	if currentTarget == target {
+		return nil
+	}
+
+	if err := os.Remove(linkPath); err != nil {
+		return fmt.Errorf("removing symlink %s: %w", linkPath, err)
+	}
+	if err := os.Symlink(target, linkPath); err != nil {
+		return fmt.Errorf("creating symlink %s -> %s: %w", linkPath, target, err)
+	}
+
+	return nil
 }
 
 func (s *Syncer) syncOpenVoxBranches(ctx context.Context, resolverRepo *git.Repository, repo *config.RepoConfig, opts SyncOptions, auth transport.AuthMethod, sanitizedToOriginal map[string]string, log *slog.Logger, result *Result) error {

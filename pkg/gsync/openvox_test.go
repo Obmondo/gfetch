@@ -88,6 +88,91 @@ func TestAcquireOpenVoxFileLock_Exclusive(t *testing.T) {
 	}
 }
 
+func TestEnsureProductionAlias(t *testing.T) {
+	basePath := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(basePath, "main"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	openVox := true
+	productionAlias := true
+	repo := &config.RepoConfig{
+		RepoDefaults: config.RepoDefaults{
+			LocalPath:       basePath,
+			OpenVox:         &openVox,
+			ProductionAlias: &productionAlias,
+		},
+		Name: "test",
+	}
+
+	s := New(slog.Default())
+	log := slog.Default()
+
+	s.ensureProductionAlias(context.Background(), repo, "main", map[string]struct{}{"main": {}}, log)
+
+	aliasPath := filepath.Join(basePath, "production")
+	aliasInfo, err := os.Lstat(aliasPath)
+	if err != nil {
+		t.Fatalf("expected production alias symlink to exist: %v", err)
+	}
+	if aliasInfo.Mode()&os.ModeSymlink == 0 {
+		t.Fatal("expected production to be a symlink")
+	}
+	target, err := os.Readlink(aliasPath)
+	if err != nil {
+		t.Fatalf("readlink failed: %v", err)
+	}
+	if target != "main" {
+		t.Fatalf("production target = %q, want %q", target, "main")
+	}
+}
+
+func TestEnsureProductionAlias_SkipsWhenProductionBranchExists(t *testing.T) {
+	basePath := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(basePath, "main"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	openVox := true
+	productionAlias := true
+	repo := &config.RepoConfig{
+		RepoDefaults: config.RepoDefaults{
+			LocalPath:       basePath,
+			OpenVox:         &openVox,
+			ProductionAlias: &productionAlias,
+		},
+		Name: "test",
+	}
+
+	s := New(slog.Default())
+	log := slog.Default()
+	s.ensureProductionAlias(context.Background(), repo, "main", map[string]struct{}{"main": {}, "production": {}}, log)
+
+	if _, err := os.Lstat(filepath.Join(basePath, "production")); !os.IsNotExist(err) {
+		t.Fatalf("expected no production alias when production branch exists upstream, got err=%v", err)
+	}
+}
+
+func TestEnsureSymlink_UpdatesExistingTarget(t *testing.T) {
+	basePath := t.TempDir()
+	linkPath := filepath.Join(basePath, "production")
+
+	if err := os.Symlink("master", linkPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureSymlink(linkPath, "main"); err != nil {
+		t.Fatalf("ensureSymlink failed: %v", err)
+	}
+
+	target, err := os.Readlink(linkPath)
+	if err != nil {
+		t.Fatalf("readlink failed: %v", err)
+	}
+	if target != "main" {
+		t.Fatalf("symlink target = %q, want %q", target, "main")
+	}
+}
+
 func TestSanitizeName(t *testing.T) {
 	tests := []struct {
 		input string
