@@ -8,6 +8,7 @@ defaults:
   tags:
     - /^v[0-9]+\./
   openvox: false
+  production_alias: false        # when openvox=true and no upstream production branch exists, create production -> <default-branch-dir> symlink
   prune: true                   # prune obsolete refs (branches/tags no longer matching any pattern) in daemon mode
   prune_stale: true             # prune branches matching patterns but with no commits in 6 months
   stale_age: 180d               # custom threshold for staleness (d=days, mo=months, y=years)

@@ -17,6 +17,7 @@ A CLI tool that selectively mirrors remote Git repositories to local paths based
 - **SSH and HTTPS auth** — private repos via SSH key, public repos via anonymous HTTPS
 - **Working tree checkout** — optionally keep a working tree checked out on a specific branch or tag
 - **OpenVox mode** — create per-branch/tag directories with sanitized names, ideal for Puppet environments
+- **Production alias (OpenVox)** — optional `production_alias: true` creates/updates a `production` symlink to the upstream default-branch directory when upstream does not have a real `production` branch
 - **Lightweight clones** — repos are initialized empty and only configured refs are fetched
 
 ## Quick Start
@@ -105,6 +106,8 @@ defaults:
   prune: true                   # remove branches/tags no longer matching any pattern
   prune_stale: true             # remove branches with no commits in 6 months (requires prune: true)
   stale_age: 180d               # supports d (days)
+  production_alias: false       # OpenVox-only: if true and upstream has no production branch,
+                                 # create/update production -> <default-branch-dir> symlink
 
 # TODO: Add integration tests for real SSH Git repositories.
 # TODO: Implement concurrent syncing for OpenVox mode to improve performance and reliability.
@@ -127,6 +130,8 @@ repos:
 ```
 
 See [docs/configuration.md](docs/configuration.md) for the full configuration reference, including all fields, pattern syntax, auth methods, and validation rules.
+
+**Important (OpenVox environments):** set `production_alias: true` to keep a stable `production` symlink pointing to the upstream default branch directory. gfetch skips alias creation if upstream already has a `production` branch.
 
 ## Usage
 
@@ -169,6 +174,8 @@ gfetch daemon --config /etc/gfetch/config.yaml --log-level debug
 ```
 
 Pruning is controlled via `prune` and `prune_stale` config fields per-repo. Set `prune: true` in config to enable obsolete-ref pruning; `prune_stale: true` (also requires `prune: true`) to additionally prune inactive branches. The daemon does not reload config on changes — restart it to pick up new configuration.
+
+The daemon exposes `GET /health` on the listen address (default `:8080`) and returns `200` with `{"status":"ok"}` when running. You can use this endpoint as a readiness probe.
 
 ### `gfetch validate-config`
 

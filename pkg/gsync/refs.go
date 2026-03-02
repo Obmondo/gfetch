@@ -44,54 +44,6 @@ func resolveBranches(ctx context.Context, repo *git.Repository, patterns []confi
 	return matched, nil
 }
 
-// resolveDefaultBranch returns the short name of the remote's default branch (HEAD target).
-func resolveDefaultBranch(ctx context.Context, repo *git.Repository, auth transport.AuthMethod) string {
-	remote, err := repo.Remote("origin")
-	if err != nil {
-		return ""
-	}
-	refs, err := remote.ListContext(ctx, &git.ListOptions{Auth: auth})
-	if err != nil {
-		return ""
-	}
-	for _, ref := range refs {
-		if ref.Name() == plumbing.HEAD {
-			return ref.Target().Short()
-		}
-	}
-	return ""
-}
-
-// resolveTags lists remote tags and returns names matching any of the configured patterns.
-func resolveTags(ctx context.Context, repo *git.Repository, patterns []config.Pattern, auth transport.AuthMethod) ([]string, error) {
-	remote, err := repo.Remote("origin")
-	if err != nil {
-		return nil, fmt.Errorf("getting remote: %w", err)
-	}
-
-	refs, err := remote.ListContext(ctx, &git.ListOptions{Auth: auth})
-	if err != nil {
-		return nil, fmt.Errorf("listing remote refs: %w", err)
-	}
-
-	var matched []string
-	seen := make(map[string]bool)
-	for _, ref := range refs {
-		name := ref.Name()
-		if name.IsTag() {
-			tagName := name.Short()
-			if seen[tagName] {
-				continue
-			}
-			if config.MatchesAny(tagName, patterns) {
-				matched = append(matched, tagName)
-				seen[tagName] = true
-			}
-		}
-	}
-	return matched, nil
-}
-
 // checkStaleness checks if a remote reference is stale (older than age) by inspecting its commit date.
 // It tries to find the commit locally first. If not found, it fetches the commit metadata (depth 1).
 func checkStaleness(ctx context.Context, repo *git.Repository, ref *plumbing.Reference, age time.Duration, auth transport.AuthMethod) (bool, error) {

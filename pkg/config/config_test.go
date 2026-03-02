@@ -314,12 +314,14 @@ branches:
 
 func TestApplyDefaults(t *testing.T) {
 	openvoxTrue := true
+	productionAliasTrue := true
 	defaults := &RepoDefaults{
-		SSHKeyPath:   "/tmp/default_key",
-		LocalPath:    "/tmp/default_path",
-		PollInterval: Duration(3 * time.Minute),
-		Branches:     []Pattern{{Raw: "main"}},
-		OpenVox:      &openvoxTrue,
+		SSHKeyPath:      "/tmp/default_key",
+		LocalPath:       "/tmp/default_path",
+		PollInterval:    Duration(3 * time.Minute),
+		Branches:        []Pattern{{Raw: "main"}},
+		OpenVox:         &openvoxTrue,
+		ProductionAlias: &productionAliasTrue,
 	}
 
 	repo := &RepoConfig{
@@ -333,6 +335,34 @@ func TestApplyDefaults(t *testing.T) {
 	}
 	if repo.OpenVox == nil || !*repo.OpenVox {
 		t.Error("openvox should be inherited from defaults")
+	}
+	if repo.ProductionAlias == nil || !*repo.ProductionAlias {
+		t.Error("production_alias should be inherited from defaults")
+	}
+}
+
+func TestValidate_ProductionAliasRequiresOpenVox(t *testing.T) {
+	keyFile := filepath.Join(t.TempDir(), "key")
+	if err := os.WriteFile(keyFile, []byte("fake"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	productionAlias := true
+	cfg := &Config{Repos: map[string]RepoConfig{"test": {
+		RepoDefaults: RepoDefaults{
+			SSHKeyPath:      keyFile,
+			LocalPath:       "/tmp/test",
+			PollInterval:    Duration(30 * time.Second),
+			Branches:        []Pattern{{Raw: branchMain}},
+			ProductionAlias: &productionAlias,
+		},
+		Name: "test",
+		URL:  "git@github.com:test/repo.git",
+	}}}
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error when production_alias is enabled without openvox")
 	}
 }
 

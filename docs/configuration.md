@@ -43,6 +43,7 @@ Using a map for `repos` allows Helm to merge multiple `values.yaml` files correc
 | `tags` | list of patterns | At least one of `branches` or `tags` | Tag names or patterns to sync from the remote. |
 | `checkout` | string | No | A literal branch or tag name to check out in the working tree. |
 | `openvox` | bool | No | Enable OpenVox mode. Each matching branch/tag gets its own subdirectory. |
+| `production_alias` | bool | No | OpenVox-only. If true and upstream has no `production` branch, create/update a `production` symlink to the upstream default branch directory. |
 | `prune` | bool | No | Remove local branches/tags no longer matching any configured pattern. Required for `prune_stale` to take effect. Default `false`. |
 | `prune_stale` | bool | No | If true, local branches matching patterns but with no commits in `stale_age` will be pruned during sync (requires `prune: true`). When both are enabled, stale branches are also skipped before branch sync. Default `false`. |
 | `stale_age` | duration | No | The period of inactivity (based on committer date) after which a branch is considered stale. Default `180d`. |
@@ -78,6 +79,8 @@ If two refs produce the same sanitized name (e.g. `release-1` and `release.1` bo
 A hidden `.gfetch-meta` directory is created under `local_path` to store a resolver repo used for listing remote refs.
 
 When `openvox` is enabled, the `checkout` field is ignored (a warning is logged if both are set).
+
+If `production_alias: true` is set, gfetch ensures a `production` symlink points to the upstream default branch directory after branch sync. This is skipped when upstream already has a `production` branch.
 
 Pruning (`prune: true` in config, or `--prune` via the sync CLI) in OpenVox mode removes directories that no longer correspond to any matched ref.
 
