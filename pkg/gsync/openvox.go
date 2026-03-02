@@ -26,22 +26,6 @@ const (
 	maxWorkers     = 5
 )
 
-var (
-	// resolverMutexes protects the hidden resolver repo (.gfetch-meta) from concurrent
-	// access during staleness checks. Keyed by absolute path to the resolver repo.
-	resolverMutexes sync.Map // map[string]*sync.Mutex
-)
-
-func getResolverMutex(path string) *sync.Mutex {
-	m, _ := resolverMutexes.LoadOrStore(path, &sync.Mutex{})
-	mu, ok := m.(*sync.Mutex)
-	if !ok {
-		// Should never happen with LoadOrStore above
-		panic("resolverMutexes contained non-mutex value")
-	}
-	return mu
-}
-
 // SanitizeName converts a Git ref name into a valid Puppet environment name.
 // Puppet environments only allow [a-zA-Z0-9_]. Any character outside this set
 // is replaced with an underscore.
@@ -131,11 +115,29 @@ func (s *Syncer) syncOpenVoxBranches(ctx context.Context, resolverRepo *git.Repo
 		return result.Err
 	}
 
-	resolverPath := filepath.Join(repo.LocalPath, metaDir)
-	resolverMu := getResolverMutex(resolverPath)
+	// Filter stale branches upfront with a single batch fetch, rather than
+	// checking each branch individually under a mutex in the worker loop.
+	toSync := branches
+	if opts.PruneStale && opts.Prune {
+		cleanup, err := batchFetchForStaleness(ctx, resolverRepo, branches, auth)
+		if err != nil {
+			log.Warn("batch staleness fetch failed, syncing all branches", "error", err)
+		}
+		if err == nil {
+			defer cleanup()
+			var nonStale []*plumbing.Reference
+			for _, ref := range branches {
+				if !isStaleLocal(resolverRepo, ref, opts.StaleAge, log) {
+					nonStale = append(nonStale, ref)
+				}
+			}
+			log.Debug("staleness filter applied", "total", len(branches), "non_stale", len(nonStale))
+			toSync = nonStale
+		}
+	}
 
 	var wg sync.WaitGroup
-	jobs := make(chan *plumbing.Reference, len(branches))
+	jobs := make(chan *plumbing.Reference, len(toSync))
 
 	for i := 0; i < maxWorkers; i++ {
 		wg.Add(1)
@@ -143,22 +145,12 @@ func (s *Syncer) syncOpenVoxBranches(ctx context.Context, resolverRepo *git.Repo
 			defer wg.Done()
 			for ref := range jobs {
 				branch := ref.Name().Short()
-
-				// Protect resolverRepo access with mutex
-				resolverMu.Lock()
-				isStale := opts.PruneStale && opts.Prune && IsStale(ctx, resolverRepo, ref, opts.StaleAge, auth, log)
-				resolverMu.Unlock()
-
-				if isStale {
-					continue
-				}
-
 				s.syncOneOpenVoxBranch(ctx, repo, branch, auth, log, result)
 			}
 		}()
 	}
 
-	for _, ref := range branches {
+	for _, ref := range toSync {
 		jobs <- ref
 	}
 	close(jobs)

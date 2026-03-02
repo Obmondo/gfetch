@@ -2,6 +2,7 @@ package gsync
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -140,6 +141,58 @@ func IsStale(ctx context.Context, repo *git.Repository, ref *plumbing.Reference,
 		return false
 	}
 	if stale {
+		log.Debug("skipping stale branch: no commits within age threshold", "branch", ref.Name().Short(), "max_age", age)
+		return true
+	}
+	return false
+}
+
+// batchFetchForStaleness fetches all branch tip commits into the resolver repo
+// with a single depth-1 fetch. This avoids N individual SSH connections when
+// checking staleness for N branches. Temporary refs are cleaned up after use.
+func batchFetchForStaleness(ctx context.Context, repo *git.Repository, refs []*plumbing.Reference, auth transport.AuthMethod) (cleanup func(), err error) {
+	if len(refs) == 0 {
+		return func() {}, nil
+	}
+
+	refSpecs := make([]gitconfig.RefSpec, len(refs))
+	tmpRefs := make([]plumbing.ReferenceName, len(refs))
+	for i, ref := range refs {
+		name := ref.Name().Short()
+		tmp := plumbing.ReferenceName(fmt.Sprintf("refs/gfetch-tmp/%s", name))
+		refSpecs[i] = gitconfig.RefSpec(fmt.Sprintf("+refs/heads/%s:%s", name, tmp))
+		tmpRefs[i] = tmp
+	}
+
+	err = repo.FetchContext(ctx, &git.FetchOptions{
+		RemoteName: "origin",
+		RefSpecs:   refSpecs,
+		Depth:      1,
+		Auth:       auth,
+		Tags:       git.NoTags,
+	})
+	if err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) {
+		return func() {}, fmt.Errorf("batch fetch for staleness: %w", err)
+	}
+
+	cleanup = func() {
+		for _, tmp := range tmpRefs {
+			_ = repo.Storer.RemoveReference(tmp)
+		}
+	}
+	return cleanup, nil
+}
+
+// isStaleLocal checks if a reference is stale by looking up the commit in the
+// local object store only (no network). Returns false if the commit is not found
+// locally (fail-safe: sync the branch if we can't determine staleness).
+func isStaleLocal(repo *git.Repository, ref *plumbing.Reference, age time.Duration, log *slog.Logger) bool {
+	commit, err := repo.CommitObject(ref.Hash())
+	if err != nil {
+		log.Warn("failed to check staleness locally, syncing anyway", "branch", ref.Name().Short(), "error", err)
+		return false
+	}
+	if time.Since(commit.Committer.When) > age {
 		log.Debug("skipping stale branch: no commits within age threshold", "branch", ref.Name().Short(), "max_age", age)
 		return true
 	}
