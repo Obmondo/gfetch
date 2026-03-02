@@ -100,3 +100,42 @@ func checkoutRef(repo *git.Repository, name string, log *slog.Logger) error {
 	log.Debug("checked out ref", "ref", name, "hash", hash.String()[:12])
 	return nil
 }
+
+// shouldCheckoutBranch reports whether checkoutRef should run for a branch sync.
+// We always checkout on updates. For non-updates, we checkout only if local state
+// is out-of-sync or dirty (e.g. manual local changes).
+func shouldCheckoutBranch(repo *git.Repository, branch string, updated bool) (needsCheckout bool, dirty bool, err error) {
+	if updated {
+		return true, false, nil
+	}
+
+	branchRef, err := repo.Reference(plumbing.NewBranchReferenceName(branch), true)
+	if err != nil {
+		return true, false, fmt.Errorf("resolving branch ref %s: %w", branch, err)
+	}
+
+	headRef, err := repo.Head()
+	if err != nil {
+		return true, false, fmt.Errorf("resolving HEAD: %w", err)
+	}
+
+	if headRef.Hash() != branchRef.Hash() || headRef.Name() != branchRef.Name() {
+		return true, false, nil
+	}
+
+	wt, err := repo.Worktree()
+	if err != nil {
+		return true, false, fmt.Errorf("getting worktree: %w", err)
+	}
+
+	status, err := wt.Status()
+	if err != nil {
+		return true, false, fmt.Errorf("getting worktree status: %w", err)
+	}
+
+	if !status.IsClean() {
+		return true, true, nil
+	}
+
+	return false, false, nil
+}

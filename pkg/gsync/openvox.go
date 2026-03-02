@@ -25,37 +25,77 @@ const (
 	metaDir             = ".gfetch-meta"
 	productionAliasName = "production"
 	defaultDirMode      = 0755
-	defaultLockFileMode = os.FileMode(0o644)
+	defaultLockFileMode = os.FileMode(0o600)
 	maxWorkers          = 5
 	lockPollDelay       = 100 * time.Millisecond
+	lockAcquireTimeout  = 30 * time.Second
 )
 
 var (
-	// resolverMutexes protects the hidden resolver repo (.gfetch-meta) from concurrent
-	// access during staleness checks. Keyed by absolute path to the resolver repo.
-	resolverMutexes sync.Map // map[string]*sync.Mutex
-	// openVoxDirMutexes protects per-ref OpenVox directories from concurrent access.
-	// Keyed by absolute path to the per-ref directory.
-	openVoxDirMutexes sync.Map // map[string]*sync.Mutex
+	resolverLocks = newKeyedLockManager()
+	openVoxLocks  = newKeyedLockManager()
 )
 
-func getResolverMutex(path string) *sync.Mutex {
-	m, _ := resolverMutexes.LoadOrStore(path, &sync.Mutex{})
-	mu, ok := m.(*sync.Mutex)
-	if !ok {
-		// Should never happen with LoadOrStore above
-		panic("resolverMutexes contained non-mutex value")
-	}
-	return mu
+type keyedLockManager struct {
+	mu      sync.Mutex
+	entries map[string]*lockEntry
 }
 
-func getOpenVoxDirMutex(path string) *sync.Mutex {
-	m, _ := openVoxDirMutexes.LoadOrStore(path, &sync.Mutex{})
-	mu, ok := m.(*sync.Mutex)
+type lockEntry struct {
+	mu   sync.Mutex
+	refs int
+}
+
+func newKeyedLockManager() *keyedLockManager {
+	return &keyedLockManager{entries: make(map[string]*lockEntry)}
+}
+
+func (m *keyedLockManager) Acquire(key string) func() {
+	m.mu.Lock()
+	entry, ok := m.entries[key]
 	if !ok {
-		panic("openVoxDirMutexes contained non-mutex value")
+		entry = &lockEntry{}
+		m.entries[key] = entry
 	}
-	return mu
+	entry.refs++
+	m.mu.Unlock()
+
+	entry.mu.Lock()
+
+	return func() {
+		entry.mu.Unlock()
+
+		m.mu.Lock()
+		entry.refs--
+		if entry.refs == 0 {
+			delete(m.entries, key)
+		}
+		m.mu.Unlock()
+	}
+}
+
+func (m *keyedLockManager) ForgetIfIdle(key string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	entry, ok := m.entries[key]
+	if !ok {
+		return
+	}
+	if entry.refs == 0 {
+		delete(m.entries, key)
+	}
+}
+
+func acquireResolverLock(path string) func() {
+	return resolverLocks.Acquire(path)
+}
+
+func acquireOpenVoxDirLock(path string) func() {
+	return openVoxLocks.Acquire(path)
+}
+
+func forgetOpenVoxDirLock(path string) {
+	openVoxLocks.ForgetIfIdle(path)
 }
 
 type fileLock struct {
@@ -64,6 +104,13 @@ type fileLock struct {
 
 func openVoxLockPath(dirPath string) string {
 	return dirPath + ".gfetch.lock"
+}
+
+func withOpenVoxLockTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
+	if _, hasDeadline := ctx.Deadline(); hasDeadline {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, lockAcquireTimeout)
 }
 
 func acquireOpenVoxFileLock(ctx context.Context, lockPath string) (*fileLock, error) {
@@ -89,6 +136,28 @@ func acquireOpenVoxFileLock(ctx context.Context, lockPath string) (*fileLock, er
 		case <-time.After(lockPollDelay):
 		}
 	}
+}
+
+func tryAcquireOpenVoxFileLock(lockPath string) (*fileLock, error) {
+	f, err := os.OpenFile(lockPath, os.O_RDWR, defaultLockFileMode)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("opening lock file %s: %w", lockPath, err)
+	}
+
+	err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+	if err == nil {
+		return &fileLock{file: f}, nil
+	}
+	if errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN) {
+		_ = f.Close()
+		return nil, nil
+	}
+
+	_ = f.Close()
+	return nil, fmt.Errorf("acquiring file lock %s: %w", lockPath, err)
 }
 
 func (l *fileLock) Release() error {
@@ -139,73 +208,105 @@ func (s *Syncer) syncRepoOpenVox(ctx context.Context, repo *config.RepoConfig, o
 
 	// Use a hidden resolver repo to list remote refs without polluting the workspace.
 	resolverPath := filepath.Join(repo.LocalPath, metaDir)
-	resolverRepo, err := ensureResolverRepo(ctx, resolverPath, repo.URL, auth)
+	resolverRepo, refs, err := loadResolverRepoAndRefs(ctx, resolverPath, repo.URL, auth)
 	if err != nil {
 		telemetry.SyncFailuresTotal.WithLabelValues(repo.Name, "clone").Inc()
 		result.Err = fmt.Errorf("resolver repo: %w", err)
 		return result
 	}
 
+	defaultBranch, remoteBranches, matchedBranches, matchedTags := extractRemoteRefState(refs, repo.Branches, repo.Tags)
+
 	// Track sanitized name -> original name for collision detection.
 	sanitizedToOriginal := make(map[string]string)
 
-	defaultBranch := ""
-	remoteBranches := map[string]struct{}{}
-	if repo.ProductionAlias != nil && *repo.ProductionAlias {
-		var stateErr error
-		defaultBranch, remoteBranches, stateErr = resolveRemoteBranchState(ctx, resolverRepo, auth)
-		if stateErr != nil {
-			log.Warn("failed to resolve remote branch state for production alias", "error", stateErr)
-		}
-	}
-
-	if err := s.syncOpenVoxBranches(ctx, resolverRepo, repo, opts, auth, sanitizedToOriginal, log, &result); err != nil {
+	if err := s.syncOpenVoxBranches(ctx, resolverRepo, repo, opts, auth, matchedBranches, sanitizedToOriginal, log, &result); err != nil {
 		return result
 	}
 
 	ensureProductionAlias(ctx, repo, defaultBranch, remoteBranches, log)
 
-	s.syncOpenVoxTags(ctx, resolverRepo, repo, auth, sanitizedToOriginal, log, &result)
+	s.syncOpenVoxTags(ctx, repo, auth, matchedTags, sanitizedToOriginal, log, &result)
 
 	// Prune stale directories that no longer correspond to any matched ref.
 	if opts.Prune {
-		pruneOpenVoxDirs(repo.LocalPath, sanitizedToOriginal, opts.DryRun, log, &result)
+		pruneOpenVoxDirs(ctx, repo.LocalPath, sanitizedToOriginal, opts.DryRun, log, &result)
+		cleanupOrphanOpenVoxLockFiles(repo.LocalPath, opts.DryRun, log)
 	}
 
 	// Prune directories whose latest commit is older than staleAge.
 	if opts.PruneStale {
-		defaultBranch := resolveDefaultBranch(ctx, resolverRepo, auth)
-		pruneStaleOpenVoxDirs(repo, sanitizedToOriginal, opts.StaleAge, opts.DryRun, defaultBranch, log, &result)
+		pruneStaleOpenVoxDirs(ctx, repo, sanitizedToOriginal, opts.StaleAge, opts.DryRun, defaultBranch, log, &result)
+		cleanupOrphanOpenVoxLockFiles(repo.LocalPath, opts.DryRun, log)
 	}
 
 	s.recordOpenVoxMetrics(repo, start, &result, log)
 	return result
 }
 
-func resolveRemoteBranchState(ctx context.Context, repo *git.Repository, auth transport.AuthMethod) (string, map[string]struct{}, error) {
+func loadResolverRepoAndRefs(ctx context.Context, resolverPath, remoteURL string, auth transport.AuthMethod) (*git.Repository, []*plumbing.Reference, error) {
+	releaseResolverLock := acquireResolverLock(resolverPath)
+	defer releaseResolverLock()
+
+	resolverRepo, err := ensureResolverRepo(ctx, resolverPath, remoteURL, auth)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	refs, err := listRemoteRefs(ctx, resolverRepo, auth)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return resolverRepo, refs, nil
+}
+
+func listRemoteRefs(ctx context.Context, repo *git.Repository, auth transport.AuthMethod) ([]*plumbing.Reference, error) {
 	remote, err := repo.Remote("origin")
 	if err != nil {
-		return "", nil, fmt.Errorf("getting remote: %w", err)
+		return nil, fmt.Errorf("getting remote: %w", err)
 	}
 
 	refs, err := remote.ListContext(ctx, &git.ListOptions{Auth: auth})
 	if err != nil {
-		return "", nil, fmt.Errorf("listing remote refs: %w", err)
+		return nil, fmt.Errorf("listing remote refs: %w", err)
 	}
+	return refs, nil
+}
 
+func extractRemoteRefState(refs []*plumbing.Reference, branchPatterns, tagPatterns []config.Pattern) (string, map[string]struct{}, []*plumbing.Reference, []string) {
 	branches := make(map[string]struct{})
 	defaultBranch := ""
+	matchedBranches := make([]*plumbing.Reference, 0)
+	matchedTags := make([]string, 0)
+	seenBranches := make(map[string]bool)
+	seenTags := make(map[string]bool)
+
 	for _, ref := range refs {
-		if ref.Name() == plumbing.HEAD {
+		name := ref.Name()
+		if name == plumbing.HEAD {
 			defaultBranch = ref.Target().Short()
 			continue
 		}
-		if ref.Name().IsBranch() {
-			branches[ref.Name().Short()] = struct{}{}
+		if name.IsBranch() {
+			branch := name.Short()
+			branches[branch] = struct{}{}
+			if !seenBranches[branch] && config.MatchesAny(branch, branchPatterns) {
+				matchedBranches = append(matchedBranches, ref)
+				seenBranches[branch] = true
+			}
+			continue
+		}
+		if name.IsTag() {
+			tag := name.Short()
+			if !seenTags[tag] && config.MatchesAny(tag, tagPatterns) {
+				matchedTags = append(matchedTags, tag)
+				seenTags[tag] = true
+			}
 		}
 	}
 
-	return defaultBranch, branches, nil
+	return defaultBranch, branches, matchedBranches, matchedTags
 }
 
 func ensureProductionAlias(ctx context.Context, repo *config.RepoConfig, defaultBranch string, remoteBranches map[string]struct{}, log *slog.Logger) {
@@ -236,11 +337,13 @@ func ensureProductionAlias(ctx context.Context, repo *config.RepoConfig, default
 	}
 
 	aliasPath := filepath.Join(repo.LocalPath, aliasDirName)
-	dirMu := getOpenVoxDirMutex(aliasPath)
-	dirMu.Lock()
-	defer dirMu.Unlock()
+	releaseDirLock := acquireOpenVoxDirLock(aliasPath)
+	defer releaseDirLock()
 
-	processLock, err := acquireOpenVoxFileLock(ctx, openVoxLockPath(aliasPath))
+	lockCtx, cancel := withOpenVoxLockTimeout(ctx)
+	defer cancel()
+
+	processLock, err := acquireOpenVoxFileLock(lockCtx, openVoxLockPath(aliasPath))
 	if err != nil {
 		log.Warn("failed to acquire production alias lock", "error", err)
 		return
@@ -293,17 +396,75 @@ func ensureSymlink(linkPath, target string) error {
 	return nil
 }
 
-func (s *Syncer) syncOpenVoxBranches(ctx context.Context, resolverRepo *git.Repository, repo *config.RepoConfig, opts SyncOptions, auth transport.AuthMethod, sanitizedToOriginal map[string]string, log *slog.Logger, result *Result) error {
-	if len(repo.Branches) == 0 {
-		return nil
+func cleanupOpenVoxArtifactsForDir(dirPath string) {
+	forgetOpenVoxDirLock(dirPath)
+}
+
+func cleanupOrphanOpenVoxLockFiles(basePath string, dryRun bool, log *slog.Logger) {
+	entries, err := os.ReadDir(basePath)
+	if err != nil {
+		log.Warn("failed to scan local_path for orphan lock files", "path", basePath, "error", err)
+		return
 	}
 
-	branches, err := resolveBranches(ctx, resolverRepo, repo.Branches, auth)
-	if err != nil {
-		log.Error("failed to resolve branches", "error", err)
-		telemetry.SyncFailuresTotal.WithLabelValues(repo.Name, "branch_sync").Inc()
-		s.setErr(result, fmt.Errorf("resolving branches: %w", err))
-		return result.Err
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if !strings.HasSuffix(name, ".gfetch.lock") {
+			continue
+		}
+
+		refDirName := strings.TrimSuffix(name, ".gfetch.lock")
+		if refDirName == "" {
+			continue
+		}
+
+		refDirPath := filepath.Join(basePath, refDirName)
+		if _, statErr := os.Stat(refDirPath); statErr == nil {
+			continue
+		} else if !os.IsNotExist(statErr) {
+			log.Warn("failed to inspect lock file target directory", "lock_file", name, "error", statErr)
+			continue
+		}
+
+		lockPath := filepath.Join(basePath, name)
+		if dryRun {
+			log.Info("orphan lock file would be removed (dry-run)", "lock_file", name)
+			continue
+		}
+
+		lock, err := tryAcquireOpenVoxFileLock(lockPath)
+		if err != nil {
+			log.Warn("failed to lock orphan lock file for cleanup", "lock_file", name, "error", err)
+			continue
+		}
+		if lock == nil {
+			log.Debug("skipping orphan lock file cleanup: lock is in use", "lock_file", name)
+			continue
+		}
+
+		if err := os.Remove(lockPath); err != nil && !os.IsNotExist(err) {
+			if relErr := lock.Release(); relErr != nil {
+				log.Warn("failed to release orphan lock file lock", "lock_file", name, "error", relErr)
+			}
+			log.Warn("failed to remove orphan lock file", "lock_file", name, "error", err)
+			continue
+		}
+
+		if relErr := lock.Release(); relErr != nil {
+			log.Warn("failed to release orphan lock file lock", "lock_file", name, "error", relErr)
+		}
+
+		forgetOpenVoxDirLock(refDirPath)
+		log.Debug("removed orphan lock file", "lock_file", name)
+	}
+}
+
+func (s *Syncer) syncOpenVoxBranches(ctx context.Context, resolverRepo *git.Repository, repo *config.RepoConfig, opts SyncOptions, auth transport.AuthMethod, branches []*plumbing.Reference, sanitizedToOriginal map[string]string, log *slog.Logger, result *Result) error {
+	if len(branches) == 0 {
+		return nil
 	}
 
 	log.Debug("syncing branches", "count", len(branches))
@@ -364,11 +525,13 @@ func (s *Syncer) syncOpenVoxBranches(ctx context.Context, resolverRepo *git.Repo
 func (s *Syncer) syncOneOpenVoxBranch(ctx context.Context, repo *config.RepoConfig, branch string, auth transport.AuthMethod, log *slog.Logger, result *Result) {
 	dirName := SanitizeName(branch)
 	dirPath := filepath.Join(repo.LocalPath, dirName)
-	dirMu := getOpenVoxDirMutex(dirPath)
-	dirMu.Lock()
-	defer dirMu.Unlock()
+	releaseDirLock := acquireOpenVoxDirLock(dirPath)
+	defer releaseDirLock()
 
-	processLock, err := acquireOpenVoxFileLock(ctx, openVoxLockPath(dirPath))
+	lockCtx, cancel := withOpenVoxLockTimeout(ctx)
+	defer cancel()
+
+	processLock, err := acquireOpenVoxFileLock(lockCtx, openVoxLockPath(dirPath))
 	if err != nil {
 		log.Error("openvox branch lock failed", "branch", branch, "dir", dirName, "error", err)
 		s.addBranchFailed(result, branch)
@@ -400,10 +563,22 @@ func (s *Syncer) syncOneOpenVoxBranch(ctx context.Context, repo *config.RepoConf
 		return
 	}
 
-	if err := checkoutRef(r, branch, log); err != nil {
-		log.Error("openvox branch checkout failed", "branch", branch, "dir", dirName, "error", err)
-		s.addBranchFailed(result, branch)
-		return
+	needsCheckout, dirtyBranch, stateErr := shouldCheckoutBranch(r, branch, updated)
+	if stateErr != nil {
+		log.Warn("openvox branch state check failed; forcing checkout", "branch", branch, "dir", dirName, "error", stateErr)
+		needsCheckout = true
+	}
+
+	if dirtyBranch {
+		log.Warn("dirty branch detected, likely manual local changes", "branch", branch, "dir", dirName)
+	}
+
+	if needsCheckout {
+		if err := checkoutRef(r, branch, log); err != nil {
+			log.Error("openvox branch checkout failed", "branch", branch, "dir", dirName, "error", err)
+			s.addBranchFailed(result, branch)
+			return
+		}
 	}
 
 	if updated {
@@ -413,16 +588,8 @@ func (s *Syncer) syncOneOpenVoxBranch(ctx context.Context, repo *config.RepoConf
 	}
 }
 
-func (s *Syncer) syncOpenVoxTags(ctx context.Context, resolverRepo *git.Repository, repo *config.RepoConfig, auth transport.AuthMethod, sanitizedToOriginal map[string]string, log *slog.Logger, result *Result) {
-	if len(repo.Tags) == 0 {
-		return
-	}
-
-	tags, err := resolveTags(ctx, resolverRepo, repo.Tags, auth)
-	if err != nil {
-		log.Error("failed to resolve tags", "error", err)
-		telemetry.SyncFailuresTotal.WithLabelValues(repo.Name, "tag_sync").Inc()
-		s.setErr(result, fmt.Errorf("resolving tags: %w", err))
+func (s *Syncer) syncOpenVoxTags(ctx context.Context, repo *config.RepoConfig, auth transport.AuthMethod, tags []string, sanitizedToOriginal map[string]string, log *slog.Logger, result *Result) {
+	if len(tags) == 0 {
 		return
 	}
 
@@ -455,11 +622,13 @@ func (s *Syncer) syncOpenVoxTags(ctx context.Context, resolverRepo *git.Reposito
 func (s *Syncer) syncOneOpenVoxTag(ctx context.Context, repo *config.RepoConfig, tag string, auth transport.AuthMethod, log *slog.Logger, result *Result) {
 	dirName := SanitizeName(tag)
 	dirPath := filepath.Join(repo.LocalPath, dirName)
-	dirMu := getOpenVoxDirMutex(dirPath)
-	dirMu.Lock()
-	defer dirMu.Unlock()
+	releaseDirLock := acquireOpenVoxDirLock(dirPath)
+	defer releaseDirLock()
 
-	processLock, err := acquireOpenVoxFileLock(ctx, openVoxLockPath(dirPath))
+	lockCtx, cancel := withOpenVoxLockTimeout(ctx)
+	defer cancel()
+
+	processLock, err := acquireOpenVoxFileLock(lockCtx, openVoxLockPath(dirPath))
 	if err != nil {
 		log.Error("openvox tag lock failed", "tag", tag, "dir", dirName, "error", err)
 		s.addTagFailed(result, tag)
@@ -613,7 +782,7 @@ func detectCollisions(names []string, sanitizedToOriginal map[string]string) str
 
 // pruneStaleOpenVoxDirs removes per-branch directories whose tip commit is older than staleAge.
 // The remote's default branch is protected from stale pruning.
-func pruneStaleOpenVoxDirs(repo *config.RepoConfig, activeNames map[string]string, staleAge time.Duration, dryRun bool, defaultBranch string, log *slog.Logger, result *Result) {
+func pruneStaleOpenVoxDirs(ctx context.Context, repo *config.RepoConfig, activeNames map[string]string, staleAge time.Duration, dryRun bool, defaultBranch string, log *slog.Logger, result *Result) {
 	if staleAge == 0 {
 		return
 	}
@@ -624,36 +793,71 @@ func pruneStaleOpenVoxDirs(repo *config.RepoConfig, activeNames map[string]strin
 			continue
 		}
 		dirPath := filepath.Join(repo.LocalPath, sanitized)
-		r, err := git.PlainOpen(dirPath)
-		if err != nil {
-			if errors.Is(err, git.ErrRepositoryNotExists) {
-				if _, statErr := os.Stat(dirPath); os.IsNotExist(statErr) {
-					continue
-				}
-			}
-			log.Warn("skipping stale check: directory exists but is not a git repo", "dir", sanitized, "error", err)
+		isStale := isOpenVoxDirStale(dirPath, sanitized, cutoff, log)
+		if !isStale {
 			continue
 		}
-		head, err := r.Head()
-		if err != nil {
-			continue
-		}
-		commit, err := r.CommitObject(head.Hash())
-		if err != nil {
-			continue
-		}
-		if commit.Committer.When.Before(cutoff) {
-			if dryRun {
-				log.Info("stale directory would be pruned (dry-run)", "dir", sanitized, "branch", original)
-			} else {
-				if err := os.RemoveAll(dirPath); err != nil {
-					log.Error("failed to prune stale directory", "dir", sanitized, "error", err)
-					continue
-				}
-				log.Info("stale directory pruned", "dir", sanitized, "branch", original)
-			}
+
+		if dryRun {
+			log.Info("stale directory would be pruned (dry-run)", "dir", sanitized, "branch", original)
 			result.BranchesStale = append(result.BranchesStale, original)
 			result.BranchesPruned = append(result.BranchesPruned, original)
+			continue
 		}
+
+		if err := pruneOpenVoxDirWithLocks(ctx, dirPath); err != nil {
+			log.Warn("skipping stale prune: failed to prune with locks", "dir", sanitized, "error", err)
+			continue
+		}
+		cleanupOpenVoxArtifactsForDir(dirPath)
+		log.Info("stale directory pruned", "dir", sanitized, "branch", original)
+		result.BranchesStale = append(result.BranchesStale, original)
+		result.BranchesPruned = append(result.BranchesPruned, original)
 	}
+}
+
+func isOpenVoxDirStale(dirPath, dirName string, cutoff time.Time, log *slog.Logger) bool {
+	r, err := git.PlainOpen(dirPath)
+	if err != nil {
+		if errors.Is(err, git.ErrRepositoryNotExists) {
+			if _, statErr := os.Stat(dirPath); os.IsNotExist(statErr) {
+				return false
+			}
+		}
+		log.Warn("skipping stale check: directory exists but is not a git repo", "dir", dirName, "error", err)
+		return false
+	}
+
+	head, err := r.Head()
+	if err != nil {
+		return false
+	}
+	commit, err := r.CommitObject(head.Hash())
+	if err != nil {
+		return false
+	}
+
+	return commit.Committer.When.Before(cutoff)
+}
+
+func pruneOpenVoxDirWithLocks(ctx context.Context, dirPath string) error {
+	releaseDirLock := acquireOpenVoxDirLock(dirPath)
+	defer releaseDirLock()
+
+	lockCtx, cancel := withOpenVoxLockTimeout(ctx)
+	defer cancel()
+
+	processLock, err := acquireOpenVoxFileLock(lockCtx, openVoxLockPath(dirPath))
+	if err != nil {
+		return fmt.Errorf("acquiring prune lock: %w", err)
+	}
+	defer func() {
+		_ = processLock.Release()
+	}()
+
+	if err := os.RemoveAll(dirPath); err != nil {
+		return fmt.Errorf("removing directory: %w", err)
+	}
+
+	return nil
 }
