@@ -14,7 +14,7 @@ import (
 func TestHealthEndpoint(t *testing.T) {
 	logger := slog.Default()
 	syncer := gsync.New(logger)
-	h := newServer(syncer, logger, &config.Config{})
+	h := newServer(syncer, logger, &config.Config{}, newRepoSyncGuard())
 
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
 	rr := httptest.NewRecorder()

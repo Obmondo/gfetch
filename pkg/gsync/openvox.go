@@ -23,6 +23,7 @@ import (
 // metaDir is the hidden directory used to store the resolver repo for listing remote refs.
 const (
 	metaDir             = ".gfetch-meta"
+	locksDirName        = "locks"
 	productionAliasName = "production"
 	defaultDirMode      = 0755
 	defaultLockFileMode = os.FileMode(0o600)
@@ -102,8 +103,14 @@ type fileLock struct {
 	file *os.File
 }
 
+func openVoxLocksDir(basePath string) string {
+	return filepath.Join(basePath, metaDir, locksDirName)
+}
+
 func openVoxLockPath(dirPath string) string {
-	return dirPath + ".gfetch.lock"
+	basePath := filepath.Dir(dirPath)
+	dirName := filepath.Base(dirPath)
+	return filepath.Join(openVoxLocksDir(basePath), dirName+".lock")
 }
 
 func withOpenVoxLockTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
@@ -114,6 +121,10 @@ func withOpenVoxLockTimeout(ctx context.Context) (context.Context, context.Cance
 }
 
 func acquireOpenVoxFileLock(ctx context.Context, lockPath string) (*fileLock, error) {
+	if err := os.MkdirAll(filepath.Dir(lockPath), defaultDirMode); err != nil {
+		return nil, fmt.Errorf("creating lock directory for %s: %w", lockPath, err)
+	}
+
 	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, defaultLockFileMode)
 	if err != nil {
 		return nil, fmt.Errorf("opening lock file %s: %w", lockPath, err)
@@ -174,6 +185,10 @@ func (l *fileLock) Release() error {
 	return nil
 }
 
+func isLockAcquireTimeout(err error) bool {
+	return errors.Is(err, context.DeadlineExceeded)
+}
+
 // SanitizeName converts a Git ref name into a valid Puppet environment name.
 // Puppet environments only allow [a-zA-Z0-9_]. Any character outside this set
 // is replaced with an underscore.
@@ -217,27 +232,30 @@ func (s *Syncer) syncRepoOpenVox(ctx context.Context, repo *config.RepoConfig, o
 
 	defaultBranch, remoteBranches, matchedBranches, matchedTags := extractRemoteRefState(refs, repo.Branches, repo.Tags)
 
-	// Track sanitized name -> original name for collision detection.
+	// Track active names separately for stale-branch pruning, and combined for
+	// collision detection and obsolete-dir pruning.
+	activeBranchNames := make(map[string]string)
+	activeTagNames := make(map[string]string)
 	sanitizedToOriginal := make(map[string]string)
 
-	if err := s.syncOpenVoxBranches(ctx, resolverRepo, repo, opts, auth, matchedBranches, sanitizedToOriginal, log, &result); err != nil {
+	if err := s.syncOpenVoxBranches(ctx, resolverRepo, resolverPath, repo, opts, auth, matchedBranches, activeBranchNames, sanitizedToOriginal, log, &result); err != nil {
 		return result
 	}
 
 	ensureProductionAlias(ctx, repo, defaultBranch, remoteBranches, log)
 
-	s.syncOpenVoxTags(ctx, repo, auth, matchedTags, sanitizedToOriginal, log, &result)
+	s.syncOpenVoxTags(ctx, repo, auth, matchedTags, activeTagNames, sanitizedToOriginal, log, &result)
 
 	// Prune stale directories that no longer correspond to any matched ref.
 	if opts.Prune {
-		pruneOpenVoxDirs(ctx, repo.LocalPath, sanitizedToOriginal, opts.DryRun, log, &result)
-		cleanupOrphanOpenVoxLockFiles(repo.LocalPath, opts.DryRun, log)
+		pruneOpenVoxDirs(ctx, repo.Name, repo.LocalPath, sanitizedToOriginal, opts.DryRun, log, &result)
+		cleanupOrphanOpenVoxLockFiles(repo.Name, repo.LocalPath, opts.DryRun, log)
 	}
 
 	// Prune directories whose latest commit is older than staleAge.
 	if opts.PruneStale {
-		pruneStaleOpenVoxDirs(ctx, repo, sanitizedToOriginal, opts.StaleAge, opts.DryRun, defaultBranch, log, &result)
-		cleanupOrphanOpenVoxLockFiles(repo.LocalPath, opts.DryRun, log)
+		pruneStaleOpenVoxDirs(ctx, repo, activeBranchNames, opts.StaleAge, opts.DryRun, defaultBranch, log, &result)
+		cleanupOrphanOpenVoxLockFiles(repo.Name, repo.LocalPath, opts.DryRun, log)
 	}
 
 	s.recordOpenVoxMetrics(repo, start, &result, log)
@@ -345,6 +363,9 @@ func ensureProductionAlias(ctx context.Context, repo *config.RepoConfig, default
 
 	processLock, err := acquireOpenVoxFileLock(lockCtx, openVoxLockPath(aliasPath))
 	if err != nil {
+		if isLockAcquireTimeout(err) {
+			telemetry.OpenVoxLockAcquireTimeoutsTotal.WithLabelValues(repo.Name, "alias").Inc()
+		}
 		log.Warn("failed to acquire production alias lock", "error", err)
 		return
 	}
@@ -400,10 +421,18 @@ func cleanupOpenVoxArtifactsForDir(dirPath string) {
 	forgetOpenVoxDirLock(dirPath)
 }
 
-func cleanupOrphanOpenVoxLockFiles(basePath string, dryRun bool, log *slog.Logger) {
-	entries, err := os.ReadDir(basePath)
+func cleanupOrphanOpenVoxLockFiles(repoName, basePath string, dryRun bool, log *slog.Logger) {
+	cleanupOrphanOpenVoxLockFilesInDir(repoName, basePath, basePath, ".gfetch.lock", dryRun, log)
+	cleanupOrphanOpenVoxLockFilesInDir(repoName, basePath, openVoxLocksDir(basePath), ".lock", dryRun, log)
+}
+
+func cleanupOrphanOpenVoxLockFilesInDir(repoName, basePath, scanPath, suffix string, dryRun bool, log *slog.Logger) {
+	entries, err := os.ReadDir(scanPath)
 	if err != nil {
-		log.Warn("failed to scan local_path for orphan lock files", "path", basePath, "error", err)
+		if os.IsNotExist(err) {
+			return
+		}
+		log.Warn("failed to scan local_path for orphan lock files", "path", scanPath, "error", err)
 		return
 	}
 
@@ -412,11 +441,11 @@ func cleanupOrphanOpenVoxLockFiles(basePath string, dryRun bool, log *slog.Logge
 			continue
 		}
 		name := entry.Name()
-		if !strings.HasSuffix(name, ".gfetch.lock") {
+		if !strings.HasSuffix(name, suffix) {
 			continue
 		}
 
-		refDirName := strings.TrimSuffix(name, ".gfetch.lock")
+		refDirName := strings.TrimSuffix(name, suffix)
 		if refDirName == "" {
 			continue
 		}
@@ -429,40 +458,42 @@ func cleanupOrphanOpenVoxLockFiles(basePath string, dryRun bool, log *slog.Logge
 			continue
 		}
 
-		lockPath := filepath.Join(basePath, name)
+		lockPath := filepath.Join(scanPath, name)
 		if dryRun {
-			log.Info("orphan lock file would be removed (dry-run)", "lock_file", name)
+			log.Info("orphan lock file would be removed (dry-run)", "lock_file", lockPath)
 			continue
 		}
 
-		lock, err := tryAcquireOpenVoxFileLock(lockPath)
-		if err != nil {
-			log.Warn("failed to lock orphan lock file for cleanup", "lock_file", name, "error", err)
+		lock, lockErr := tryAcquireOpenVoxFileLock(lockPath)
+		if lockErr != nil {
+			log.Warn("failed to lock orphan lock file for cleanup", "lock_file", lockPath, "error", lockErr)
 			continue
 		}
 		if lock == nil {
-			log.Debug("skipping orphan lock file cleanup: lock is in use", "lock_file", name)
+			telemetry.OpenVoxOrphanLockfilesSkippedInUseTotal.WithLabelValues(repoName).Inc()
+			log.Debug("skipping orphan lock file cleanup: lock is in use", "lock_file", lockPath)
 			continue
 		}
 
 		if err := os.Remove(lockPath); err != nil && !os.IsNotExist(err) {
 			if relErr := lock.Release(); relErr != nil {
-				log.Warn("failed to release orphan lock file lock", "lock_file", name, "error", relErr)
+				log.Warn("failed to release orphan lock file lock", "lock_file", lockPath, "error", relErr)
 			}
-			log.Warn("failed to remove orphan lock file", "lock_file", name, "error", err)
+			log.Warn("failed to remove orphan lock file", "lock_file", lockPath, "error", err)
 			continue
 		}
 
 		if relErr := lock.Release(); relErr != nil {
-			log.Warn("failed to release orphan lock file lock", "lock_file", name, "error", relErr)
+			log.Warn("failed to release orphan lock file lock", "lock_file", lockPath, "error", relErr)
 		}
 
+		telemetry.OpenVoxOrphanLockfilesRemovedTotal.WithLabelValues(repoName).Inc()
 		forgetOpenVoxDirLock(refDirPath)
-		log.Debug("removed orphan lock file", "lock_file", name)
+		log.Debug("removed orphan lock file", "lock_file", lockPath)
 	}
 }
 
-func (s *Syncer) syncOpenVoxBranches(ctx context.Context, resolverRepo *git.Repository, repo *config.RepoConfig, opts SyncOptions, auth transport.AuthMethod, branches []*plumbing.Reference, sanitizedToOriginal map[string]string, log *slog.Logger, result *Result) error {
+func (s *Syncer) syncOpenVoxBranches(ctx context.Context, resolverRepo *git.Repository, resolverPath string, repo *config.RepoConfig, opts SyncOptions, auth transport.AuthMethod, branches []*plumbing.Reference, activeBranchNames map[string]string, sanitizedToOriginal map[string]string, log *slog.Logger, result *Result) error {
 	if len(branches) == 0 {
 		return nil
 	}
@@ -477,22 +508,32 @@ func (s *Syncer) syncOpenVoxBranches(ctx context.Context, resolverRepo *git.Repo
 		s.setErr(result, fmt.Errorf("name collision after sanitization: %s", collision))
 		return result.Err
 	}
+	for _, branch := range branchNames {
+		activeBranchNames[SanitizeName(branch)] = branch
+	}
 
 	// Filter stale branches upfront with a single batch fetch, rather than
 	// checking each branch individually under a mutex in the worker loop.
 	toSync := branches
 	if opts.PruneStale && opts.Prune {
+		releaseResolverLock := acquireResolverLock(resolverPath)
 		cleanup, err := batchFetchForStaleness(ctx, resolverRepo, branches, auth)
 		if err != nil {
+			releaseResolverLock()
 			log.Warn("batch staleness fetch failed, syncing all branches", "error", err)
 		}
 		if err == nil {
-			defer cleanup()
+			defer func() {
+				cleanup()
+				releaseResolverLock()
+			}()
 			var nonStale []*plumbing.Reference
 			for _, ref := range branches {
-				if !isStaleLocal(resolverRepo, ref, opts.StaleAge, log) {
-					nonStale = append(nonStale, ref)
+				if isStaleLocal(resolverRepo, ref, opts.StaleAge, log) {
+					telemetry.OpenVoxStaleBranchesSkippedTotal.WithLabelValues(repo.Name).Inc()
+					continue
 				}
+				nonStale = append(nonStale, ref)
 			}
 			log.Debug("staleness filter applied", "total", len(branches), "non_stale", len(nonStale))
 			toSync = nonStale
@@ -533,6 +574,9 @@ func (s *Syncer) syncOneOpenVoxBranch(ctx context.Context, repo *config.RepoConf
 
 	processLock, err := acquireOpenVoxFileLock(lockCtx, openVoxLockPath(dirPath))
 	if err != nil {
+		if isLockAcquireTimeout(err) {
+			telemetry.OpenVoxLockAcquireTimeoutsTotal.WithLabelValues(repo.Name, "branch").Inc()
+		}
 		log.Error("openvox branch lock failed", "branch", branch, "dir", dirName, "error", err)
 		s.addBranchFailed(result, branch)
 		return
@@ -588,7 +632,7 @@ func (s *Syncer) syncOneOpenVoxBranch(ctx context.Context, repo *config.RepoConf
 	}
 }
 
-func (s *Syncer) syncOpenVoxTags(ctx context.Context, repo *config.RepoConfig, auth transport.AuthMethod, tags []string, sanitizedToOriginal map[string]string, log *slog.Logger, result *Result) {
+func (s *Syncer) syncOpenVoxTags(ctx context.Context, repo *config.RepoConfig, auth transport.AuthMethod, tags []string, activeTagNames map[string]string, sanitizedToOriginal map[string]string, log *slog.Logger, result *Result) {
 	if len(tags) == 0 {
 		return
 	}
@@ -597,6 +641,9 @@ func (s *Syncer) syncOpenVoxTags(ctx context.Context, repo *config.RepoConfig, a
 	if collision := detectCollisions(tags, sanitizedToOriginal); collision != "" {
 		s.setErr(result, fmt.Errorf("name collision after sanitization: %s", collision))
 		return
+	}
+	for _, tag := range tags {
+		activeTagNames[SanitizeName(tag)] = tag
 	}
 
 	var wg sync.WaitGroup
@@ -630,6 +677,9 @@ func (s *Syncer) syncOneOpenVoxTag(ctx context.Context, repo *config.RepoConfig,
 
 	processLock, err := acquireOpenVoxFileLock(lockCtx, openVoxLockPath(dirPath))
 	if err != nil {
+		if isLockAcquireTimeout(err) {
+			telemetry.OpenVoxLockAcquireTimeoutsTotal.WithLabelValues(repo.Name, "tag").Inc()
+		}
 		log.Error("openvox tag lock failed", "tag", tag, "dir", dirName, "error", err)
 		s.addTagFailed(result, tag)
 		return
@@ -805,7 +855,7 @@ func pruneStaleOpenVoxDirs(ctx context.Context, repo *config.RepoConfig, activeN
 			continue
 		}
 
-		if err := pruneOpenVoxDirWithLocks(ctx, dirPath); err != nil {
+		if err := pruneOpenVoxDirWithLocks(ctx, repo.Name, dirPath, "prune_stale"); err != nil {
 			log.Warn("skipping stale prune: failed to prune with locks", "dir", sanitized, "error", err)
 			continue
 		}
@@ -840,7 +890,7 @@ func isOpenVoxDirStale(dirPath, dirName string, cutoff time.Time, log *slog.Logg
 	return commit.Committer.When.Before(cutoff)
 }
 
-func pruneOpenVoxDirWithLocks(ctx context.Context, dirPath string) error {
+func pruneOpenVoxDirWithLocks(ctx context.Context, repoName, dirPath, kind string) error {
 	releaseDirLock := acquireOpenVoxDirLock(dirPath)
 	defer releaseDirLock()
 
@@ -849,6 +899,9 @@ func pruneOpenVoxDirWithLocks(ctx context.Context, dirPath string) error {
 
 	processLock, err := acquireOpenVoxFileLock(lockCtx, openVoxLockPath(dirPath))
 	if err != nil {
+		if isLockAcquireTimeout(err) {
+			telemetry.OpenVoxLockAcquireTimeoutsTotal.WithLabelValues(repoName, kind).Inc()
+		}
 		return fmt.Errorf("acquiring prune lock: %w", err)
 	}
 	defer func() {

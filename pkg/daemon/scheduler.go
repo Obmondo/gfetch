@@ -22,11 +22,12 @@ type Scheduler struct {
 	syncer     *gsync.Syncer
 	logger     *slog.Logger
 	listenAddr string
+	guard      *repoSyncGuard
 }
 
 // NewScheduler creates a new Scheduler.
 func NewScheduler(s *gsync.Syncer, logger *slog.Logger, listenAddr string) *Scheduler {
-	return &Scheduler{syncer: s, logger: logger, listenAddr: listenAddr}
+	return &Scheduler{syncer: s, logger: logger, listenAddr: listenAddr, guard: newRepoSyncGuard()}
 }
 
 // Run starts the gocron scheduler and HTTP server, blocking until SIGINT/SIGTERM.
@@ -47,7 +48,7 @@ func (s *Scheduler) Run(ctx context.Context, cfg *config.Config) {
 		_, err := scheduler.NewJob(
 			gocron.DurationJob(interval),
 			gocron.NewTask(func() {
-				s.syncer.SyncRepo(ctx, &repo, gsync.SyncOptions{})
+				runGuardedSync(ctx, s.syncer, s.guard, &repo, s.logger, "scheduler")
 			}),
 			gocron.WithSingletonMode(gocron.LimitModeReschedule),
 			gocron.WithStartAt(gocron.WithStartImmediately()),
@@ -62,7 +63,7 @@ func (s *Scheduler) Run(ctx context.Context, cfg *config.Config) {
 	scheduler.Start()
 
 	// Start HTTP server.
-	srv := newServer(s.syncer, s.logger, cfg)
+	srv := newServer(s.syncer, s.logger, cfg, s.guard)
 	httpServer := &http.Server{
 		Addr:    s.listenAddr,
 		Handler: srv,

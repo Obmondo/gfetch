@@ -220,7 +220,7 @@ func TestCleanupOrphanOpenVoxLockFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cleanupOrphanOpenVoxLockFiles(basePath, false, log)
+	cleanupOrphanOpenVoxLockFiles("test", basePath, false, log)
 
 	if _, err := os.Stat(orphanLock); !os.IsNotExist(err) {
 		t.Fatalf("expected orphan lock to be removed, stat err=%v", err)
@@ -236,6 +236,9 @@ func TestCleanupOpenVoxArtifactsForDir(t *testing.T) {
 		t.Fatal(err)
 	}
 	lockPath := openVoxLockPath(dirPath)
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0755); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(lockPath, []byte(""), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -559,6 +562,9 @@ func TestPruneStaleOpenVoxDirs_LeavesLockFileForOrphanCleanup(t *testing.T) {
 
 	initOpenVoxBranchRepo(t, basePath, "old-branch", past)
 	lockPath := openVoxLockPath(filepath.Join(basePath, "old_branch"))
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0755); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(lockPath, []byte(""), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -579,7 +585,7 @@ func TestPruneStaleOpenVoxDirs_LeavesLockFileForOrphanCleanup(t *testing.T) {
 		t.Fatalf("expected lock file to remain after stale prune, stat err=%v", err)
 	}
 
-	cleanupOrphanOpenVoxLockFiles(basePath, false, log)
+	cleanupOrphanOpenVoxLockFiles("test", basePath, false, log)
 	if _, err := os.Stat(lockPath); !os.IsNotExist(err) {
 		t.Fatalf("expected orphan cleanup to remove lock file, stat err=%v", err)
 	}

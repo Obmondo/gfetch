@@ -145,7 +145,13 @@ func isStaleLocal(repo *git.Repository, ref *plumbing.Reference, age time.Durati
 		return false
 	}
 	if time.Since(commit.Committer.When) > age {
-		log.Debug("skipping stale branch: no commits within age threshold", "branch", ref.Name().Short(), "max_age", age)
+		log.Debug(
+			"skipping stale branch: no commits within age threshold",
+			"branch", ref.Name().Short(),
+			"max_age", age,
+			"commit_age", time.Since(commit.Committer.When),
+			"commit_time", commit.Committer.When,
+		)
 		return true
 	}
 	return false

@@ -59,7 +59,7 @@ func deleteBranch(repo *git.Repository, branch string) error {
 }
 
 // pruneOpenVoxDirs removes directories under basePath that don't correspond to any active ref.
-func pruneOpenVoxDirs(ctx context.Context, basePath string, activeNames map[string]string, dryRun bool, log *slog.Logger, result *Result) {
+func pruneOpenVoxDirs(ctx context.Context, repoName, basePath string, activeNames map[string]string, dryRun bool, log *slog.Logger, result *Result) {
 	entries, err := os.ReadDir(basePath)
 	if err != nil {
 		log.Error("failed to read local_path for pruning", "path", basePath, "error", err)
@@ -92,7 +92,7 @@ func pruneOpenVoxDirs(ctx context.Context, basePath string, activeNames map[stri
 		func(name string) string { return name },
 		func(name string) error {
 			dirPath := filepath.Join(basePath, name)
-			if err := pruneOpenVoxDirWithLocks(ctx, dirPath); err != nil {
+			if err := pruneOpenVoxDirWithLocks(ctx, repoName, dirPath, "prune_obsolete"); err != nil {
 				return fmt.Errorf("pruning directory %s: %w", name, err)
 			}
 			cleanupOpenVoxArtifactsForDir(dirPath)
