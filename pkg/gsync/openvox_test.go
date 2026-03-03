@@ -198,7 +198,7 @@ func TestExtractRemoteRefState(t *testing.T) {
 	if len(matchedBranches) != 3 {
 		t.Fatalf("matched branches = %d, want 3", len(matchedBranches))
 	}
-	if len(matchedTags) != 1 || matchedTags[0] != "v1.0.0" {
+	if len(matchedTags) != 1 || matchedTags[0].Name().Short() != "v1.0.0" {
 		t.Fatalf("matched tags = %v, want [v1.0.0]", matchedTags)
 	}
 }

@@ -130,7 +130,11 @@ func (s *Syncer) SyncRepo(ctx context.Context, repo *config.RepoConfig, opts Syn
 		return result
 	}
 
-	_, _, matchedBranches, matchedTags := extractRemoteRefState(refs, repo.Branches, repo.Tags)
+	_, _, matchedBranches, matchedTagRefs := extractRemoteRefState(refs, repo.Branches, repo.Tags)
+	matchedTags := make([]string, 0, len(matchedTagRefs))
+	for _, tagRef := range matchedTagRefs {
+		matchedTags = append(matchedTags, tagRef.Name().Short())
+	}
 
 	s.syncBranches(ctx, r, repo, auth, opts, matchedBranches, log, &result)
 	s.syncTagsWrapper(ctx, r, repo, auth, opts, matchedTags, log, &result)

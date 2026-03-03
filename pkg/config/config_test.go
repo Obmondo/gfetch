@@ -315,13 +315,15 @@ branches:
 func TestApplyDefaults(t *testing.T) {
 	openvoxTrue := true
 	productionAliasTrue := true
+	workers := 8
 	defaults := &RepoDefaults{
-		SSHKeyPath:      "/tmp/default_key",
-		LocalPath:       "/tmp/default_path",
-		PollInterval:    Duration(3 * time.Minute),
-		Branches:        []Pattern{{Raw: "main"}},
-		OpenVox:         &openvoxTrue,
-		ProductionAlias: &productionAliasTrue,
+		SSHKeyPath:        "/tmp/default_key",
+		LocalPath:         "/tmp/default_path",
+		PollInterval:      Duration(3 * time.Minute),
+		Branches:          []Pattern{{Raw: "main"}},
+		OpenVox:           &openvoxTrue,
+		OpenVoxMaxWorkers: &workers,
+		ProductionAlias:   &productionAliasTrue,
 	}
 
 	repo := &RepoConfig{
@@ -338,6 +340,9 @@ func TestApplyDefaults(t *testing.T) {
 	}
 	if repo.ProductionAlias == nil || !*repo.ProductionAlias {
 		t.Error("production_alias should be inherited from defaults")
+	}
+	if repo.OpenVoxMaxWorkers == nil || *repo.OpenVoxMaxWorkers != workers {
+		t.Errorf("openvox_max_workers = %v, want %d", repo.OpenVoxMaxWorkers, workers)
 	}
 }
 
@@ -363,6 +368,84 @@ func TestValidate_ProductionAliasRequiresOpenVox(t *testing.T) {
 	err := cfg.Validate()
 	if err == nil {
 		t.Fatal("expected error when production_alias is enabled without openvox")
+	}
+}
+
+func TestValidate_OpenVoxMaxWorkers(t *testing.T) {
+	keyFile := filepath.Join(t.TempDir(), "key")
+	if err := os.WriteFile(keyFile, []byte("fake"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	openvox := true
+	workers := 9
+	cfg := &Config{Repos: map[string]RepoConfig{"test": {
+		RepoDefaults: RepoDefaults{
+			SSHKeyPath:        keyFile,
+			LocalPath:         "/tmp/test",
+			PollInterval:      Duration(30 * time.Second),
+			Branches:          []Pattern{{Raw: branchMain}},
+			OpenVox:           &openvox,
+			OpenVoxMaxWorkers: &workers,
+		},
+		Name: "test",
+		URL:  "git@github.com:test/repo.git",
+	}}}
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected valid config, got error: %v", err)
+	}
+}
+
+func TestValidate_OpenVoxMaxWorkersRequiresOpenVox(t *testing.T) {
+	keyFile := filepath.Join(t.TempDir(), "key")
+	if err := os.WriteFile(keyFile, []byte("fake"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	workers := 9
+	cfg := &Config{Repos: map[string]RepoConfig{"test": {
+		RepoDefaults: RepoDefaults{
+			SSHKeyPath:        keyFile,
+			LocalPath:         "/tmp/test",
+			PollInterval:      Duration(30 * time.Second),
+			Branches:          []Pattern{{Raw: branchMain}},
+			OpenVoxMaxWorkers: &workers,
+		},
+		Name: "test",
+		URL:  "git@github.com:test/repo.git",
+	}}}
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error when openvox_max_workers is set without openvox")
+	}
+}
+
+func TestValidate_OpenVoxMaxWorkersRange(t *testing.T) {
+	keyFile := filepath.Join(t.TempDir(), "key")
+	if err := os.WriteFile(keyFile, []byte("fake"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	openvox := true
+	workers := 0
+	cfg := &Config{Repos: map[string]RepoConfig{"test": {
+		RepoDefaults: RepoDefaults{
+			SSHKeyPath:        keyFile,
+			LocalPath:         "/tmp/test",
+			PollInterval:      Duration(30 * time.Second),
+			Branches:          []Pattern{{Raw: branchMain}},
+			OpenVox:           &openvox,
+			OpenVoxMaxWorkers: &workers,
+		},
+		Name: "test",
+		URL:  "git@github.com:test/repo.git",
+	}}}
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for invalid openvox_max_workers range")
 	}
 }
 
