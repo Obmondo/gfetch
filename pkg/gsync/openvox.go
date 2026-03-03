@@ -223,7 +223,7 @@ func (s *Syncer) syncRepoOpenVox(ctx context.Context, repo *config.RepoConfig, o
 
 	// Use a hidden resolver repo to list remote refs without polluting the workspace.
 	resolverPath := filepath.Join(repo.LocalPath, metaDir)
-	resolverRepo, refs, err := loadResolverRepoAndRefs(ctx, resolverPath, repo.URL, auth)
+	resolverRepo, refs, err := loadResolverRepoAndRefs(ctx, repo.Name, resolverPath, repo.URL, auth)
 	if err != nil {
 		telemetry.SyncFailuresTotal.WithLabelValues(repo.Name, "clone").Inc()
 		result.Err = fmt.Errorf("resolver repo: %w", err)
@@ -262,7 +262,7 @@ func (s *Syncer) syncRepoOpenVox(ctx context.Context, repo *config.RepoConfig, o
 	return result
 }
 
-func loadResolverRepoAndRefs(ctx context.Context, resolverPath, remoteURL string, auth transport.AuthMethod) (*git.Repository, []*plumbing.Reference, error) {
+func loadResolverRepoAndRefs(ctx context.Context, repoName, resolverPath, remoteURL string, auth transport.AuthMethod) (*git.Repository, []*plumbing.Reference, error) {
 	releaseResolverLock := acquireResolverLock(resolverPath)
 	defer releaseResolverLock()
 
@@ -271,7 +271,7 @@ func loadResolverRepoAndRefs(ctx context.Context, resolverPath, remoteURL string
 		return nil, nil, err
 	}
 
-	refs, err := listRemoteRefs(ctx, resolverRepo, auth)
+	refs, err := listRemoteRefs(ctx, resolverRepo, auth, repoName, "openvox")
 	if err != nil {
 		return nil, nil, err
 	}
@@ -279,12 +279,13 @@ func loadResolverRepoAndRefs(ctx context.Context, resolverPath, remoteURL string
 	return resolverRepo, refs, nil
 }
 
-func listRemoteRefs(ctx context.Context, repo *git.Repository, auth transport.AuthMethod) ([]*plumbing.Reference, error) {
+func listRemoteRefs(ctx context.Context, repo *git.Repository, auth transport.AuthMethod, repoName, mode string) ([]*plumbing.Reference, error) {
 	remote, err := repo.Remote("origin")
 	if err != nil {
 		return nil, fmt.Errorf("getting remote: %w", err)
 	}
 
+	telemetry.RemoteRefListTotal.WithLabelValues(repoName, mode).Inc()
 	refs, err := remote.ListContext(ctx, &git.ListOptions{Auth: auth})
 	if err != nil {
 		return nil, fmt.Errorf("listing remote refs: %w", err)
@@ -512,46 +513,18 @@ func (s *Syncer) syncOpenVoxBranches(ctx context.Context, resolverRepo *git.Repo
 		activeBranchNames[SanitizeName(branch)] = branch
 	}
 
-	// Filter stale branches upfront with a single batch fetch, rather than
-	// checking each branch individually under a mutex in the worker loop.
-	toSync := branches
-	if opts.PruneStale && opts.Prune {
-		releaseResolverLock := acquireResolverLock(resolverPath)
-		cleanup, err := batchFetchForStaleness(ctx, resolverRepo, branches, auth)
-		if err != nil {
-			releaseResolverLock()
-			log.Warn("batch staleness fetch failed, syncing all branches", "error", err)
-		}
-		if err == nil {
-			defer func() {
-				cleanup()
-				releaseResolverLock()
-			}()
-			var nonStale []*plumbing.Reference
-			for _, ref := range branches {
-				if isStaleLocal(resolverRepo, ref, opts.StaleAge, log) {
-					telemetry.OpenVoxStaleBranchesSkippedTotal.WithLabelValues(repo.Name).Inc()
-					continue
-				}
-				nonStale = append(nonStale, ref)
-			}
-			log.Debug("staleness filter applied", "total", len(branches), "non_stale", len(nonStale))
-			toSync = nonStale
-		}
-	}
+	toSync := filterOpenVoxBranchesForSync(ctx, resolverRepo, resolverPath, repo, opts, auth, branches, log)
 
 	var wg sync.WaitGroup
 	jobs := make(chan *plumbing.Reference, len(toSync))
 
-	for i := 0; i < maxWorkers; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range maxWorkers {
+		wg.Go(func() {
 			for ref := range jobs {
 				branch := ref.Name().Short()
 				s.syncOneOpenVoxBranch(ctx, repo, branch, auth, log, result)
 			}
-		}()
+		})
 	}
 
 	for _, ref := range toSync {
@@ -561,6 +534,113 @@ func (s *Syncer) syncOpenVoxBranches(ctx context.Context, resolverRepo *git.Repo
 	wg.Wait()
 
 	return nil
+}
+
+func filterOpenVoxBranchesForSync(ctx context.Context, resolverRepo *git.Repository, resolverPath string, repo *config.RepoConfig, opts SyncOptions, auth transport.AuthMethod, branches []*plumbing.Reference, log *slog.Logger) []*plumbing.Reference {
+	if !opts.PruneStale || !opts.Prune {
+		return branches
+	}
+
+	var nonStale []*plumbing.Reference
+	var unresolved []*plumbing.Reference
+	for _, ref := range branches {
+		doSync, unresolvedLocal := shouldSyncBranchLocalFirst(repo.LocalPath, ref, opts.StaleAge, log)
+		if unresolvedLocal {
+			unresolved = append(unresolved, ref)
+			continue
+		}
+		if doSync {
+			nonStale = append(nonStale, ref)
+			continue
+		}
+
+		telemetry.OpenVoxStaleBranchesSkippedTotal.WithLabelValues(repo.Name).Inc()
+	}
+
+	nonStale = resolveUnresolvedBranchStaleness(ctx, resolverRepo, resolverPath, repo, opts, auth, unresolved, nonStale, log)
+	log.Debug("staleness filter applied", "total", len(branches), "non_stale", len(nonStale), "unresolved", len(unresolved))
+	return nonStale
+}
+
+func resolveUnresolvedBranchStaleness(ctx context.Context, resolverRepo *git.Repository, resolverPath string, repo *config.RepoConfig, opts SyncOptions, auth transport.AuthMethod, unresolved, nonStale []*plumbing.Reference, log *slog.Logger) []*plumbing.Reference {
+	if len(unresolved) == 0 {
+		return nonStale
+	}
+
+	releaseResolverLock := acquireResolverLock(resolverPath)
+	cleanup, err := batchFetchForStaleness(ctx, resolverRepo, unresolved, auth)
+	if err != nil {
+		releaseResolverLock()
+		log.Warn("batch staleness fetch failed for unresolved branches, syncing unresolved set", "count", len(unresolved), "error", err)
+		return append(nonStale, unresolved...)
+	}
+	defer func() {
+		cleanup()
+		releaseResolverLock()
+	}()
+
+	for _, ref := range unresolved {
+		if isStaleLocal(resolverRepo, ref, opts.StaleAge, log) {
+			telemetry.OpenVoxStaleBranchesSkippedTotal.WithLabelValues(repo.Name).Inc()
+			continue
+		}
+		nonStale = append(nonStale, ref)
+	}
+
+	return nonStale
+}
+
+// shouldSyncBranchLocalFirst returns whether a branch should be synced based on
+// local state first. If unresolved is true, caller should fallback to resolver
+// based stale checks.
+func shouldSyncBranchLocalFirst(basePath string, ref *plumbing.Reference, staleAge time.Duration, log *slog.Logger) (shouldSync bool, unresolved bool) {
+	if staleAge <= 0 {
+		return true, false
+	}
+
+	branch := ref.Name().Short()
+	dirPath := filepath.Join(basePath, SanitizeName(branch))
+
+	r, err := git.PlainOpen(dirPath)
+	if err != nil {
+		if errors.Is(err, git.ErrRepositoryNotExists) {
+			return true, true
+		}
+		log.Debug("local-first stale check unresolved: cannot open branch repo", "branch", branch, "dir", dirPath, "error", err)
+		return true, true
+	}
+
+	localRef, err := r.Reference(plumbing.NewBranchReferenceName(branch), true)
+	if err != nil {
+		log.Debug("local-first stale check unresolved: missing local branch ref", "branch", branch, "error", err)
+		return true, true
+	}
+
+	remoteHash := ref.Hash()
+	localHash := localRef.Hash()
+	if localHash != remoteHash {
+		log.Debug("local-first stale check requires sync: local and remote hashes differ", "branch", branch, "local_hash", localHash, "remote_hash", remoteHash)
+		return true, false
+	}
+
+	commit, err := r.CommitObject(localHash)
+	if err != nil {
+		log.Debug("local-first stale check unresolved: commit lookup failed", "branch", branch, "hash", localHash, "error", err)
+		return true, true
+	}
+
+	if time.Since(commit.Committer.When) > staleAge {
+		log.Debug(
+			"local-first stale check: skipping stale branch",
+			"branch", branch,
+			"max_age", staleAge,
+			"commit_age", time.Since(commit.Committer.When),
+			"commit_time", commit.Committer.When,
+		)
+		return false, false
+	}
+
+	return true, false
 }
 
 func (s *Syncer) syncOneOpenVoxBranch(ctx context.Context, repo *config.RepoConfig, branch string, auth transport.AuthMethod, log *slog.Logger, result *Result) {
@@ -649,14 +729,12 @@ func (s *Syncer) syncOpenVoxTags(ctx context.Context, repo *config.RepoConfig, a
 	var wg sync.WaitGroup
 	jobs := make(chan string, len(tags))
 
-	for i := 0; i < maxWorkers; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range maxWorkers {
+		wg.Go(func() {
 			for tag := range jobs {
 				s.syncOneOpenVoxTag(ctx, repo, tag, auth, log, result)
 			}
-		}()
+		})
 	}
 
 	for _, tag := range tags {

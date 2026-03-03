@@ -58,6 +58,11 @@ var (
 		Name: "gfetch_openvox_orphan_lockfiles_skipped_in_use_total",
 		Help: "Total number of orphan OpenVox lockfiles skipped because lock is in use.",
 	}, []string{"repo"})
+
+	RemoteRefListTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "gfetch_remote_ref_list_total",
+		Help: "Total number of remote ref-list calls per repo and sync mode.",
+	}, []string{"repo", "mode"})
 )
 
 func init() {
@@ -73,5 +78,6 @@ func init() {
 		OpenVoxSyncOverlapSkippedTotal,
 		OpenVoxOrphanLockfilesRemovedTotal,
 		OpenVoxOrphanLockfilesSkippedInUseTotal,
+		RemoteRefListTotal,
 	)
 }

@@ -16,14 +16,12 @@ import (
 	"github.com/obmondo/gfetch/pkg/telemetry"
 )
 
-// syncTags lists remote tags, filters by patterns, and fetches new matching tags.
-func syncTags(ctx context.Context, repo *git.Repository, repoConfig *config.RepoConfig, auth transport.AuthMethod, pruneTags bool, dryRun bool, log *slog.Logger) (fetched, upToDate, failed, obsolete, pruned []string, err error) {
+// syncTagsWithResolved syncs tags using a pre-resolved remote tag list to avoid
+// an extra remote ref-list call.
+func syncTagsWithResolved(ctx context.Context, repo *git.Repository, repoConfig *config.RepoConfig, auth transport.AuthMethod, resolvedTags []string, pruneTags bool, dryRun bool, log *slog.Logger) (fetched, upToDate, failed, obsolete, pruned []string, err error) {
 	start := time.Now()
 
-	fetched, upToDate, err = resolveAndFilterTags(ctx, repo, repoConfig, auth)
-	if err != nil {
-		return nil, nil, nil, nil, nil, err
-	}
+	fetched, upToDate = resolveAndFilterTagsFromResolved(repo, resolvedTags)
 
 	if err = fetchTags(ctx, repo, fetched, auth, log); err != nil {
 		return nil, upToDate, fetched, nil, nil, err
@@ -41,34 +39,16 @@ func syncTags(ctx context.Context, repo *git.Repository, repoConfig *config.Repo
 	return fetched, upToDate, nil, obsolete, pruned, nil
 }
 
-func resolveAndFilterTags(ctx context.Context, repo *git.Repository, repoConfig *config.RepoConfig, auth transport.AuthMethod) (fetched, upToDate []string, err error) {
-	remote, err := repo.Remote("origin")
-	if err != nil {
-		return nil, nil, fmt.Errorf("getting remote: %w", err)
-	}
-
-	refs, err := remote.ListContext(ctx, &git.ListOptions{Auth: auth})
-	if err != nil {
-		return nil, nil, fmt.Errorf("listing remote refs: %w", err)
-	}
-
-	for _, ref := range refs {
-		name := ref.Name()
-		if !name.IsTag() {
-			continue
-		}
-		tagName := name.Short()
-		if !config.MatchesAny(tagName, repoConfig.Tags) {
-			continue
-		}
-
+func resolveAndFilterTagsFromResolved(repo *git.Repository, resolvedTags []string) (fetched, upToDate []string) {
+	for _, tagName := range resolvedTags {
 		if _, err := repo.Reference(plumbing.NewTagReferenceName(tagName), true); err == nil {
 			upToDate = append(upToDate, tagName)
 		} else {
 			fetched = append(fetched, tagName)
 		}
 	}
-	return fetched, upToDate, nil
+
+	return fetched, upToDate
 }
 
 func fetchTags(ctx context.Context, repo *git.Repository, fetched []string, auth transport.AuthMethod, log *slog.Logger) error {

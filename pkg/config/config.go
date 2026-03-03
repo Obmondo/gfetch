@@ -42,7 +42,7 @@ func (d *Duration) UnmarshalYAML(value *yaml.Node) error {
 }
 
 // MarshalYAML marshals a Duration to a string.
-func (d Duration) MarshalYAML() (interface{}, error) {
+func (d Duration) MarshalYAML() (any, error) {
 	return time.Duration(d).String(), nil
 }
 
@@ -87,7 +87,7 @@ func (p *Pattern) UnmarshalYAML(value *yaml.Node) error {
 }
 
 // MarshalYAML marshals a Pattern to a plain YAML string.
-func (p Pattern) MarshalYAML() (interface{}, error) {
+func (p Pattern) MarshalYAML() (any, error) {
 	return p.Raw, nil
 }
 
