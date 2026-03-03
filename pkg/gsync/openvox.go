@@ -533,15 +533,29 @@ func (s *Syncer) syncOpenVoxBranches(ctx context.Context, resolverRepo *git.Repo
 
 	for range maxWorkers {
 		wg.Go(func() {
-			for ref := range jobs {
-				branch := ref.Name().Short()
-				s.syncOneOpenVoxBranch(ctx, repo, branch, auth, log, result)
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case ref, ok := <-jobs:
+					if !ok {
+						return
+					}
+					branch := ref.Name().Short()
+					s.syncOneOpenVoxBranch(ctx, repo, branch, auth, log, result)
+				}
 			}
 		})
 	}
 
 	for _, ref := range toSync {
-		jobs <- ref
+		select {
+		case <-ctx.Done():
+			close(jobs)
+			wg.Wait()
+			return ctx.Err()
+		case jobs <- ref:
+		}
 	}
 	close(jobs)
 	wg.Wait()
@@ -657,6 +671,11 @@ func shouldSyncBranchLocalFirst(basePath string, ref *plumbing.Reference, staleA
 }
 
 func (s *Syncer) syncOneOpenVoxBranch(ctx context.Context, repo *config.RepoConfig, branch string, auth transport.AuthMethod, log *slog.Logger, result *Result) {
+	if err := ctx.Err(); err != nil {
+		log.Debug("skipping openvox branch sync due to shutdown", "branch", branch, "reason", "shutdown_cancelled", "error", err)
+		return
+	}
+
 	dirName := SanitizeName(branch)
 	dirPath := filepath.Join(repo.LocalPath, dirName)
 	releaseDirLock := acquireOpenVoxDirLock(dirPath)
@@ -685,6 +704,10 @@ func (s *Syncer) syncOneOpenVoxBranch(ctx context.Context, repo *config.RepoConf
 	subCfg.LocalPath = dirPath
 
 	updated, err := syncOpenVoxBranchOnce(ctx, &subCfg, branch, auth, log)
+	if isContextCancellationError(err) {
+		log.Debug("skipping openvox branch sync due to shutdown", "branch", branch, "dir", dirName, "reason", "shutdown_cancelled", "error", err)
+		return
+	}
 	if err != nil && isRecoverableOpenVoxRepoError(err) {
 		log.Warn("openvox branch encountered recoverable repository error, recreating and retrying", "branch", branch, "dir", dirName, "error", err)
 		if repairErr := recreateOpenVoxRepo(ctx, &subCfg, auth, log); repairErr != nil {
@@ -695,6 +718,10 @@ func (s *Syncer) syncOneOpenVoxBranch(ctx context.Context, repo *config.RepoConf
 		}
 
 		updated, err = syncOpenVoxBranchOnce(ctx, &subCfg, branch, auth, log)
+		if isContextCancellationError(err) {
+			log.Debug("skipping openvox branch retry due to shutdown", "branch", branch, "dir", dirName, "reason", "shutdown_cancelled", "error", err)
+			return
+		}
 	}
 	if err != nil {
 		log.Error("openvox branch sync failed", "branch", branch, "dir", dirName, "error", err)
@@ -711,6 +738,10 @@ func (s *Syncer) syncOneOpenVoxBranch(ctx context.Context, repo *config.RepoConf
 }
 
 func syncOpenVoxBranchOnce(ctx context.Context, subCfg *config.RepoConfig, branch string, auth transport.AuthMethod, log *slog.Logger) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, fmt.Errorf("branch sync cancelled %s: %w", branch, err)
+	}
+
 	r, err := ensureClonedOpenVox(ctx, subCfg, auth, log)
 	if err != nil {
 		return false, fmt.Errorf("clone/open repo: %w", err)
@@ -735,7 +766,7 @@ func syncOpenVoxBranchOnce(ctx context.Context, subCfg *config.RepoConfig, branc
 	}
 
 	if needsCheckout {
-		if err := checkoutRef(r, branch, log); err != nil {
+		if err := checkoutRefContext(ctx, r, branch, log); err != nil {
 			return false, err
 		}
 	}
@@ -772,20 +803,39 @@ func (s *Syncer) syncOpenVoxTags(ctx context.Context, repo *config.RepoConfig, a
 
 	for range maxWorkers {
 		wg.Go(func() {
-			for tag := range jobs {
-				s.syncOneOpenVoxTag(ctx, repo, tag, auth, log, result)
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case tag, ok := <-jobs:
+					if !ok {
+						return
+					}
+					s.syncOneOpenVoxTag(ctx, repo, tag, auth, log, result)
+				}
 			}
 		})
 	}
 
 	for _, tag := range tags {
-		jobs <- tag
+		select {
+		case <-ctx.Done():
+			close(jobs)
+			wg.Wait()
+			return
+		case jobs <- tag:
+		}
 	}
 	close(jobs)
 	wg.Wait()
 }
 
 func (s *Syncer) syncOneOpenVoxTag(ctx context.Context, repo *config.RepoConfig, tag string, auth transport.AuthMethod, log *slog.Logger, result *Result) {
+	if err := ctx.Err(); err != nil {
+		log.Debug("skipping openvox tag sync due to shutdown", "tag", tag, "reason", "shutdown_cancelled", "error", err)
+		return
+	}
+
 	dirName := SanitizeName(tag)
 	dirPath := filepath.Join(repo.LocalPath, dirName)
 	releaseDirLock := acquireOpenVoxDirLock(dirPath)
@@ -814,6 +864,10 @@ func (s *Syncer) syncOneOpenVoxTag(ctx context.Context, repo *config.RepoConfig,
 	subCfg.LocalPath = dirPath
 
 	updated, err := syncOpenVoxTagOnce(ctx, &subCfg, tag, auth, log)
+	if isContextCancellationError(err) {
+		log.Debug("skipping openvox tag sync due to shutdown", "tag", tag, "dir", dirName, "reason", "shutdown_cancelled", "error", err)
+		return
+	}
 	if err != nil && isRecoverableOpenVoxRepoError(err) {
 		log.Warn("openvox tag encountered recoverable repository error, recreating and retrying", "tag", tag, "dir", dirName, "error", err)
 		if repairErr := recreateOpenVoxRepo(ctx, &subCfg, auth, log); repairErr != nil {
@@ -825,6 +879,10 @@ func (s *Syncer) syncOneOpenVoxTag(ctx context.Context, repo *config.RepoConfig,
 		}
 
 		updated, err = syncOpenVoxTagOnce(ctx, &subCfg, tag, auth, log)
+		if isContextCancellationError(err) {
+			log.Debug("skipping openvox tag retry due to shutdown", "tag", tag, "dir", dirName, "reason", "shutdown_cancelled", "error", err)
+			return
+		}
 	}
 	if err != nil {
 		log.Error("openvox tag sync failed", "tag", tag, "dir", dirName, "error", err)
@@ -842,6 +900,10 @@ func (s *Syncer) syncOneOpenVoxTag(ctx context.Context, repo *config.RepoConfig,
 }
 
 func syncOpenVoxTagOnce(ctx context.Context, subCfg *config.RepoConfig, tag string, auth transport.AuthMethod, log *slog.Logger) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, fmt.Errorf("tag sync cancelled %s: %w", tag, err)
+	}
+
 	r, err := ensureClonedOpenVox(ctx, subCfg, auth, log)
 	if err != nil {
 		return false, fmt.Errorf("clone/open repo: %w", err)
@@ -947,7 +1009,7 @@ func syncOpenVoxTag(ctx context.Context, r *git.Repository, tag string, auth tra
 		return false, fmt.Errorf("fetching tag %s: %w", tag, err)
 	}
 
-	if err := checkoutRef(r, tag, log); err != nil {
+	if err := checkoutRefContext(ctx, r, tag, log); err != nil {
 		return false, fmt.Errorf("checkout tag %s: %w", tag, err)
 	}
 	return updated, nil

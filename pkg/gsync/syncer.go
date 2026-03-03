@@ -215,6 +215,11 @@ func (s *Syncer) syncBranches(ctx context.Context, r *git.Repository, repo *conf
 
 	log.Debug("syncing branches", "count", len(branches))
 	for _, ref := range branches {
+		if err := ctx.Err(); err != nil {
+			log.Debug("stopping branch sync due to shutdown", "reason", "shutdown_cancelled", "error", err)
+			return
+		}
+
 		branch := ref.Name().Short()
 
 		if opts.PruneStale && opts.Prune && IsStale(ctx, r, ref, opts.StaleAge, auth, log) {
@@ -355,6 +360,10 @@ func (s *Syncer) pruneBranches(r *git.Repository, repo *config.RepoConfig, obsol
 
 func (s *Syncer) syncTagsWrapper(ctx context.Context, r *git.Repository, repo *config.RepoConfig, auth transport.AuthMethod, opts SyncOptions, matchedTags []string, log *slog.Logger, result *Result) {
 	if len(matchedTags) == 0 {
+		return
+	}
+	if err := ctx.Err(); err != nil {
+		log.Debug("stopping tag sync due to shutdown", "reason", "shutdown_cancelled", "error", err)
 		return
 	}
 

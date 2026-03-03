@@ -64,6 +64,9 @@ renovate.json                 # Renovate config (gomod, dockerfile, github-actio
 # Build
 go build -o gfetch ./cmd/gfetch
 
+# Keep code updated with current Go standards after edits
+go fix ./...
+
 # Run all tests
 go test ./...
 
@@ -86,6 +89,8 @@ gofmt -w .           # fix in place
 # Lint (must pass before committing — config: .golangci.yml)
 golangci-lint run ./...
 ```
+
+For AI coding agents: after making code changes, run `go fix ./...` before tests/lint.
 
 ## Code Conventions
 
