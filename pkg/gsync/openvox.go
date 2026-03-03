@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -187,6 +188,18 @@ func (l *fileLock) Release() error {
 
 func isLockAcquireTimeout(err error) bool {
 	return errors.Is(err, context.DeadlineExceeded)
+}
+
+func isRecoverableOpenVoxRepoError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, io.EOF) {
+		return true
+	}
+
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "ref file is empty")
 }
 
 // SanitizeName converts a Git ref name into a valid Puppet environment name.
@@ -671,15 +684,18 @@ func (s *Syncer) syncOneOpenVoxBranch(ctx context.Context, repo *config.RepoConf
 	subCfg := *repo
 	subCfg.LocalPath = dirPath
 
-	r, err := ensureClonedOpenVox(ctx, &subCfg, auth, log)
-	if err != nil {
-		log.Error("openvox branch clone failed", "branch", branch, "dir", dirName, "error", err)
-		telemetry.SyncFailuresTotal.WithLabelValues(repo.Name, "branch_sync").Inc()
-		s.addBranchFailed(result, branch)
-		return
-	}
+	updated, err := syncOpenVoxBranchOnce(ctx, &subCfg, branch, auth, log)
+	if err != nil && isRecoverableOpenVoxRepoError(err) {
+		log.Warn("openvox branch encountered recoverable repository error, recreating and retrying", "branch", branch, "dir", dirName, "error", err)
+		if repairErr := recreateOpenVoxRepo(ctx, &subCfg, auth, log); repairErr != nil {
+			log.Error("openvox branch repair failed", "branch", branch, "dir", dirName, "error", repairErr)
+			telemetry.SyncFailuresTotal.WithLabelValues(repo.Name, "branch_sync").Inc()
+			s.addBranchFailed(result, branch)
+			return
+		}
 
-	updated, err := syncBranch(ctx, r, branch, repo.URL, auth, repo.Name, log)
+		updated, err = syncOpenVoxBranchOnce(ctx, &subCfg, branch, auth, log)
+	}
 	if err != nil {
 		log.Error("openvox branch sync failed", "branch", branch, "dir", dirName, "error", err)
 		telemetry.SyncFailuresTotal.WithLabelValues(repo.Name, "branch_sync").Inc()
@@ -687,29 +703,54 @@ func (s *Syncer) syncOneOpenVoxBranch(ctx context.Context, repo *config.RepoConf
 		return
 	}
 
-	needsCheckout, dirtyBranch, stateErr := shouldCheckoutBranch(r, branch, updated)
-	if stateErr != nil {
-		log.Warn("openvox branch state check failed; forcing checkout", "branch", branch, "dir", dirName, "error", stateErr)
-		needsCheckout = true
-	}
-
-	if dirtyBranch {
-		log.Warn("dirty branch detected, likely manual local changes", "branch", branch, "dir", dirName)
-	}
-
-	if needsCheckout {
-		if err := checkoutRef(r, branch, log); err != nil {
-			log.Error("openvox branch checkout failed", "branch", branch, "dir", dirName, "error", err)
-			s.addBranchFailed(result, branch)
-			return
-		}
-	}
-
 	if updated {
 		s.addBranchSynced(result, branch)
 	} else {
 		s.addBranchUpToDate(result, branch)
 	}
+}
+
+func syncOpenVoxBranchOnce(ctx context.Context, subCfg *config.RepoConfig, branch string, auth transport.AuthMethod, log *slog.Logger) (bool, error) {
+	r, err := ensureClonedOpenVox(ctx, subCfg, auth, log)
+	if err != nil {
+		return false, fmt.Errorf("clone/open repo: %w", err)
+	}
+
+	updated, err := syncBranch(ctx, r, branch, subCfg.URL, auth, subCfg.Name, log)
+	if err != nil {
+		return false, err
+	}
+
+	needsCheckout, dirtyBranch, stateErr := shouldCheckoutBranch(r, branch, updated)
+	if stateErr != nil {
+		if isRecoverableOpenVoxRepoError(stateErr) {
+			return false, fmt.Errorf("branch state check %s: %w", branch, stateErr)
+		}
+		log.Warn("openvox branch state check failed; forcing checkout", "branch", branch, "dir", filepath.Base(subCfg.LocalPath), "error", stateErr)
+		needsCheckout = true
+	}
+
+	if dirtyBranch {
+		log.Warn("dirty branch detected, likely manual local changes", "branch", branch, "dir", filepath.Base(subCfg.LocalPath))
+	}
+
+	if needsCheckout {
+		if err := checkoutRef(r, branch, log); err != nil {
+			return false, err
+		}
+	}
+
+	return updated, nil
+}
+
+func recreateOpenVoxRepo(ctx context.Context, subCfg *config.RepoConfig, auth transport.AuthMethod, log *slog.Logger) error {
+	if err := os.RemoveAll(subCfg.LocalPath); err != nil {
+		return fmt.Errorf("removing repo path %s: %w", subCfg.LocalPath, err)
+	}
+	if _, err := ensureClonedOpenVox(ctx, subCfg, auth, log); err != nil {
+		return fmt.Errorf("recreating repo at %s: %w", subCfg.LocalPath, err)
+	}
+	return nil
 }
 
 func (s *Syncer) syncOpenVoxTags(ctx context.Context, repo *config.RepoConfig, auth transport.AuthMethod, tags []string, activeTagNames map[string]string, sanitizedToOriginal map[string]string, log *slog.Logger, result *Result) {
@@ -772,16 +813,19 @@ func (s *Syncer) syncOneOpenVoxTag(ctx context.Context, repo *config.RepoConfig,
 	subCfg := *repo
 	subCfg.LocalPath = dirPath
 
-	r, err := ensureClonedOpenVox(ctx, &subCfg, auth, log)
-	if err != nil {
-		log.Error("openvox tag clone failed", "tag", tag, "dir", dirName, "error", err)
-		telemetry.SyncFailuresTotal.WithLabelValues(repo.Name, "tag_sync").Inc()
-		s.setErr(result, fmt.Errorf("tag sync %s: %w", tag, err))
-		return
-	}
+	updated, err := syncOpenVoxTagOnce(ctx, &subCfg, tag, auth, log)
+	if err != nil && isRecoverableOpenVoxRepoError(err) {
+		log.Warn("openvox tag encountered recoverable repository error, recreating and retrying", "tag", tag, "dir", dirName, "error", err)
+		if repairErr := recreateOpenVoxRepo(ctx, &subCfg, auth, log); repairErr != nil {
+			log.Error("openvox tag repair failed", "tag", tag, "dir", dirName, "error", repairErr)
+			telemetry.SyncFailuresTotal.WithLabelValues(repo.Name, "tag_sync").Inc()
+			s.setErr(result, fmt.Errorf("tag sync %s: %w", tag, repairErr))
+			s.addTagFailed(result, tag)
+			return
+		}
 
-	// Single-tag fetch and checkout.
-	updated, err := syncOpenVoxTag(ctx, r, tag, auth, log)
+		updated, err = syncOpenVoxTagOnce(ctx, &subCfg, tag, auth, log)
+	}
 	if err != nil {
 		log.Error("openvox tag sync failed", "tag", tag, "dir", dirName, "error", err)
 		telemetry.SyncFailuresTotal.WithLabelValues(repo.Name, "tag_sync").Inc()
@@ -795,6 +839,20 @@ func (s *Syncer) syncOneOpenVoxTag(ctx context.Context, repo *config.RepoConfig,
 	} else {
 		s.addTagUpToDate(result, tag)
 	}
+}
+
+func syncOpenVoxTagOnce(ctx context.Context, subCfg *config.RepoConfig, tag string, auth transport.AuthMethod, log *slog.Logger) (bool, error) {
+	r, err := ensureClonedOpenVox(ctx, subCfg, auth, log)
+	if err != nil {
+		return false, fmt.Errorf("clone/open repo: %w", err)
+	}
+
+	updated, err := syncOpenVoxTag(ctx, r, tag, auth, log)
+	if err != nil {
+		return false, err
+	}
+
+	return updated, nil
 }
 
 // ensureClonedOpenVox opens/initializes a per-ref OpenVox repo and self-heals
