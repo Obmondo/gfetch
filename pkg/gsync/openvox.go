@@ -788,7 +788,7 @@ func syncOpenVoxBranchOnce(ctx context.Context, subCfg *config.RepoConfig, branc
 		}
 	}
 
-	needsCheckout, dirtyBranch, stateErr := shouldCheckoutBranch(r, branch, updated)
+	needsCheckout, dirtyBranch, stateErr := shouldCheckoutBranch(r, branch, updated, log)
 	if stateErr != nil {
 		if isRecoverableOpenVoxRepoError(stateErr) {
 			return false, fmt.Errorf("branch state check %s: %w", branch, stateErr)

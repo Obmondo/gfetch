@@ -122,7 +122,7 @@ func checkoutRefContext(ctx context.Context, repo *git.Repository, name string, 
 // shouldCheckoutBranch reports whether checkoutRef should run for a branch sync.
 // We always checkout on updates. For non-updates, we checkout only if local state
 // is out-of-sync or dirty (e.g. manual local changes).
-func shouldCheckoutBranch(repo *git.Repository, branch string, updated bool) (needsCheckout bool, dirty bool, err error) {
+func shouldCheckoutBranch(repo *git.Repository, branch string, updated bool, log *slog.Logger) (needsCheckout bool, dirty bool, err error) {
 	if updated {
 		return true, false, nil
 	}
@@ -152,6 +152,7 @@ func shouldCheckoutBranch(repo *git.Repository, branch string, updated bool) (ne
 	}
 
 	if !status.IsClean() {
+		log.Debug("branch state is not unmodified", slog.String("branch", branch), slog.String("git_status", status.String()))
 		return true, true, nil
 	}
 

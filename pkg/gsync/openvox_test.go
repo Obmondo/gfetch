@@ -264,7 +264,9 @@ func TestKeyedLockManager_RemovesEntryAfterRelease(t *testing.T) {
 }
 
 func TestShouldCheckoutBranch_WhenUpdated(t *testing.T) {
-	needsCheckout, dirty, err := shouldCheckoutBranch(nil, "ignored", true)
+	log := slog.Default()
+
+	needsCheckout, dirty, err := shouldCheckoutBranch(nil, "ignored", true, log)
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
@@ -278,8 +280,9 @@ func TestShouldCheckoutBranch_WhenUpdated(t *testing.T) {
 
 func TestShouldCheckoutBranch_WhenUpToDateAndClean(t *testing.T) {
 	repo := initTestRepoWithCommit(t)
+	log := slog.Default()
 
-	needsCheckout, dirty, err := shouldCheckoutBranch(repo, "master", false)
+	needsCheckout, dirty, err := shouldCheckoutBranch(repo, "master", false, log)
 	if err != nil {
 		t.Fatalf("shouldCheckoutBranch failed: %v", err)
 	}
@@ -299,7 +302,8 @@ func TestShouldCheckoutBranch_WhenUpToDateButDirty(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	needsCheckout, dirty, err := shouldCheckoutBranch(repo, "master", false)
+	log := slog.Default()
+	needsCheckout, dirty, err := shouldCheckoutBranch(repo, "master", false, log)
 	if err != nil {
 		t.Fatalf("shouldCheckoutBranch failed: %v", err)
 	}
