@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -406,13 +407,7 @@ func TestPruneStaleBranches(t *testing.T) {
 		t.Error("master branch should NOT have been pruned")
 	}
 
-	found := false
-	for _, b := range result.BranchesPruned {
-		if b == staleBranch {
-			found = true
-			break
-		}
-	}
+	found := slices.Contains(result.BranchesPruned, staleBranch)
 	if !found {
 		t.Errorf("expected %s in pruned list, got %v", staleBranch, result.BranchesPruned)
 	}
@@ -634,13 +629,7 @@ func TestPruneTrueFromConfigIsApplied(t *testing.T) {
 	if _, err := local.Reference(plumbing.NewBranchReferenceName("extra-branch"), true); err == nil {
 		t.Error("extra-branch should have been pruned (prune: true)")
 	}
-	found := false
-	for _, b := range result.BranchesPruned {
-		if b == "extra-branch" {
-			found = true
-			break
-		}
-	}
+	found := slices.Contains(result.BranchesPruned, "extra-branch")
 	if !found {
 		t.Errorf("expected extra-branch in pruned list, got %v", result.BranchesPruned)
 	}

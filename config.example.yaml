@@ -8,6 +8,7 @@ defaults:
   tags:
     - /^v[0-9]+\./
   openvox: false
+  openvox_max_workers: 5        # OpenVox-only worker concurrency per repo (1-64)
   production_alias: false        # when openvox=true and no upstream production branch exists, create production -> <default-branch-dir> symlink
   prune: true                   # prune obsolete refs (branches/tags no longer matching any pattern) in daemon mode
   prune_stale: true             # prune branches matching patterns but with no commits in 6 months

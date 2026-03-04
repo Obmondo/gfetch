@@ -42,23 +42,24 @@ func (d *Duration) UnmarshalYAML(value *yaml.Node) error {
 }
 
 // MarshalYAML marshals a Duration to a string.
-func (d Duration) MarshalYAML() (interface{}, error) {
+func (d Duration) MarshalYAML() (any, error) {
 	return time.Duration(d).String(), nil
 }
 
 // RepoDefaults holds default values that are applied to repos missing those fields.
 type RepoDefaults struct {
-	SSHKeyPath      string    `yaml:"ssh_key_path"`
-	SSHKnownHosts   string    `yaml:"ssh_known_hosts"`
-	LocalPath       string    `yaml:"local_path"`
-	PollInterval    Duration  `yaml:"poll_interval"`
-	Branches        []Pattern `yaml:"branches"`
-	Tags            []Pattern `yaml:"tags"`
-	OpenVox         *bool     `yaml:"openvox"`
-	ProductionAlias *bool     `yaml:"production_alias"`
-	Prune           *bool     `yaml:"prune"`
-	PruneStale      *bool     `yaml:"prune_stale"`
-	StaleAge        Duration  `yaml:"stale_age"`
+	SSHKeyPath        string    `yaml:"ssh_key_path"`
+	SSHKnownHosts     string    `yaml:"ssh_known_hosts"`
+	LocalPath         string    `yaml:"local_path"`
+	PollInterval      Duration  `yaml:"poll_interval"`
+	Branches          []Pattern `yaml:"branches"`
+	Tags              []Pattern `yaml:"tags"`
+	OpenVox           *bool     `yaml:"openvox"`
+	OpenVoxMaxWorkers *int      `yaml:"openvox_max_workers"`
+	ProductionAlias   *bool     `yaml:"production_alias"`
+	Prune             *bool     `yaml:"prune"`
+	PruneStale        *bool     `yaml:"prune_stale"`
+	StaleAge          Duration  `yaml:"stale_age"`
 }
 
 // RepoConfig defines the sync configuration for a single repository.
@@ -87,7 +88,7 @@ func (p *Pattern) UnmarshalYAML(value *yaml.Node) error {
 }
 
 // MarshalYAML marshals a Pattern to a plain YAML string.
-func (p Pattern) MarshalYAML() (interface{}, error) {
+func (p Pattern) MarshalYAML() (any, error) {
 	return p.Raw, nil
 }
 
@@ -306,6 +307,9 @@ func applyDefaults(repo *RepoConfig, defaults *RepoDefaults) {
 	if defaults.OpenVox != nil && repo.OpenVox == nil {
 		repo.OpenVox = defaults.OpenVox
 	}
+	if defaults.OpenVoxMaxWorkers != nil && repo.OpenVoxMaxWorkers == nil {
+		repo.OpenVoxMaxWorkers = defaults.OpenVoxMaxWorkers
+	}
 	if defaults.ProductionAlias != nil && repo.ProductionAlias == nil {
 		repo.ProductionAlias = defaults.ProductionAlias
 	}
@@ -379,8 +383,8 @@ func (c *Config) validateRepo(r *RepoConfig) error {
 	if r.OpenVox != nil && *r.OpenVox && r.Checkout != "" {
 		slog.Warn("repo has both openvox and checkout set; checkout will be ignored in openvox mode", "repo", r.Name)
 	}
-	if r.ProductionAlias != nil && *r.ProductionAlias && (r.OpenVox == nil || !*r.OpenVox) {
-		return fmt.Errorf("repo %s: production_alias requires openvox=true", r.Name)
+	if err := validateOpenVoxOptions(r); err != nil {
+		return err
 	}
 
 	if r.Checkout != "" && (r.OpenVox == nil || !*r.OpenVox) {
@@ -388,6 +392,22 @@ func (c *Config) validateRepo(r *RepoConfig) error {
 			return fmt.Errorf("repo %s: checkout %q does not match any configured branch or tag pattern", r.Name, r.Checkout)
 		}
 	}
+	return nil
+}
+
+func validateOpenVoxOptions(r *RepoConfig) error {
+	if r.ProductionAlias != nil && *r.ProductionAlias && (r.OpenVox == nil || !*r.OpenVox) {
+		return fmt.Errorf("repo %s: production_alias requires openvox=true", r.Name)
+	}
+	if r.OpenVoxMaxWorkers != nil {
+		if r.OpenVox == nil || !*r.OpenVox {
+			return fmt.Errorf("repo %s: openvox_max_workers requires openvox=true", r.Name)
+		}
+		if *r.OpenVoxMaxWorkers < 1 || *r.OpenVoxMaxWorkers > 64 {
+			return fmt.Errorf("repo %s: openvox_max_workers must be between 1 and 64", r.Name)
+		}
+	}
+
 	return nil
 }
 

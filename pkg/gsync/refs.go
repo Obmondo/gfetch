@@ -14,36 +14,6 @@ import (
 	"github.com/obmondo/gfetch/pkg/config"
 )
 
-// resolveBranches lists remote branches and returns references matching any of the configured patterns.
-func resolveBranches(ctx context.Context, repo *git.Repository, patterns []config.Pattern, auth transport.AuthMethod) ([]*plumbing.Reference, error) {
-	remote, err := repo.Remote("origin")
-	if err != nil {
-		return nil, fmt.Errorf("getting remote: %w", err)
-	}
-
-	refs, err := remote.ListContext(ctx, &git.ListOptions{Auth: auth})
-	if err != nil {
-		return nil, fmt.Errorf("listing remote refs: %w", err)
-	}
-
-	var matched []*plumbing.Reference
-	seen := make(map[string]bool)
-	for _, ref := range refs {
-		name := ref.Name()
-		if name.IsBranch() {
-			branchName := name.Short()
-			if seen[branchName] {
-				continue
-			}
-			if config.MatchesAny(branchName, patterns) {
-				matched = append(matched, ref)
-				seen[branchName] = true
-			}
-		}
-	}
-	return matched, nil
-}
-
 // checkStaleness checks if a remote reference is stale (older than age) by inspecting its commit date.
 // It tries to find the commit locally first. If not found, it fetches the commit metadata (depth 1).
 func checkStaleness(ctx context.Context, repo *git.Repository, ref *plumbing.Reference, age time.Duration, auth transport.AuthMethod) (bool, error) {
@@ -145,7 +115,13 @@ func isStaleLocal(repo *git.Repository, ref *plumbing.Reference, age time.Durati
 		return false
 	}
 	if time.Since(commit.Committer.When) > age {
-		log.Debug("skipping stale branch: no commits within age threshold", "branch", ref.Name().Short(), "max_age", age)
+		log.Debug(
+			"skipping stale branch: no commits within age threshold",
+			"branch", ref.Name().Short(),
+			"max_age", age,
+			"commit_age", time.Since(commit.Committer.When),
+			"commit_time", commit.Committer.When,
+		)
 		return true
 	}
 	return false

@@ -11,6 +11,7 @@ import (
 
 	git "github.com/go-git/go-git/v5"
 	gitconfig "github.com/go-git/go-git/v5/config"
+	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	"github.com/obmondo/gfetch/pkg/config"
 	"github.com/obmondo/gfetch/pkg/telemetry"
@@ -121,8 +122,22 @@ func (s *Syncer) SyncRepo(ctx context.Context, repo *config.RepoConfig, opts Syn
 		return result
 	}
 
-	s.syncBranches(ctx, r, repo, auth, opts, log, &result)
-	s.syncTagsWrapper(ctx, r, repo, auth, opts, log, &result)
+	refs, err := listRemoteRefs(ctx, r, auth, repo.Name, "standard")
+	if err != nil {
+		log.Error("failed to list remote refs", "error", err)
+		telemetry.SyncFailuresTotal.WithLabelValues(repo.Name, "clone").Inc()
+		result.Err = fmt.Errorf("listing remote refs: %w", err)
+		return result
+	}
+
+	_, _, matchedBranches, matchedTagRefs := extractRemoteRefState(refs, repo.Branches, repo.Tags)
+	matchedTags := make([]string, 0, len(matchedTagRefs))
+	for _, tagRef := range matchedTagRefs {
+		matchedTags = append(matchedTags, tagRef.Name().Short())
+	}
+
+	s.syncBranches(ctx, r, repo, auth, opts, matchedBranches, log, &result)
+	s.syncTagsWrapper(ctx, r, repo, auth, opts, matchedTags, log, &result)
 	s.handleCheckout(r, repo, log, &result)
 
 	duration := time.Since(start)
@@ -197,21 +212,18 @@ func (s *Syncer) setErr(result *Result, err error) {
 	}
 }
 
-func (s *Syncer) syncBranches(ctx context.Context, r *git.Repository, repo *config.RepoConfig, auth transport.AuthMethod, opts SyncOptions, log *slog.Logger, result *Result) {
-	if len(repo.Branches) == 0 {
-		return
-	}
-
-	branches, err := resolveBranches(ctx, r, repo.Branches, auth)
-	if err != nil {
-		log.Error("failed to resolve branches", "error", err)
-		telemetry.SyncFailuresTotal.WithLabelValues(repo.Name, "branch_sync").Inc()
-		s.setErr(result, fmt.Errorf("resolving branches: %w", err))
+func (s *Syncer) syncBranches(ctx context.Context, r *git.Repository, repo *config.RepoConfig, auth transport.AuthMethod, opts SyncOptions, branches []*plumbing.Reference, log *slog.Logger, result *Result) {
+	if len(branches) == 0 {
 		return
 	}
 
 	log.Debug("syncing branches", "count", len(branches))
 	for _, ref := range branches {
+		if err := ctx.Err(); err != nil {
+			log.Debug("stopping branch sync due to shutdown", "reason", "shutdown_cancelled", "error", err)
+			return
+		}
+
 		branch := ref.Name().Short()
 
 		if opts.PruneStale && opts.Prune && IsStale(ctx, r, ref, opts.StaleAge, auth, log) {
@@ -350,12 +362,16 @@ func (s *Syncer) pruneBranches(r *git.Repository, repo *config.RepoConfig, obsol
 	}
 }
 
-func (s *Syncer) syncTagsWrapper(ctx context.Context, r *git.Repository, repo *config.RepoConfig, auth transport.AuthMethod, opts SyncOptions, log *slog.Logger, result *Result) {
-	if len(repo.Tags) == 0 {
+func (s *Syncer) syncTagsWrapper(ctx context.Context, r *git.Repository, repo *config.RepoConfig, auth transport.AuthMethod, opts SyncOptions, matchedTags []string, log *slog.Logger, result *Result) {
+	if len(matchedTags) == 0 {
+		return
+	}
+	if err := ctx.Err(); err != nil {
+		log.Debug("stopping tag sync due to shutdown", "reason", "shutdown_cancelled", "error", err)
 		return
 	}
 
-	fetched, upToDate, failed, obsolete, pruned, err := syncTags(ctx, r, repo, auth, opts.Prune, opts.DryRun, log)
+	fetched, upToDate, failed, obsolete, pruned, err := syncTagsWithResolved(ctx, r, repo, auth, matchedTags, opts.Prune, opts.DryRun, log)
 	if err != nil {
 		log.Error("tag sync failed", "error", err)
 		telemetry.SyncFailuresTotal.WithLabelValues(repo.Name, "tag_sync").Inc()

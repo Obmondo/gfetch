@@ -33,6 +33,36 @@ var (
 		Help:    "Duration of sync operations in seconds.",
 		Buckets: prometheus.DefBuckets,
 	}, []string{"repo", "operation"})
+
+	OpenVoxStaleBranchesSkippedTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "gfetch_openvox_stale_branches_skipped_total",
+		Help: "Total number of OpenVox branches skipped due to staleness.",
+	}, []string{"repo"})
+
+	OpenVoxLockAcquireTimeoutsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "gfetch_openvox_lock_acquire_timeouts_total",
+		Help: "Total number of OpenVox lock acquisition timeouts.",
+	}, []string{"repo", "kind"})
+
+	OpenVoxSyncOverlapSkippedTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "gfetch_openvox_sync_overlap_skipped_total",
+		Help: "Total number of OpenVox sync requests skipped due to in-progress sync.",
+	}, []string{"repo", "source"})
+
+	OpenVoxOrphanLockfilesRemovedTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "gfetch_openvox_orphan_lockfiles_removed_total",
+		Help: "Total number of orphan OpenVox lockfiles removed.",
+	}, []string{"repo"})
+
+	OpenVoxOrphanLockfilesSkippedInUseTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "gfetch_openvox_orphan_lockfiles_skipped_in_use_total",
+		Help: "Total number of orphan OpenVox lockfiles skipped because lock is in use.",
+	}, []string{"repo"})
+
+	RemoteRefListTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "gfetch_remote_ref_list_total",
+		Help: "Total number of remote ref-list calls per repo and sync mode.",
+	}, []string{"repo", "mode"})
 )
 
 func init() {
@@ -43,5 +73,11 @@ func init() {
 		LastSuccessTimestamp,
 		SyncsTotal,
 		SyncDurationSeconds,
+		OpenVoxStaleBranchesSkippedTotal,
+		OpenVoxLockAcquireTimeoutsTotal,
+		OpenVoxSyncOverlapSkippedTotal,
+		OpenVoxOrphanLockfilesRemovedTotal,
+		OpenVoxOrphanLockfilesSkippedInUseTotal,
+		RemoteRefListTotal,
 	)
 }

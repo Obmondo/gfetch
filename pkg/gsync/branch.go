@@ -14,6 +14,10 @@ import (
 	"github.com/obmondo/gfetch/pkg/telemetry"
 )
 
+func isContextCancellationError(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+}
+
 // syncBranch fetches a single branch and hard-resets the local branch to match remote.
 // Returns true if the branch was updated, false if already up-to-date.
 func syncBranch(ctx context.Context, repo *git.Repository, branch, _ string, auth transport.AuthMethod, repoName string, log *slog.Logger) (bool, error) {
@@ -59,6 +63,14 @@ func syncBranch(ctx context.Context, repo *git.Repository, branch, _ string, aut
 
 // checkoutRef checks out the named branch or tag and hard-resets the working tree.
 func checkoutRef(repo *git.Repository, name string, log *slog.Logger) error {
+	return checkoutRefContext(context.Background(), repo, name, log)
+}
+
+func checkoutRefContext(ctx context.Context, repo *git.Repository, name string, log *slog.Logger) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("checkout cancelled for %s: %w", name, err)
+	}
+
 	// Try branch first, then tag.
 	ref, err := repo.Reference(plumbing.NewBranchReferenceName(name), true)
 	if err != nil {
@@ -82,12 +94,18 @@ func checkoutRef(repo *git.Repository, name string, log *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("getting worktree: %w", err)
 	}
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("checkout cancelled for %s: %w", name, err)
+	}
 
 	if err := wt.Checkout(&git.CheckoutOptions{
 		Branch: ref.Name(),
 		Force:  true,
 	}); err != nil {
 		return fmt.Errorf("checkout %s: %w", name, err)
+	}
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("reset cancelled for %s: %w", name, err)
 	}
 
 	if err := wt.Reset(&git.ResetOptions{
@@ -104,7 +122,7 @@ func checkoutRef(repo *git.Repository, name string, log *slog.Logger) error {
 // shouldCheckoutBranch reports whether checkoutRef should run for a branch sync.
 // We always checkout on updates. For non-updates, we checkout only if local state
 // is out-of-sync or dirty (e.g. manual local changes).
-func shouldCheckoutBranch(repo *git.Repository, branch string, updated bool) (needsCheckout bool, dirty bool, err error) {
+func shouldCheckoutBranch(repo *git.Repository, branch string, updated bool, log *slog.Logger) (needsCheckout bool, dirty bool, err error) {
 	if updated {
 		return true, false, nil
 	}
@@ -134,6 +152,7 @@ func shouldCheckoutBranch(repo *git.Repository, branch string, updated bool) (ne
 	}
 
 	if !status.IsClean() {
+		log.Debug("branch state is not unmodified", slog.String("branch", branch), slog.String("git_status", status.String()))
 		return true, true, nil
 	}
 
