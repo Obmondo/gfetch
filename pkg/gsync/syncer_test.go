@@ -74,14 +74,12 @@ func TestMatchesAnyPattern_Branches(t *testing.T) {
 }
 
 func TestNew(t *testing.T) {
-	logger := slog.Default()
-	s := New(logger)
+	slog.Default()
+	s := New()
 	if s == nil {
 		t.Fatal("expected non-nil syncer")
 	}
-	if s.logger != logger {
-		t.Error("logger not set correctly")
-	}
+
 }
 
 // initBareAndClone creates a bare "remote" repo with a single commit, clones it to localPath,
@@ -241,10 +239,8 @@ func TestCheckoutRef(t *testing.T) {
 
 	repo := initBareAndClone(t, bareDir, localDir, []string{"develop"})
 
-	logger := slog.Default()
-
 	// Checkout develop branch.
-	if err := checkoutRef(repo, "develop", logger); err != nil {
+	if err := checkoutRef(repo, "develop"); err != nil {
 		t.Fatalf("checkoutRef(develop) failed: %v", err)
 	}
 
@@ -262,8 +258,8 @@ func TestSyncHTTPS_Example(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
-
-	syncer := New(slog.Default())
+	slog.Default()
+	syncer := New()
 	localDir := t.TempDir()
 	repoConfig := &config.RepoConfig{
 		RepoDefaults: config.RepoDefaults{
@@ -370,8 +366,8 @@ func TestPruneStaleBranches(t *testing.T) {
 	if err := os.WriteFile(sshKey, []byte("fake"), 0600); err != nil {
 		t.Fatal(err)
 	}
-
-	syncer := New(slog.Default())
+	slog.Default()
+	syncer := New()
 	pruneStaleTrue := true
 	repoConfig := &config.RepoConfig{
 		RepoDefaults: config.RepoDefaults{
@@ -494,9 +490,9 @@ func TestSyncSkippingStaleBranches(t *testing.T) {
 
 	t.Logf("Stale hash: %s", staleHash)
 	t.Logf("Fresh hash: %s", freshHash)
-
+	slog.Default()
 	// Setup Config
-	syncer := New(slog.Default())
+	syncer := New()
 	pruneStaleTrue2 := true
 	repoConfig := &config.RepoConfig{
 		RepoDefaults: config.RepoDefaults{
@@ -573,9 +569,9 @@ func TestPruneFalseOverridesDefault(t *testing.T) {
 	if _, err := local.Reference(plumbing.NewBranchReferenceName("extra-branch"), true); err != nil {
 		t.Fatal("expected extra-branch to exist before sync")
 	}
-
+	slog.Default()
 	// Daemon-mode call: no CLI flags, pruning governed solely by repo config.
-	result := New(slog.Default()).SyncRepo(context.Background(), repoConfig, SyncOptions{})
+	result := New().SyncRepo(context.Background(), repoConfig, SyncOptions{})
 	if result.Err != nil {
 		t.Fatalf("SyncRepo failed: %v", result.Err)
 	}
@@ -618,9 +614,9 @@ func TestPruneTrueFromConfigIsApplied(t *testing.T) {
 	if _, err := local.Reference(plumbing.NewBranchReferenceName("extra-branch"), true); err != nil {
 		t.Fatal("expected extra-branch to exist before sync")
 	}
-
+	slog.Default()
 	// Daemon-mode call: no CLI flags, pruning governed solely by repo config.
-	result := New(slog.Default()).SyncRepo(context.Background(), repoConfig, SyncOptions{})
+	result := New().SyncRepo(context.Background(), repoConfig, SyncOptions{})
 	if result.Err != nil {
 		t.Fatalf("SyncRepo failed: %v", result.Err)
 	}

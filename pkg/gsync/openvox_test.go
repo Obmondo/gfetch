@@ -3,7 +3,6 @@ package gsync
 import (
 	"context"
 	"errors"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"testing"
@@ -35,7 +34,7 @@ func TestEnsureClonedOpenVox_RecreatesNonRepoDir(t *testing.T) {
 		URL:          "https://example.com/repo.git",
 	}
 
-	r, err := ensureClonedOpenVox(context.Background(), repoCfg, nil, slog.Default())
+	r, err := ensureClonedOpenVox(context.Background(), repoCfg, nil)
 	if err != nil {
 		t.Fatalf("ensureClonedOpenVox failed: %v", err)
 	}
@@ -108,9 +107,7 @@ func TestEnsureProductionAlias(t *testing.T) {
 		Name: "test",
 	}
 
-	log := slog.Default()
-
-	ensureProductionAlias(context.Background(), repo, testDefaultBranch, map[string]struct{}{testDefaultBranch: {}}, log)
+	ensureProductionAlias(context.Background(), repo, testDefaultBranch, map[string]struct{}{testDefaultBranch: {}})
 
 	aliasPath := filepath.Join(basePath, "production")
 	aliasInfo, err := os.Lstat(aliasPath)
@@ -146,8 +143,7 @@ func TestEnsureProductionAlias_SkipsWhenProductionBranchExists(t *testing.T) {
 		Name: "test",
 	}
 
-	log := slog.Default()
-	ensureProductionAlias(context.Background(), repo, testDefaultBranch, map[string]struct{}{testDefaultBranch: {}, productionAliasName: {}}, log)
+	ensureProductionAlias(context.Background(), repo, testDefaultBranch, map[string]struct{}{testDefaultBranch: {}, productionAliasName: {}})
 
 	if _, err := os.Lstat(filepath.Join(basePath, "production")); !os.IsNotExist(err) {
 		t.Fatalf("expected no production alias when production branch exists upstream, got err=%v", err)
@@ -205,7 +201,6 @@ func TestExtractRemoteRefState(t *testing.T) {
 
 func TestCleanupOrphanOpenVoxLockFiles(t *testing.T) {
 	basePath := t.TempDir()
-	log := slog.Default()
 
 	orphanLock := filepath.Join(basePath, "missing.gfetch.lock")
 	if err := os.WriteFile(orphanLock, []byte(""), 0600); err != nil {
@@ -220,7 +215,7 @@ func TestCleanupOrphanOpenVoxLockFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cleanupOrphanOpenVoxLockFiles("test", basePath, false, log)
+	cleanupOrphanOpenVoxLockFiles("test", basePath, false)
 
 	if _, err := os.Stat(orphanLock); !os.IsNotExist(err) {
 		t.Fatalf("expected orphan lock to be removed, stat err=%v", err)
@@ -264,9 +259,7 @@ func TestKeyedLockManager_RemovesEntryAfterRelease(t *testing.T) {
 }
 
 func TestShouldCheckoutBranch_WhenUpdated(t *testing.T) {
-	log := slog.Default()
-
-	needsCheckout, dirty, err := shouldCheckoutBranch(nil, "ignored", true, log)
+	needsCheckout, dirty, err := shouldCheckoutBranch(nil, "ignored", true)
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
@@ -280,9 +273,8 @@ func TestShouldCheckoutBranch_WhenUpdated(t *testing.T) {
 
 func TestShouldCheckoutBranch_WhenUpToDateAndClean(t *testing.T) {
 	repo := initTestRepoWithCommit(t)
-	log := slog.Default()
 
-	needsCheckout, dirty, err := shouldCheckoutBranch(repo, "master", false, log)
+	needsCheckout, dirty, err := shouldCheckoutBranch(repo, "master", false)
 	if err != nil {
 		t.Fatalf("shouldCheckoutBranch failed: %v", err)
 	}
@@ -302,8 +294,7 @@ func TestShouldCheckoutBranch_WhenUpToDateButDirty(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	log := slog.Default()
-	needsCheckout, dirty, err := shouldCheckoutBranch(repo, "master", false, log)
+	needsCheckout, dirty, err := shouldCheckoutBranch(repo, "master", false)
 	if err != nil {
 		t.Fatalf("shouldCheckoutBranch failed: %v", err)
 	}
@@ -469,7 +460,6 @@ func initOpenVoxBranchRepo(t *testing.T, basePath, branch string, commitTime tim
 
 func TestPruneStaleOpenVoxDirs(t *testing.T) {
 	basePath := t.TempDir()
-	log := slog.Default()
 	staleAge := 180 * 24 * time.Hour
 
 	// Create branches: main (fresh), stale-feature (old), fresh-feature (recent).
@@ -494,7 +484,7 @@ func TestPruneStaleOpenVoxDirs(t *testing.T) {
 	result := &Result{RepoName: "test"}
 
 	// "main" is the default branch — should be protected even if stale.
-	pruneStaleOpenVoxDirs(context.Background(), repo, activeNames, staleAge, false, "main", log, result)
+	pruneStaleOpenVoxDirs(context.Background(), repo, activeNames, staleAge, false, "main", result)
 
 	// stale-feature should be pruned.
 	if _, err := os.Stat(filepath.Join(basePath, "stale_feature")); !os.IsNotExist(err) {
@@ -528,7 +518,6 @@ func TestPruneStaleOpenVoxDirs(t *testing.T) {
 
 func TestPruneStaleOpenVoxDirs_DryRun(t *testing.T) {
 	basePath := t.TempDir()
-	log := slog.Default()
 	staleAge := 180 * 24 * time.Hour
 	past := time.Now().Add(-365 * 24 * time.Hour)
 
@@ -546,7 +535,7 @@ func TestPruneStaleOpenVoxDirs_DryRun(t *testing.T) {
 	result := &Result{RepoName: "test"}
 
 	// Dry run — directory should NOT be removed.
-	pruneStaleOpenVoxDirs(context.Background(), repo, activeNames, staleAge, true, "", log, result)
+	pruneStaleOpenVoxDirs(context.Background(), repo, activeNames, staleAge, true, "", result)
 
 	if _, err := os.Stat(filepath.Join(basePath, "old_branch")); err != nil {
 		t.Error("directory should still exist in dry-run mode")
@@ -560,7 +549,6 @@ func TestPruneStaleOpenVoxDirs_DryRun(t *testing.T) {
 
 func TestPruneStaleOpenVoxDirs_LeavesLockFileForOrphanCleanup(t *testing.T) {
 	basePath := t.TempDir()
-	log := slog.Default()
 	staleAge := 180 * 24 * time.Hour
 	past := time.Now().Add(-365 * 24 * time.Hour)
 
@@ -583,13 +571,13 @@ func TestPruneStaleOpenVoxDirs_LeavesLockFileForOrphanCleanup(t *testing.T) {
 	}
 
 	result := &Result{RepoName: "test"}
-	pruneStaleOpenVoxDirs(context.Background(), repo, activeNames, staleAge, false, "", log, result)
+	pruneStaleOpenVoxDirs(context.Background(), repo, activeNames, staleAge, false, "", result)
 
 	if _, err := os.Stat(lockPath); err != nil {
 		t.Fatalf("expected lock file to remain after stale prune, stat err=%v", err)
 	}
 
-	cleanupOrphanOpenVoxLockFiles("test", basePath, false, log)
+	cleanupOrphanOpenVoxLockFiles("test", basePath, false)
 	if _, err := os.Stat(lockPath); !os.IsNotExist(err) {
 		t.Fatalf("expected orphan cleanup to remove lock file, stat err=%v", err)
 	}
@@ -597,7 +585,6 @@ func TestPruneStaleOpenVoxDirs_LeavesLockFileForOrphanCleanup(t *testing.T) {
 
 func TestPruneStaleOpenVoxDirs_MissingDir(t *testing.T) {
 	basePath := t.TempDir()
-	log := slog.Default()
 	staleAge := 180 * 24 * time.Hour
 
 	activeNames := map[string]string{
@@ -613,7 +600,7 @@ func TestPruneStaleOpenVoxDirs_MissingDir(t *testing.T) {
 
 	// Should NOT log a warning or fail if the directory is missing.
 	// We can't easily check logs here without a custom handler, but we can ensure it doesn't crash or add to results.
-	pruneStaleOpenVoxDirs(context.Background(), repo, activeNames, staleAge, false, "", log, result)
+	pruneStaleOpenVoxDirs(context.Background(), repo, activeNames, staleAge, false, "", result)
 
 	if len(result.BranchesPruned) != 0 {
 		t.Errorf("expected no branches pruned, got %v", result.BranchesPruned)

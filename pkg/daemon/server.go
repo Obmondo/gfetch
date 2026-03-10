@@ -18,7 +18,7 @@ import (
 var errSyncInProgress = errors.New("sync already in progress")
 var errDaemonShuttingDown = errors.New("daemon shutting down")
 
-func newServer(s *gsync.Syncer, logger *slog.Logger, cfg *config.Config, state *syncRuntimeState) http.Handler {
+func newServer(s *gsync.Syncer, cfg *config.Config, state *SyncRuntimeState) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
@@ -36,8 +36,8 @@ func newServer(s *gsync.Syncer, logger *slog.Logger, cfg *config.Config, state *
 			return
 		}
 
-		logger.Info("manual sync triggered", "repo", repoName)
-		result := runGuardedSync(r.Context(), s, state, &repo, logger, "manual")
+		slog.Info("manual sync triggered", "repo", repoName)
+		result := RunGuardedSync(r.Context(), s, state, &repo, "manual")
 		if errors.Is(result.Err, errDaemonShuttingDown) {
 			writeResultWithStatus(w, []gsync.Result{result}, http.StatusServiceUnavailable)
 			return
@@ -50,13 +50,13 @@ func newServer(s *gsync.Syncer, logger *slog.Logger, cfg *config.Config, state *
 	})
 
 	mux.HandleFunc("POST /sync", func(w http.ResponseWriter, r *http.Request) {
-		logger.Info("manual sync triggered for all repos")
+		slog.Info("manual sync triggered for all repos")
 		results := make([]gsync.Result, 0, len(cfg.Repos))
 		hasShutdownErr := false
 		hasInProgressErr := false
 		for name := range cfg.Repos {
 			repo := cfg.Repos[name]
-			res := runGuardedSync(r.Context(), s, state, &repo, logger, "manual")
+			res := RunGuardedSync(r.Context(), s, state, &repo, "manual")
 			if errors.Is(res.Err, errDaemonShuttingDown) {
 				hasShutdownErr = true
 			}
@@ -80,9 +80,9 @@ func newServer(s *gsync.Syncer, logger *slog.Logger, cfg *config.Config, state *
 	return mux
 }
 
-func runGuardedSync(ctx context.Context, s *gsync.Syncer, state *syncRuntimeState, repo *config.RepoConfig, logger *slog.Logger, source string) gsync.Result {
+func RunGuardedSync(ctx context.Context, s *gsync.Syncer, state *SyncRuntimeState, repo *config.RepoConfig, source string) gsync.Result {
 	if state.shuttingDown.Load() {
-		logger.Warn("skipping sync: daemon is shutting down", "repo", repo.Name, "source", source)
+		slog.Warn("skipping sync: daemon is shutting down", "repo", repo.Name, "source", source)
 		return gsync.Result{RepoName: repo.Name, Err: fmt.Errorf("%w: %s", errDaemonShuttingDown, repo.Name)}
 	}
 
@@ -90,7 +90,7 @@ func runGuardedSync(ctx context.Context, s *gsync.Syncer, state *syncRuntimeStat
 		if repo.OpenVox != nil && *repo.OpenVox {
 			telemetry.OpenVoxSyncOverlapSkippedTotal.WithLabelValues(repo.Name, source).Inc()
 		}
-		logger.Warn("skipping sync: repo already in progress", "repo", repo.Name, "source", source)
+		slog.Warn("skipping sync: repo already in progress", "repo", repo.Name, "source", source)
 		return gsync.Result{RepoName: repo.Name, Err: fmt.Errorf("%w: %s", errSyncInProgress, repo.Name)}
 	}
 	state.syncWG.Add(1)

@@ -17,7 +17,6 @@ import (
 func PruneItems[T any](
 	items []T,
 	dryRun bool,
-	log *slog.Logger,
 	dryRunMsg string,
 	prunedMsg string,
 	errorMsg string,
@@ -28,15 +27,15 @@ func PruneItems[T any](
 	for _, item := range items {
 		name := getName(item)
 		if dryRun {
-			log.Info(dryRunMsg, "item", name)
+			slog.Default().Info(dryRunMsg, "item", name)
 			pruned = append(pruned, name)
 			continue
 		}
 		if err := deleteFunc(item); err != nil {
-			log.Error(errorMsg, "item", name, "error", err)
+			slog.Default().Error(errorMsg, "item", name, "error", err)
 			continue
 		}
-		log.Info(prunedMsg, "item", name)
+		slog.Default().Info(prunedMsg, "item", name)
 		pruned = append(pruned, name)
 	}
 	return pruned
@@ -59,10 +58,10 @@ func deleteBranch(repo *git.Repository, branch string) error {
 }
 
 // pruneOpenVoxDirs removes directories under basePath that don't correspond to any active ref.
-func pruneOpenVoxDirs(ctx context.Context, repoName, basePath string, activeNames map[string]string, dryRun bool, log *slog.Logger, result *Result) {
+func pruneOpenVoxDirs(ctx context.Context, repoName, basePath string, activeNames map[string]string, dryRun bool, result *Result) {
 	entries, err := os.ReadDir(basePath)
 	if err != nil {
-		log.Error("failed to read local_path for pruning", "path", basePath, "error", err)
+		slog.Default().Error("failed to read local_path for pruning", "path", basePath, "error", err)
 		return
 	}
 
@@ -85,7 +84,6 @@ func pruneOpenVoxDirs(ctx context.Context, repoName, basePath string, activeName
 	pruned := PruneItems(
 		obsoleteDirs,
 		dryRun,
-		log,
 		"directory would be pruned (dry-run)",
 		"directory pruned",
 		"failed to prune directory",

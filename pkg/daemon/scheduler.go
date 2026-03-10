@@ -22,24 +22,22 @@ const defaultShutdownTimeout = 10 * time.Second
 // Scheduler manages periodic syncing of repositories using gocron.
 type Scheduler struct {
 	syncer     *gsync.Syncer
-	logger     *slog.Logger
 	listenAddr string
-	state      *syncRuntimeState
+	state      *SyncRuntimeState
 }
 
-type syncRuntimeState struct {
+type SyncRuntimeState struct {
 	guard        *repoSyncGuard
 	syncWG       sync.WaitGroup
 	shuttingDown atomic.Bool
 }
 
 // NewScheduler creates a new Scheduler.
-func NewScheduler(s *gsync.Syncer, logger *slog.Logger, listenAddr string) *Scheduler {
+func NewScheduler(s *gsync.Syncer, listenAddr string) *Scheduler {
 	return &Scheduler{
 		syncer:     s,
-		logger:     logger,
 		listenAddr: listenAddr,
-		state:      &syncRuntimeState{guard: newRepoSyncGuard()},
+		state:      &SyncRuntimeState{guard: newRepoSyncGuard()},
 	}
 }
 
@@ -50,7 +48,7 @@ func (s *Scheduler) Run(ctx context.Context, cfg *config.Config) {
 
 	scheduler, err := gocron.NewScheduler()
 	if err != nil {
-		s.logger.Error("failed to create scheduler", "error", err)
+		slog.Default().Error("failed to create scheduler", "error", err)
 		return
 	}
 
@@ -61,45 +59,45 @@ func (s *Scheduler) Run(ctx context.Context, cfg *config.Config) {
 		_, err := scheduler.NewJob(
 			gocron.DurationJob(interval),
 			gocron.NewTask(func() {
-				runGuardedSync(ctx, s.syncer, s.state, &repo, s.logger, "scheduler")
+				RunGuardedSync(ctx, s.syncer, s.state, &repo, "scheduler")
 			}),
 			gocron.WithSingletonMode(gocron.LimitModeReschedule),
 			gocron.WithStartAt(gocron.WithStartImmediately()),
 		)
 		if err != nil {
-			s.logger.Error("failed to schedule job", "repo", repo.Name, "error", err)
+			slog.Default().Error("failed to schedule job", "repo", repo.Name, "error", err)
 			return
 		}
-		s.logger.Info("scheduled repo sync", "repo", repo.Name, "interval", interval)
+		slog.Default().Info("scheduled repo sync", "repo", repo.Name, "interval", interval)
 	}
 
 	scheduler.Start()
 
 	// Start HTTP server.
-	srv := newServer(s.syncer, s.logger, cfg, s.state)
+	srv := newServer(s.syncer, cfg, s.state)
 	httpServer := &http.Server{
 		Addr:    s.listenAddr,
 		Handler: srv,
 	}
 
 	go func() {
-		s.logger.Info("http server starting", "addr", s.listenAddr)
+		slog.Default().Info("http server starting", "addr", s.listenAddr)
 		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			s.logger.Error("http server error", "error", err)
+			slog.Default().Error("http server error", "error", err)
 		}
 	}()
 
-	s.logger.Info("daemon started", "repos", len(cfg.Repos))
+	slog.Default().Info("daemon started", "repos", len(cfg.Repos))
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
 	sig := <-sigCh
-	s.logger.Info("received signal, shutting down", "signal", sig)
+	slog.Default().Info("received signal, shutting down", "signal", sig)
 	s.state.shuttingDown.Store(true)
 
 	if err := scheduler.Shutdown(); err != nil {
-		s.logger.Error("scheduler shutdown error", "error", err)
+		slog.Default().Error("scheduler shutdown error", "error", err)
 	}
 
 	cancel()
@@ -115,14 +113,14 @@ func (s *Scheduler) Run(ctx context.Context, cfg *config.Config) {
 
 	select {
 	case <-waitCh:
-		s.logger.Info("all in-flight syncs stopped")
+		slog.Default().Info("all in-flight syncs stopped")
 	case <-shutdownCtx.Done():
-		s.logger.Warn("timed out waiting for in-flight syncs to stop")
+		slog.Default().Warn("timed out waiting for in-flight syncs to stop")
 	}
 
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {
-		s.logger.Error("http server shutdown error", "error", err)
+		slog.Default().Error("http server shutdown error", "error", err)
 	}
 
-	s.logger.Info("daemon stopped")
+	slog.Default().Info("daemon stopped")
 }

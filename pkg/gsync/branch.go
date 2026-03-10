@@ -20,7 +20,7 @@ func isContextCancellationError(err error) bool {
 
 // syncBranch fetches a single branch and hard-resets the local branch to match remote.
 // Returns true if the branch was updated, false if already up-to-date.
-func syncBranch(ctx context.Context, repo *git.Repository, branch, _ string, auth transport.AuthMethod, repoName string, log *slog.Logger) (bool, error) {
+func syncBranch(ctx context.Context, repo *git.Repository, branch, _ string, auth transport.AuthMethod, repoName string) (bool, error) {
 	start := time.Now()
 	remoteName := "origin"
 	refSpec := fmt.Sprintf("+refs/heads/%s:refs/remotes/%s/%s", branch, remoteName, branch)
@@ -45,7 +45,7 @@ func syncBranch(ctx context.Context, repo *git.Repository, branch, _ string, aut
 	localRef, err := repo.Reference(localRefName, true)
 
 	if err == nil && localRef.Hash() == remoteRef.Hash() {
-		log.Debug("branch already up-to-date", "branch", branch)
+		slog.Default().Debug("branch already up-to-date", "branch", branch)
 		return false, nil
 	}
 
@@ -57,16 +57,16 @@ func syncBranch(ctx context.Context, repo *git.Repository, branch, _ string, aut
 
 	duration := time.Since(start)
 	telemetry.SyncDurationSeconds.WithLabelValues(repoName, "branch").Observe(duration.Seconds())
-	log.Info("branch synced", "branch", branch, "hash", remoteRef.Hash().String()[:12], "duration", duration)
+	slog.Default().Info("branch synced", "branch", branch, "hash", remoteRef.Hash().String()[:12], "duration", duration)
 	return true, nil
 }
 
 // checkoutRef checks out the named branch or tag and hard-resets the working tree.
-func checkoutRef(repo *git.Repository, name string, log *slog.Logger) error {
-	return checkoutRefContext(context.Background(), repo, name, log)
+func checkoutRef(repo *git.Repository, name string) error {
+	return checkoutRefContext(context.Background(), repo, name)
 }
 
-func checkoutRefContext(ctx context.Context, repo *git.Repository, name string, log *slog.Logger) error {
+func checkoutRefContext(ctx context.Context, repo *git.Repository, name string) error {
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("checkout cancelled for %s: %w", name, err)
 	}
@@ -115,14 +115,14 @@ func checkoutRefContext(ctx context.Context, repo *git.Repository, name string, 
 		return fmt.Errorf("reset %s: %w", name, err)
 	}
 
-	log.Debug("checked out ref", "ref", name, "hash", hash.String()[:12])
+	slog.Default().Debug("checked out ref", "ref", name, "hash", hash.String()[:12])
 	return nil
 }
 
 // shouldCheckoutBranch reports whether checkoutRef should run for a branch sync.
 // We always checkout on updates. For non-updates, we checkout only if local state
 // is out-of-sync or dirty (e.g. manual local changes).
-func shouldCheckoutBranch(repo *git.Repository, branch string, updated bool, log *slog.Logger) (needsCheckout bool, dirty bool, err error) {
+func shouldCheckoutBranch(repo *git.Repository, branch string, updated bool) (needsCheckout bool, dirty bool, err error) {
 	if updated {
 		return true, false, nil
 	}
@@ -152,7 +152,7 @@ func shouldCheckoutBranch(repo *git.Repository, branch string, updated bool, log
 	}
 
 	if !status.IsClean() {
-		log.Debug("branch state is not unmodified", slog.String("branch", branch), slog.String("git_status", status.String()))
+		slog.Default().Debug("branch state is not unmodified", slog.String("branch", branch), slog.String("git_status", status.String()))
 		return true, true, nil
 	}
 
