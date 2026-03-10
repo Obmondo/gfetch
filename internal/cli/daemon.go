@@ -27,9 +27,9 @@ func newDaemonCmd() *cobra.Command {
 				return fmt.Errorf("config validation: %w", err)
 			}
 
-			logger := slog.Default()
-			s := gsync.New(logger)
-			sched := daemon.NewScheduler(s, logger, listenAddr)
+			slog.Default()
+			s := gsync.New()
+			sched := daemon.NewScheduler(s, listenAddr)
 			sched.Run(context.Background(), cfg)
 			return nil
 		},

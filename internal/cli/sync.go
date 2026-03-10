@@ -3,7 +3,6 @@ package cli
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"os"
 	"strings"
 	"time"
@@ -41,7 +40,7 @@ func newSyncCmd() *cobra.Command {
 				}
 			}
 
-			s := gsync.New(slog.Default())
+			s := gsync.New()
 			ctx := context.Background()
 			opts := gsync.SyncOptions{
 				Prune:      prune,

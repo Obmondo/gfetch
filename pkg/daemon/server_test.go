@@ -12,9 +12,9 @@ import (
 )
 
 func TestHealthEndpoint(t *testing.T) {
-	logger := slog.Default()
-	syncer := gsync.New(logger)
-	h := newServer(syncer, logger, &config.Config{}, &syncRuntimeState{guard: newRepoSyncGuard()})
+	slog.Default()
+	syncer := gsync.New()
+	h := newServer(syncer, &config.Config{}, &SyncRuntimeState{guard: newRepoSyncGuard()})
 
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
 	rr := httptest.NewRecorder()

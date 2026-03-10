@@ -18,23 +18,23 @@ import (
 
 // syncTagsWithResolved syncs tags using a pre-resolved remote tag list to avoid
 // an extra remote ref-list call.
-func syncTagsWithResolved(ctx context.Context, repo *git.Repository, repoConfig *config.RepoConfig, auth transport.AuthMethod, resolvedTags []string, pruneTags bool, dryRun bool, log *slog.Logger) (fetched, upToDate, failed, obsolete, pruned []string, err error) {
+func syncTagsWithResolved(ctx context.Context, repo *git.Repository, repoConfig *config.RepoConfig, auth transport.AuthMethod, resolvedTags []string, pruneTags bool, dryRun bool) (fetched, upToDate, failed, obsolete, pruned []string, err error) {
 	start := time.Now()
 
 	fetched, upToDate = resolveAndFilterTagsFromResolved(repo, resolvedTags)
 
-	if err = fetchTags(ctx, repo, fetched, auth, log); err != nil {
+	if err = fetchTags(ctx, repo, fetched, auth); err != nil {
 		return nil, upToDate, fetched, nil, nil, err
 	}
 
-	obsolete, pruned, err = handleObsoleteTags(repo, repoConfig, pruneTags, dryRun, log)
+	obsolete, pruned, err = handleObsoleteTags(repo, repoConfig, pruneTags, dryRun)
 	if err != nil {
 		return fetched, upToDate, nil, nil, nil, err
 	}
 
 	duration := time.Since(start)
 	telemetry.SyncDurationSeconds.WithLabelValues(repoConfig.Name, "tag").Observe(duration.Seconds())
-	log.Debug("tags synced", "fetched", len(fetched), "duration", duration)
+	slog.Default().Debug("tags synced", "fetched", len(fetched), "duration", duration)
 
 	return fetched, upToDate, nil, obsolete, pruned, nil
 }
@@ -51,9 +51,9 @@ func resolveAndFilterTagsFromResolved(repo *git.Repository, resolvedTags []strin
 	return fetched, upToDate
 }
 
-func fetchTags(ctx context.Context, repo *git.Repository, fetched []string, auth transport.AuthMethod, log *slog.Logger) error {
+func fetchTags(ctx context.Context, repo *git.Repository, fetched []string, auth transport.AuthMethod) error {
 	if len(fetched) == 0 {
-		log.Debug("no new tags to fetch")
+		slog.Default().Debug("no new tags to fetch")
 		return nil
 	}
 
@@ -73,12 +73,12 @@ func fetchTags(ctx context.Context, repo *git.Repository, fetched []string, auth
 	}
 
 	for _, tag := range fetched {
-		log.Info("tag fetched", "tag", tag)
+		slog.Default().Info("tag fetched", "tag", tag)
 	}
 	return nil
 }
 
-func handleObsoleteTags(repo *git.Repository, repoConfig *config.RepoConfig, pruneTags bool, dryRun bool, log *slog.Logger) (obsolete, pruned []string, err error) {
+func handleObsoleteTags(repo *git.Repository, repoConfig *config.RepoConfig, pruneTags bool, dryRun bool) (obsolete, pruned []string, err error) {
 	tagRefs, err := repo.Tags()
 	if err != nil {
 		return nil, nil, fmt.Errorf("listing local tags: %w", err)
@@ -97,15 +97,15 @@ func handleObsoleteTags(repo *git.Repository, repoConfig *config.RepoConfig, pru
 	if pruneTags && len(obsolete) > 0 {
 		for _, tag := range obsolete {
 			if dryRun {
-				log.Info("tag would be pruned (dry-run)", "tag", tag)
+				slog.Default().Info("tag would be pruned (dry-run)", "tag", tag)
 				pruned = append(pruned, tag)
 				continue
 			}
 			if err := repo.DeleteTag(tag); err != nil {
-				log.Error("failed to delete obsolete tag", "tag", tag, "error", err)
+				slog.Default().Error("failed to delete obsolete tag", "tag", tag, "error", err)
 				continue
 			}
-			log.Info("tag pruned", "tag", tag)
+			slog.Default().Info("tag pruned", "tag", tag)
 			pruned = append(pruned, tag)
 		}
 	}

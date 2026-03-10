@@ -56,14 +56,14 @@ func checkStaleness(ctx context.Context, repo *git.Repository, ref *plumbing.Ref
 // IsStale is a helper that wraps checkStaleness and handles logging.
 // Returns true if the branch is definitely stale and should be skipped.
 // Returns false if it's fresh OR if we couldn't determine (fail-safe).
-func IsStale(ctx context.Context, repo *git.Repository, ref *plumbing.Reference, age time.Duration, auth transport.AuthMethod, log *slog.Logger) bool {
+func IsStale(ctx context.Context, repo *git.Repository, ref *plumbing.Reference, age time.Duration, auth transport.AuthMethod) bool {
 	stale, err := checkStaleness(ctx, repo, ref, age, auth)
 	if err != nil {
-		log.Warn("failed to check staleness, syncing anyway", "branch", ref.Name().Short(), "error", err)
+		slog.Default().Warn("failed to check staleness, syncing anyway", "branch", ref.Name().Short(), "error", err)
 		return false
 	}
 	if stale {
-		log.Debug("skipping stale branch: no commits within age threshold", "branch", ref.Name().Short(), "max_age", age)
+		slog.Default().Debug("skipping stale branch: no commits within age threshold", "branch", ref.Name().Short(), "max_age", age)
 		return true
 	}
 	return false
@@ -108,14 +108,14 @@ func batchFetchForStaleness(ctx context.Context, repo *git.Repository, refs []*p
 // isStaleLocal checks if a reference is stale by looking up the commit in the
 // local object store only (no network). Returns false if the commit is not found
 // locally (fail-safe: sync the branch if we can't determine staleness).
-func isStaleLocal(repo *git.Repository, ref *plumbing.Reference, age time.Duration, log *slog.Logger) bool {
+func isStaleLocal(repo *git.Repository, ref *plumbing.Reference, age time.Duration) bool {
 	commit, err := repo.CommitObject(ref.Hash())
 	if err != nil {
-		log.Warn("failed to check staleness locally, syncing anyway", "branch", ref.Name().Short(), "error", err)
+		slog.Default().Warn("failed to check staleness locally, syncing anyway", "branch", ref.Name().Short(), "error", err)
 		return false
 	}
 	if time.Since(commit.Committer.When) > age {
-		log.Debug(
+		slog.Default().Debug(
 			"skipping stale branch: no commits within age threshold",
 			"branch", ref.Name().Short(),
 			"max_age", age,
