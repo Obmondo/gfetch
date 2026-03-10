@@ -3,7 +3,6 @@ package cli
 import (
 	"context"
 	"fmt"
-	"log/slog"
 
 	"github.com/spf13/cobra"
 
@@ -27,7 +26,6 @@ func newDaemonCmd() *cobra.Command {
 				return fmt.Errorf("config validation: %w", err)
 			}
 
-			slog.Default()
 			s := gsync.New()
 			sched := daemon.NewScheduler(s, listenAddr)
 			sched.Run(context.Background(), cfg)

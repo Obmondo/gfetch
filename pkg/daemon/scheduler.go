@@ -48,7 +48,7 @@ func (s *Scheduler) Run(ctx context.Context, cfg *config.Config) {
 
 	scheduler, err := gocron.NewScheduler()
 	if err != nil {
-		slog.Default().Error("failed to create scheduler", "error", err)
+		slog.Error("failed to create scheduler", "error", err)
 		return
 	}
 
@@ -65,10 +65,10 @@ func (s *Scheduler) Run(ctx context.Context, cfg *config.Config) {
 			gocron.WithStartAt(gocron.WithStartImmediately()),
 		)
 		if err != nil {
-			slog.Default().Error("failed to schedule job", "repo", repo.Name, "error", err)
+			slog.Error("failed to schedule job", "repo", repo.Name, "error", err)
 			return
 		}
-		slog.Default().Info("scheduled repo sync", "repo", repo.Name, "interval", interval)
+		slog.Info("scheduled repo sync", "repo", repo.Name, "interval", interval)
 	}
 
 	scheduler.Start()
@@ -81,23 +81,23 @@ func (s *Scheduler) Run(ctx context.Context, cfg *config.Config) {
 	}
 
 	go func() {
-		slog.Default().Info("http server starting", "addr", s.listenAddr)
+		slog.Info("http server starting", "addr", s.listenAddr)
 		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			slog.Default().Error("http server error", "error", err)
+			slog.Error("http server error", "error", err)
 		}
 	}()
 
-	slog.Default().Info("daemon started", "repos", len(cfg.Repos))
+	slog.Info("daemon started", "repos", len(cfg.Repos))
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
 	sig := <-sigCh
-	slog.Default().Info("received signal, shutting down", "signal", sig)
+	slog.Info("received signal, shutting down", "signal", sig)
 	s.state.shuttingDown.Store(true)
 
 	if err := scheduler.Shutdown(); err != nil {
-		slog.Default().Error("scheduler shutdown error", "error", err)
+		slog.Error("scheduler shutdown error", "error", err)
 	}
 
 	cancel()
@@ -113,14 +113,14 @@ func (s *Scheduler) Run(ctx context.Context, cfg *config.Config) {
 
 	select {
 	case <-waitCh:
-		slog.Default().Info("all in-flight syncs stopped")
+		slog.Info("all in-flight syncs stopped")
 	case <-shutdownCtx.Done():
-		slog.Default().Warn("timed out waiting for in-flight syncs to stop")
+		slog.Warn("timed out waiting for in-flight syncs to stop")
 	}
 
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {
-		slog.Default().Error("http server shutdown error", "error", err)
+		slog.Error("http server shutdown error", "error", err)
 	}
 
-	slog.Default().Info("daemon stopped")
+	slog.Info("daemon stopped")
 }

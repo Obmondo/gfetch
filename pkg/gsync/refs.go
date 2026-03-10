@@ -59,11 +59,11 @@ func checkStaleness(ctx context.Context, repo *git.Repository, ref *plumbing.Ref
 func IsStale(ctx context.Context, repo *git.Repository, ref *plumbing.Reference, age time.Duration, auth transport.AuthMethod) bool {
 	stale, err := checkStaleness(ctx, repo, ref, age, auth)
 	if err != nil {
-		slog.Default().Warn("failed to check staleness, syncing anyway", "branch", ref.Name().Short(), "error", err)
+		slog.Warn("failed to check staleness, syncing anyway", "branch", ref.Name().Short(), "error", err)
 		return false
 	}
 	if stale {
-		slog.Default().Debug("skipping stale branch: no commits within age threshold", "branch", ref.Name().Short(), "max_age", age)
+		slog.Debug("skipping stale branch: no commits within age threshold", "branch", ref.Name().Short(), "max_age", age)
 		return true
 	}
 	return false
@@ -111,11 +111,11 @@ func batchFetchForStaleness(ctx context.Context, repo *git.Repository, refs []*p
 func isStaleLocal(repo *git.Repository, ref *plumbing.Reference, age time.Duration) bool {
 	commit, err := repo.CommitObject(ref.Hash())
 	if err != nil {
-		slog.Default().Warn("failed to check staleness locally, syncing anyway", "branch", ref.Name().Short(), "error", err)
+		slog.Warn("failed to check staleness locally, syncing anyway", "branch", ref.Name().Short(), "error", err)
 		return false
 	}
 	if time.Since(commit.Committer.When) > age {
-		slog.Default().Debug(
+		slog.Debug(
 			"skipping stale branch: no commits within age threshold",
 			"branch", ref.Name().Short(),
 			"max_age", age,

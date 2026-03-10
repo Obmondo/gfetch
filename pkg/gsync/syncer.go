@@ -216,10 +216,10 @@ func (s *Syncer) syncBranches(ctx context.Context, r *git.Repository, repo *conf
 		return
 	}
 
-	slog.Default().Debug("syncing branches", "count", len(branches))
+	slog.Debug("syncing branches", "count", len(branches))
 	for _, ref := range branches {
 		if err := ctx.Err(); err != nil {
-			slog.Default().Debug("stopping branch sync due to shutdown", "reason", "shutdown_cancelled", "error", err)
+			slog.Debug("stopping branch sync due to shutdown", "reason", "shutdown_cancelled", "error", err)
 			return
 		}
 
@@ -231,7 +231,7 @@ func (s *Syncer) syncBranches(ctx context.Context, r *git.Repository, repo *conf
 
 		synced, err := syncBranch(ctx, r, branch, repo.URL, auth, repo.Name)
 		if err != nil {
-			slog.Default().Error("branch sync failed", "branch", branch, "error", err)
+			slog.Error("branch sync failed", "branch", branch, "error", err)
 			telemetry.SyncFailuresTotal.WithLabelValues(repo.Name, "branch_sync").Inc()
 			s.addBranchFailed(result, branch)
 		} else if synced {
@@ -243,7 +243,7 @@ func (s *Syncer) syncBranches(ctx context.Context, r *git.Repository, repo *conf
 
 	obsolete, err := findObsoleteBranches(r, repo.Branches)
 	if err != nil {
-		slog.Default().Error("failed to find obsolete branches", "error", err)
+		slog.Error("failed to find obsolete branches", "error", err)
 	} else {
 		s.mu.Lock()
 		result.BranchesObsolete = obsolete
@@ -254,7 +254,7 @@ func (s *Syncer) syncBranches(ctx context.Context, r *git.Repository, repo *conf
 	if opts.PruneStale {
 		stale, err := findStaleBranches(r, repo.Branches, opts.StaleAge)
 		if err != nil {
-			slog.Default().Error("failed to find stale branches", "error", err)
+			slog.Error("failed to find stale branches", "error", err)
 		} else {
 			s.mu.Lock()
 			result.BranchesStale = stale
@@ -307,27 +307,27 @@ func logSyncSuccess(ctx context.Context, result Result, duration time.Duration) 
 		}
 	}
 
-	slog.Default().Log(ctx, level, msg, attrs...)
+	slog.Log(ctx, level, msg, attrs...)
 }
 
 func (s *Syncer) pruneStaleBranches(r *git.Repository, repo *config.RepoConfig, stale []string, opts SyncOptions, result *Result) {
 	for _, branch := range stale {
 		if repo.Checkout != "" && branch == repo.Checkout {
-			slog.Default().Info("skipping prune of checkout branch", "branch", branch)
+			slog.Info("skipping prune of checkout branch", "branch", branch)
 			continue
 		}
 		if opts.DryRun {
-			slog.Default().Info("stale branch would be pruned (dry-run)", "branch", branch)
+			slog.Info("stale branch would be pruned (dry-run)", "branch", branch)
 			s.mu.Lock()
 			result.BranchesPruned = append(result.BranchesPruned, branch)
 			s.mu.Unlock()
 			continue
 		}
 		if err := deleteBranch(r, branch); err != nil {
-			slog.Default().Error("failed to prune stale branch", "branch", branch, "error", err)
+			slog.Error("failed to prune stale branch", "branch", branch, "error", err)
 			continue
 		}
-		slog.Default().Info("stale branch pruned", "branch", branch)
+		slog.Info("stale branch pruned", "branch", branch)
 		s.mu.Lock()
 		result.BranchesPruned = append(result.BranchesPruned, branch)
 		s.mu.Unlock()
@@ -337,23 +337,23 @@ func (s *Syncer) pruneStaleBranches(r *git.Repository, repo *config.RepoConfig, 
 func (s *Syncer) pruneBranches(r *git.Repository, repo *config.RepoConfig, obsolete []string, opts SyncOptions, result *Result) {
 	for _, branch := range obsolete {
 		if repo.Checkout != "" && branch == repo.Checkout {
-			slog.Default().Info("skipping prune of checkout branch", "branch", branch)
+			slog.Info("skipping prune of checkout branch", "branch", branch)
 			continue
 		}
 		switch {
 		case !opts.Prune:
 			// only report as obsolete
 		case opts.DryRun:
-			slog.Default().Info("branch would be pruned (dry-run)", "branch", branch)
+			slog.Info("branch would be pruned (dry-run)", "branch", branch)
 			s.mu.Lock()
 			result.BranchesPruned = append(result.BranchesPruned, branch)
 			s.mu.Unlock()
 		default:
 			if err := deleteBranch(r, branch); err != nil {
-				slog.Default().Error("failed to prune branch", "branch", branch, "error", err)
+				slog.Error("failed to prune branch", "branch", branch, "error", err)
 				continue
 			}
-			slog.Default().Info("branch pruned", "branch", branch)
+			slog.Info("branch pruned", "branch", branch)
 			s.mu.Lock()
 			result.BranchesPruned = append(result.BranchesPruned, branch)
 			s.mu.Unlock()
@@ -366,18 +366,18 @@ func (s *Syncer) syncTagsWrapper(ctx context.Context, r *git.Repository, repo *c
 		return
 	}
 	if err := ctx.Err(); err != nil {
-		slog.Default().Debug("stopping tag sync due to shutdown", "reason", "shutdown_cancelled", "error", err)
+		slog.Debug("stopping tag sync due to shutdown", "reason", "shutdown_cancelled", "error", err)
 		return
 	}
 
 	fetched, upToDate, failed, obsolete, pruned, err := syncTagsWithResolved(ctx, r, repo, auth, matchedTags, opts.Prune, opts.DryRun)
 	if err != nil {
-		slog.Default().Error("tag sync failed", "error", err)
+		slog.Error("tag sync failed", "error", err)
 		telemetry.SyncFailuresTotal.WithLabelValues(repo.Name, "tag_sync").Inc()
 		s.setErr(result, fmt.Errorf("tag sync: %w", err))
 	}
 
-	slog.Default().Debug("syncing tags", "count", len(fetched)+len(upToDate)+len(failed))
+	slog.Debug("syncing tags", "count", len(fetched)+len(upToDate)+len(failed))
 	s.mu.Lock()
 	result.TagsFetched = fetched
 	result.TagsUpToDate = upToDate
@@ -393,7 +393,7 @@ func (s *Syncer) handleCheckout(r *git.Repository, repo *config.RepoConfig, resu
 	}
 
 	if err := checkoutRef(r, repo.Checkout); err != nil {
-		slog.Default().Error("failed to checkout", "ref", repo.Checkout, "error", err)
+		slog.Error("failed to checkout", "ref", repo.Checkout, "error", err)
 		s.setErr(result, fmt.Errorf("checkout %s: %w", repo.Checkout, err))
 		return
 	}

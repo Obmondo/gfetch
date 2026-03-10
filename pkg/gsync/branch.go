@@ -45,7 +45,7 @@ func syncBranch(ctx context.Context, repo *git.Repository, branch, _ string, aut
 	localRef, err := repo.Reference(localRefName, true)
 
 	if err == nil && localRef.Hash() == remoteRef.Hash() {
-		slog.Default().Debug("branch already up-to-date", "branch", branch)
+		slog.Debug("branch already up-to-date", "branch", branch)
 		return false, nil
 	}
 
@@ -57,7 +57,7 @@ func syncBranch(ctx context.Context, repo *git.Repository, branch, _ string, aut
 
 	duration := time.Since(start)
 	telemetry.SyncDurationSeconds.WithLabelValues(repoName, "branch").Observe(duration.Seconds())
-	slog.Default().Info("branch synced", "branch", branch, "hash", remoteRef.Hash().String()[:12], "duration", duration)
+	slog.Info("branch synced", "branch", branch, "hash", remoteRef.Hash().String()[:12], "duration", duration)
 	return true, nil
 }
 
@@ -115,7 +115,7 @@ func checkoutRefContext(ctx context.Context, repo *git.Repository, name string) 
 		return fmt.Errorf("reset %s: %w", name, err)
 	}
 
-	slog.Default().Debug("checked out ref", "ref", name, "hash", hash.String()[:12])
+	slog.Debug("checked out ref", "ref", name, "hash", hash.String()[:12])
 	return nil
 }
 
@@ -152,7 +152,7 @@ func shouldCheckoutBranch(repo *git.Repository, branch string, updated bool) (ne
 	}
 
 	if !status.IsClean() {
-		slog.Default().Debug("branch state is not unmodified", slog.String("branch", branch), slog.String("git_status", status.String()))
+		slog.Debug("branch state is not unmodified", slog.String("branch", branch), slog.String("git_status", status.String()))
 		return true, true, nil
 	}
 

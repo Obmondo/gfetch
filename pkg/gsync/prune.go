@@ -27,15 +27,15 @@ func PruneItems[T any](
 	for _, item := range items {
 		name := getName(item)
 		if dryRun {
-			slog.Default().Info(dryRunMsg, "item", name)
+			slog.Info(dryRunMsg, "item", name)
 			pruned = append(pruned, name)
 			continue
 		}
 		if err := deleteFunc(item); err != nil {
-			slog.Default().Error(errorMsg, "item", name, "error", err)
+			slog.Error(errorMsg, "item", name, "error", err)
 			continue
 		}
-		slog.Default().Info(prunedMsg, "item", name)
+		slog.Info(prunedMsg, "item", name)
 		pruned = append(pruned, name)
 	}
 	return pruned
@@ -61,7 +61,7 @@ func deleteBranch(repo *git.Repository, branch string) error {
 func pruneOpenVoxDirs(ctx context.Context, repoName, basePath string, activeNames map[string]string, dryRun bool, result *Result) {
 	entries, err := os.ReadDir(basePath)
 	if err != nil {
-		slog.Default().Error("failed to read local_path for pruning", "path", basePath, "error", err)
+		slog.Error("failed to read local_path for pruning", "path", basePath, "error", err)
 		return
 	}
 
