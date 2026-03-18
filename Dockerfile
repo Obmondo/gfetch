@@ -1,5 +1,5 @@
 # Stage 1 — builder
-FROM golang:1.26-alpine AS builder
+FROM golang:1.26.1-alpine AS builder
 
 ARG VERSION=dev
 ARG COMMIT=unknown
@@ -21,19 +21,16 @@ RUN go build -ldflags "-s -w \
     -o /usr/local/bin/gfetch ./cmd/gfetch
 
 # Stage 2 — runtime
-FROM debian:bookworm-slim
+FROM alpine:3.23.3
 
 # uid/gid 999 is on purpose, cause puppetserver runs as 999(puppet) user
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    git \
-    openssh-client \
-    ca-certificates \
-    && groupadd -g 999 gfetch \
-    && useradd -m -u 999 -g gfetch -s /bin/bash gfetch \
-    && rm -rf /var/lib/apt/lists/*
+RUN apk upgrade --no-cache \
+    && apk add --no-cache ca-certificates \
+    && mkdir -p /home/gfetch \
+    && chown -R 999:999 /home/gfetch
 
 COPY --from=builder /usr/local/bin/gfetch /usr/local/bin/gfetch
 
-USER gfetch
+USER 999:999
 
 ENTRYPOINT ["/usr/local/bin/gfetch"]
