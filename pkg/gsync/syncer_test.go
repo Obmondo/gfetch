@@ -529,9 +529,12 @@ func TestSyncSkippingStaleBranches(t *testing.T) {
 	}
 
 	// Check stale branch does NOT exist
-	if _, err := local.Reference(plumbing.NewBranchReferenceName("stale-branch"), true); err == nil {
+	_, err = local.Reference(plumbing.NewBranchReferenceName("stale-branch"), true)
+	if err == nil {
 		t.Error("stale-branch should NOT exist (should have been skipped)")
-	} else if !errors.Is(err, plumbing.ErrReferenceNotFound) {
+	}
+
+	if err != nil && !errors.Is(err, plumbing.ErrReferenceNotFound) {
 		t.Errorf("unexpected error checking stale-branch: %v", err)
 	}
 
