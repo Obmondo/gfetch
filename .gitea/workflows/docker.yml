@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-22.04-htzhel1-ax42-a
     steps:
       - uses: actions/checkout@v6
-      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-qemu-action@v4
       - uses: docker/setup-buildx-action@v4
 
       - name: Log in to Gitea Container Registry
