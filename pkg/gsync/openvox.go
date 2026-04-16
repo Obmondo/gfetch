@@ -264,6 +264,9 @@ func (s *Syncer) syncRepoOpenVox(ctx context.Context, repo *config.RepoConfig, o
 	}
 
 	ensureProductionAlias(ctx, repo, defaultBranch, remoteBranches)
+	if repo.HasProductionAlias() {
+		protectProductionAlias(sanitizedToOriginal)
+	}
 
 	s.syncOpenVoxTags(ctx, repo, auth, matchedTags, workers, activeTagNames, sanitizedToOriginal, log, &result)
 
@@ -328,6 +331,7 @@ func extractRemoteRefState(refs []*plumbing.Reference, branchPatterns, tagPatter
 			defaultBranch = ref.Target().Short()
 			continue
 		}
+
 		if name.IsBranch() {
 			branch := name.Short()
 			branches[branch] = struct{}{}
@@ -337,12 +341,15 @@ func extractRemoteRefState(refs []*plumbing.Reference, branchPatterns, tagPatter
 			}
 			continue
 		}
-		if name.IsTag() {
-			tag := name.Short()
-			if !seenTags[tag] && config.MatchesAny(tag, tagPatterns) {
-				matchedTags = append(matchedTags, ref)
-				seenTags[tag] = true
-			}
+
+		if !name.IsTag() {
+			continue
+		}
+
+		tag := name.Short()
+		if !seenTags[tag] && config.MatchesAny(tag, tagPatterns) {
+			matchedTags = append(matchedTags, ref)
+			seenTags[tag] = true
 		}
 	}
 
@@ -350,7 +357,7 @@ func extractRemoteRefState(refs []*plumbing.Reference, branchPatterns, tagPatter
 }
 
 func ensureProductionAlias(ctx context.Context, repo *config.RepoConfig, defaultBranch string, remoteBranches map[string]struct{}) {
-	if repo.ProductionAlias == nil || !*repo.ProductionAlias {
+	if !repo.HasProductionAlias() {
 		return
 	}
 
@@ -473,9 +480,11 @@ func cleanupOrphanOpenVoxLockFilesInDir(repoName, basePath, scanPath, suffix str
 		}
 
 		refDirPath := filepath.Join(basePath, refDirName)
-		if _, statErr := os.Stat(refDirPath); statErr == nil {
+		_, statErr := os.Stat(refDirPath)
+		if statErr == nil {
 			continue
-		} else if !os.IsNotExist(statErr) {
+		}
+		if !os.IsNotExist(statErr) {
 			slog.Warn("failed to inspect lock file target directory", "lock_file", name, "error", statErr)
 			continue
 		}
@@ -755,11 +764,12 @@ func (s *Syncer) syncOneOpenVoxBranch(ctx context.Context, repo *config.RepoConf
 		return
 	}
 
-	if updated {
-		s.addBranchSynced(result, branch)
-	} else {
+	if !updated {
 		s.addBranchUpToDate(result, branch)
+		return
 	}
+
+	s.addBranchSynced(result, branch)
 }
 
 func syncOpenVoxBranchOnce(ctx context.Context, subCfg *config.RepoConfig, branch string, remoteHash plumbing.Hash, auth transport.AuthMethod) (bool, error) {
@@ -772,33 +782,39 @@ func syncOpenVoxBranchOnce(ctx context.Context, subCfg *config.RepoConfig, branc
 		return false, fmt.Errorf("clone/open repo: %w", err)
 	}
 
-	var updated bool
 	upToDateLocal, upToDateErr := isBranchUpToDateLocal(r, branch, remoteHash)
 	if upToDateErr != nil {
-		slog.Debug("unable to verify local branch hash before fetch", "branch", branch, "error", upToDateErr)
-	}
-	if upToDateLocal {
-		updated = false
-		slog.Debug("branch already up-to-date via local hash check", "branch", branch)
-	} else {
-		var err error
-		updated, err = syncBranch(ctx, r, branch, subCfg.URL, auth, subCfg.Name)
-		if err != nil {
-			return false, err
-		}
+		logHashVerifyError(upToDateErr, "branch", branch)
 	}
 
+	if upToDateLocal {
+		slog.Debug("branch already up-to-date via local hash check", "branch", branch)
+		return finishOpenVoxBranchSync(ctx, r, branch, false, filepath.Base(subCfg.LocalPath))
+	}
+
+	updated, err := syncBranch(ctx, r, branch, subCfg.URL, auth, subCfg.Name)
+	if err != nil {
+		return false, err
+	}
+	if updated {
+		slog.Info("branch updated", "branch", branch)
+	}
+
+	return finishOpenVoxBranchSync(ctx, r, branch, updated, filepath.Base(subCfg.LocalPath))
+}
+
+func finishOpenVoxBranchSync(ctx context.Context, r *git.Repository, branch string, updated bool, dir string) (bool, error) {
 	needsCheckout, dirtyBranch, stateErr := shouldCheckoutBranch(r, branch, updated)
 	if stateErr != nil {
 		if isRecoverableOpenVoxRepoError(stateErr) {
 			return false, fmt.Errorf("branch state check %s: %w", branch, stateErr)
 		}
-		slog.Warn("openvox branch state check failed; forcing checkout", "branch", branch, "dir", filepath.Base(subCfg.LocalPath), "error", stateErr)
+		slog.Warn("openvox branch state check failed; forcing checkout", "branch", branch, "dir", dir, "error", stateErr)
 		needsCheckout = true
 	}
 
 	if dirtyBranch {
-		slog.Warn("dirty branch detected, likely manual local changes", "branch", branch, "dir", filepath.Base(subCfg.LocalPath))
+		slog.Warn("dirty branch detected, likely manual local changes", "branch", branch, "dir", dir)
 	}
 
 	if needsCheckout {
@@ -934,11 +950,12 @@ func (s *Syncer) syncOneOpenVoxTag(ctx context.Context, repo *config.RepoConfig,
 		return
 	}
 
-	if updated {
-		s.addTagFetched(result, tag)
-	} else {
+	if !updated {
 		s.addTagUpToDate(result, tag)
+		return
 	}
+
+	s.addTagFetched(result, tag)
 }
 
 func syncOpenVoxTagOnce(ctx context.Context, subCfg *config.RepoConfig, tag string, remoteHash plumbing.Hash, auth transport.AuthMethod) (bool, error) {
@@ -951,20 +968,22 @@ func syncOpenVoxTagOnce(ctx context.Context, subCfg *config.RepoConfig, tag stri
 		return false, fmt.Errorf("clone/open repo: %w", err)
 	}
 
-	var updated bool
 	upToDateLocal, upToDateErr := isTagUpToDateLocal(r, tag, remoteHash)
 	if upToDateErr != nil {
-		slog.Debug("unable to verify local tag hash before fetch", "tag", tag, "error", upToDateErr)
+		logHashVerifyError(upToDateErr, "tag", tag)
 	}
+
 	if upToDateLocal {
-		updated = false
 		slog.Debug("tag already up-to-date via local hash check", "tag", tag)
-	} else {
-		var err error
-		updated, err = syncOpenVoxTag(ctx, r, tag, auth)
-		if err != nil {
-			return false, err
-		}
+		return false, nil
+	}
+
+	updated, err := syncOpenVoxTag(ctx, r, tag, auth)
+	if err != nil {
+		return false, err
+	}
+	if updated {
+		slog.Info("tag fetched", "tag", tag)
 	}
 
 	return updated, nil
@@ -983,8 +1002,8 @@ func ensureClonedOpenVox(ctx context.Context, repo *config.RepoConfig, auth tran
 	}
 
 	slog.Warn("openvox directory is not a git repo, recreating", "path", repo.LocalPath)
-	if rmErr := os.RemoveAll(repo.LocalPath); rmErr != nil {
-		return nil, fmt.Errorf("removing non-repo path %s: %w", repo.LocalPath, rmErr)
+	if err := os.RemoveAll(repo.LocalPath); err != nil {
+		return nil, fmt.Errorf("removing non-repo path %s: %w", repo.LocalPath, err)
 	}
 
 	r, err = ensureCloned(ctx, repo, auth)
@@ -1002,11 +1021,12 @@ func (*Syncer) recordOpenVoxMetrics(repo *config.RepoConfig, start time.Time, re
 	if result.Err != nil {
 		telemetry.LastFailureTimestamp.WithLabelValues(repo.Name).Set(float64(time.Now().Unix()))
 		slog.Error("openvox sync failed", "error", result.Err, "duration", duration)
-	} else {
-		logSyncSuccess(context.Background(), *result, duration)
-		telemetry.SyncSuccessTotal.WithLabelValues(repo.Name).Inc()
-		telemetry.LastSuccessTimestamp.WithLabelValues(repo.Name).Set(float64(time.Now().Unix()))
+		return
 	}
+
+	logSyncSuccess(context.Background(), *result, duration)
+	telemetry.SyncSuccessTotal.WithLabelValues(repo.Name).Inc()
+	telemetry.LastSuccessTimestamp.WithLabelValues(repo.Name).Set(float64(time.Now().Unix()))
 
 	slog.Debug("openvox sync details",
 		"branches_synced", len(result.BranchesSynced),
@@ -1019,6 +1039,21 @@ func (*Syncer) recordOpenVoxMetrics(repo *config.RepoConfig, start time.Time, re
 		"tags_pruned", len(result.TagsPruned),
 		"duration", duration,
 	)
+}
+
+func logHashVerifyError(err error, refType, name string) {
+	if errors.Is(err, plumbing.ErrReferenceNotFound) {
+		slog.Debug(refType+" not found locally, will fetch", refType, name)
+		return
+	}
+	slog.Warn("unable to verify local "+refType+" hash before fetch", refType, name, "error", err)
+}
+
+func protectProductionAlias(sanitizedToOriginal map[string]string) {
+	sanitizedProduction := SanitizeName(productionAliasName)
+	if _, exists := sanitizedToOriginal[sanitizedProduction]; !exists {
+		sanitizedToOriginal[sanitizedProduction] = productionAliasName
+	}
 }
 
 // ensureResolverRepo opens or creates a bare repo used only for listing remote refs.
@@ -1055,12 +1090,11 @@ func syncOpenVoxTag(ctx context.Context, r *git.Repository, tag string, auth tra
 		Force:      true,
 	})
 
-	updated := true
-	if errors.Is(err, git.NoErrAlreadyUpToDate) {
-		updated = false
-	} else if err != nil {
+	if err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) {
 		return false, fmt.Errorf("fetching tag %s: %w", tag, err)
 	}
+
+	updated := !errors.Is(err, git.NoErrAlreadyUpToDate)
 
 	if err := checkoutRefContext(ctx, r, tag); err != nil {
 		return false, fmt.Errorf("checkout tag %s: %w", tag, err)
@@ -1099,10 +1133,11 @@ func pruneStaleOpenVoxDirs(ctx context.Context, repo *config.RepoConfig, activeN
 			continue
 		}
 
+		result.BranchesStale = append(result.BranchesStale, original)
+		result.BranchesPruned = append(result.BranchesPruned, original)
+
 		if dryRun {
 			slog.Info("stale directory would be pruned (dry-run)", "dir", sanitized, "branch", original)
-			result.BranchesStale = append(result.BranchesStale, original)
-			result.BranchesPruned = append(result.BranchesPruned, original)
 			continue
 		}
 
@@ -1112,8 +1147,6 @@ func pruneStaleOpenVoxDirs(ctx context.Context, repo *config.RepoConfig, activeN
 		}
 		cleanupOpenVoxArtifactsForDir(dirPath)
 		slog.Info("stale directory pruned", "dir", sanitized, "branch", original)
-		result.BranchesStale = append(result.BranchesStale, original)
-		result.BranchesPruned = append(result.BranchesPruned, original)
 	}
 }
 

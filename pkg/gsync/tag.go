@@ -41,11 +41,13 @@ func syncTagsWithResolved(ctx context.Context, repo *git.Repository, repoConfig 
 
 func resolveAndFilterTagsFromResolved(repo *git.Repository, resolvedTags []string) (fetched, upToDate []string) {
 	for _, tagName := range resolvedTags {
-		if _, err := repo.Reference(plumbing.NewTagReferenceName(tagName), true); err == nil {
+		_, err := repo.Reference(plumbing.NewTagReferenceName(tagName), true)
+		if err == nil {
 			upToDate = append(upToDate, tagName)
-		} else {
-			fetched = append(fetched, tagName)
+			continue
 		}
+
+		fetched = append(fetched, tagName)
 	}
 
 	return fetched, upToDate

@@ -77,10 +77,10 @@ func (s *Syncer) SyncRepo(ctx context.Context, repo *config.RepoConfig, opts Syn
 
 	log.Info("sync starting")
 
-	if repo.Prune != nil && *repo.Prune && !opts.Prune {
+	if repo.ShouldPrune() && !opts.Prune {
 		opts.Prune = true
 	}
-	if repo.PruneStale != nil && *repo.PruneStale && !opts.PruneStale {
+	if repo.ShouldPruneStale() && !opts.PruneStale {
 		opts.PruneStale = true
 	}
 	if opts.StaleAge == 0 && repo.StaleAge != 0 {
@@ -102,7 +102,7 @@ func (s *Syncer) SyncRepo(ctx context.Context, repo *config.RepoConfig, opts Syn
 		}
 	}
 
-	if repo.OpenVox != nil && *repo.OpenVox {
+	if repo.IsOpenVox() {
 		log.Debug("using openvox mode")
 		return s.syncRepoOpenVox(ctx, repo, opts)
 	}
@@ -145,11 +145,12 @@ func (s *Syncer) SyncRepo(ctx context.Context, repo *config.RepoConfig, opts Syn
 	if result.Err != nil {
 		telemetry.LastFailureTimestamp.WithLabelValues(repo.Name).Set(float64(time.Now().Unix()))
 		log.Error("sync failed", "error", result.Err, "duration", duration)
-	} else {
-		logSyncSuccess(ctx, result, duration)
-		telemetry.SyncSuccessTotal.WithLabelValues(repo.Name).Inc()
-		telemetry.LastSuccessTimestamp.WithLabelValues(repo.Name).Set(float64(time.Now().Unix()))
+		return result
 	}
+
+	logSyncSuccess(ctx, result, duration)
+	telemetry.SyncSuccessTotal.WithLabelValues(repo.Name).Inc()
+	telemetry.LastSuccessTimestamp.WithLabelValues(repo.Name).Set(float64(time.Now().Unix()))
 
 	log.Debug("sync details",
 		"branches_synced", len(result.BranchesSynced),
@@ -234,34 +235,43 @@ func (s *Syncer) syncBranches(ctx context.Context, r *git.Repository, repo *conf
 			slog.Error("branch sync failed", "branch", branch, "error", err)
 			telemetry.SyncFailuresTotal.WithLabelValues(repo.Name, "branch_sync").Inc()
 			s.addBranchFailed(result, branch)
-		} else if synced {
-			s.addBranchSynced(result, branch)
-		} else {
-			s.addBranchUpToDate(result, branch)
+			continue
 		}
+
+		if !synced {
+			s.addBranchUpToDate(result, branch)
+			continue
+		}
+
+		s.addBranchSynced(result, branch)
 	}
 
 	obsolete, err := findObsoleteBranches(r, repo.Branches)
 	if err != nil {
 		slog.Error("failed to find obsolete branches", "error", err)
-	} else {
+	}
+
+	if err == nil {
 		s.mu.Lock()
 		result.BranchesObsolete = obsolete
 		s.mu.Unlock()
 		s.pruneBranches(r, repo, obsolete, opts, result)
 	}
 
-	if opts.PruneStale {
-		stale, err := findStaleBranches(r, repo.Branches, opts.StaleAge)
-		if err != nil {
-			slog.Error("failed to find stale branches", "error", err)
-		} else {
-			s.mu.Lock()
-			result.BranchesStale = stale
-			s.mu.Unlock()
-			s.pruneStaleBranches(r, repo, stale, opts, result)
-		}
+	if !opts.PruneStale {
+		return
 	}
+
+	stale, err := findStaleBranches(r, repo.Branches, opts.StaleAge)
+	if err != nil {
+		slog.Error("failed to find stale branches", "error", err)
+		return
+	}
+
+	s.mu.Lock()
+	result.BranchesStale = stale
+	s.mu.Unlock()
+	s.pruneStaleBranches(r, repo, stale, opts, result)
 }
 
 // logSyncSuccess logs the summary for a successful sync (no result.Err).
@@ -282,28 +292,32 @@ func logSyncSuccess(ctx context.Context, result Result, duration time.Duration) 
 	// Branches summary
 	branchTotal := len(result.BranchesSynced) + len(result.BranchesFailed) + len(result.BranchesUpToDate)
 	if branchTotal > 0 {
+		if len(result.BranchesSynced) == 0 && len(result.BranchesFailed) == 0 {
+			attrs = append(attrs, "branches", branchTotal)
+		}
+
 		if len(result.BranchesSynced) > 0 || len(result.BranchesFailed) > 0 {
 			s := fmt.Sprintf("total=%d updated=%d", branchTotal, len(result.BranchesSynced))
 			if len(result.BranchesFailed) > 0 {
 				s += fmt.Sprintf(" failed=%d", len(result.BranchesFailed))
 			}
 			attrs = append(attrs, "branches", s)
-		} else {
-			attrs = append(attrs, "branches", branchTotal)
 		}
 	}
 
 	// Tags summary
 	tagTotal := len(result.TagsFetched) + len(result.TagsFailed) + len(result.TagsUpToDate)
 	if tagTotal > 0 {
+		if len(result.TagsFetched) == 0 && len(result.TagsFailed) == 0 {
+			attrs = append(attrs, "tags", tagTotal)
+		}
+
 		if len(result.TagsFetched) > 0 || len(result.TagsFailed) > 0 {
 			s := fmt.Sprintf("total=%d updated=%d", tagTotal, len(result.TagsFetched))
 			if len(result.TagsFailed) > 0 {
 				s += fmt.Sprintf(" failed=%d", len(result.TagsFailed))
 			}
 			attrs = append(attrs, "tags", s)
-		} else {
-			attrs = append(attrs, "tags", tagTotal)
 		}
 	}
 

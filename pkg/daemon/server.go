@@ -87,7 +87,7 @@ func RunGuardedSync(ctx context.Context, s *gsync.Syncer, state *SyncRuntimeStat
 	}
 
 	if !state.guard.TryStart(repo.Name) {
-		if repo.OpenVox != nil && *repo.OpenVox {
+		if repo.IsOpenVox() {
 			telemetry.OpenVoxSyncOverlapSkippedTotal.WithLabelValues(repo.Name, source).Inc()
 		}
 		slog.Warn("skipping sync: repo already in progress", "repo", repo.Name, "source", source)
@@ -144,7 +144,9 @@ func writeResultWithStatus(w http.ResponseWriter, results []gsync.Result, status
 
 	if status != 0 {
 		w.WriteHeader(status)
-	} else if hasErr {
+	}
+
+	if status == 0 && hasErr {
 		w.WriteHeader(http.StatusInternalServerError)
 	}
 	_ = json.NewEncoder(w).Encode(out)

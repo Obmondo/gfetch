@@ -140,6 +140,26 @@ func (r *RepoConfig) IsHTTPS() bool {
 	return strings.HasPrefix(r.URL, "https://") || strings.HasPrefix(r.URL, "http://")
 }
 
+// IsOpenVox returns true if the repo is in OpenVox mode.
+func (r *RepoConfig) IsOpenVox() bool {
+	return r.OpenVox != nil && *r.OpenVox
+}
+
+// HasProductionAlias returns true if the repo should have a production alias.
+func (r *RepoConfig) HasProductionAlias() bool {
+	return r.ProductionAlias != nil && *r.ProductionAlias
+}
+
+// ShouldPrune returns true if the repo should prune obsolete refs.
+func (r *RepoConfig) ShouldPrune() bool {
+	return r.Prune != nil && *r.Prune
+}
+
+// ShouldPruneStale returns true if the repo should prune stale refs.
+func (r *RepoConfig) ShouldPruneStale() bool {
+	return r.PruneStale != nil && *r.PruneStale
+}
+
 // ParseDuration parses a duration string, adding support for 'd' (days).
 func ParseDuration(s string) (time.Duration, error) {
 	if s == "" {
@@ -234,18 +254,9 @@ func loadFile(path string) (*Config, error) {
 
 // loadDir loads configuration from a directory structure.
 func loadDir(dir string) (*Config, error) {
-	var defaults RepoDefaults
-
-	// Load global.yaml if it exists.
-	var hasDefaults bool
-	globalPath := filepath.Join(dir, "global.yaml")
-	if data, err := os.ReadFile(globalPath); err == nil {
-		if err := yaml.Unmarshal(data, &defaults); err != nil {
-			return nil, fmt.Errorf("parsing global.yaml: %w", err)
-		}
-		hasDefaults = true
-	} else if !os.IsNotExist(err) {
-		return nil, fmt.Errorf("reading global.yaml: %w", err)
+	defaults, err := readGlobalDefaults(filepath.Join(dir, "global.yaml"))
+	if err != nil {
+		return nil, err
 	}
 
 	// Scan */config.yaml for per-repo configs.
@@ -254,10 +265,11 @@ func loadDir(dir string) (*Config, error) {
 		return nil, fmt.Errorf("scanning config directory: %w", err)
 	}
 
-	cfg := &Config{Repos: make(map[string]RepoConfig)}
-	if hasDefaults {
-		cfg.Defaults = &defaults
+	cfg := &Config{
+		Repos:    make(map[string]RepoConfig),
+		Defaults: defaults,
 	}
+
 	for _, match := range matches {
 		data, err := os.ReadFile(match)
 		if err != nil {
@@ -275,13 +287,33 @@ func loadDir(dir string) (*Config, error) {
 		}
 	}
 
+	if defaults == nil {
+		return cfg, nil
+	}
+
 	// Apply global defaults to each repo.
 	for name, repo := range cfg.Repos {
-		applyDefaults(&repo, &defaults)
+		applyDefaults(&repo, defaults)
 		cfg.Repos[name] = repo
 	}
 
 	return cfg, nil
+}
+
+func readGlobalDefaults(path string) (*RepoDefaults, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("reading global.yaml: %w", err)
+	}
+
+	var defaults RepoDefaults
+	if err := yaml.Unmarshal(data, &defaults); err != nil {
+		return nil, fmt.Errorf("parsing global.yaml: %w", err)
+	}
+	return &defaults, nil
 }
 
 // applyDefaults fills empty repo fields from global defaults.
@@ -355,16 +387,39 @@ func (c *Config) validateRepo(r *RepoConfig) error {
 	if r.LocalPath == "" {
 		return fmt.Errorf("repo %s: local_path is required", r.Name)
 	}
+
 	if r.PollInterval == 0 {
 		r.PollInterval = Duration(DefaultPollInterval)
-	} else if time.Duration(r.PollInterval) < 10*time.Second {
+	}
+
+	if time.Duration(r.PollInterval) < 10*time.Second {
 		return fmt.Errorf("repo %s: poll_interval must be at least 10s, got %s", r.Name, time.Duration(r.PollInterval))
 	}
 
-	if r.PruneStale != nil && *r.PruneStale && r.StaleAge == 0 {
+	// Canonicalize boolean flags after merging defaults.
+	// If a flag is still nil, it defaults to false.
+	if r.OpenVox == nil {
+		v := false
+		r.OpenVox = &v
+	}
+	if r.ProductionAlias == nil {
+		v := false
+		r.ProductionAlias = &v
+	}
+	if r.Prune == nil {
+		v := false
+		r.Prune = &v
+	}
+	if r.PruneStale == nil {
+		v := false
+		r.PruneStale = &v
+	}
+
+	if *r.PruneStale && r.StaleAge == 0 {
 		// Default to 180 days (approx 6 months)
 		r.StaleAge = Duration(180 * 24 * time.Hour)
 	}
+
 	if len(r.Branches) == 0 && len(r.Tags) == 0 {
 		return fmt.Errorf("repo %s: at least one branch or tag pattern is required", r.Name)
 	}
@@ -380,14 +435,14 @@ func (c *Config) validateRepo(r *RepoConfig) error {
 		}
 	}
 
-	if r.OpenVox != nil && *r.OpenVox && r.Checkout != "" {
+	if r.IsOpenVox() && r.Checkout != "" {
 		slog.Warn("repo has both openvox and checkout set; checkout will be ignored in openvox mode", "repo", r.Name)
 	}
 	if err := validateOpenVoxOptions(r); err != nil {
 		return err
 	}
 
-	if r.Checkout != "" && (r.OpenVox == nil || !*r.OpenVox) {
+	if r.Checkout != "" && !r.IsOpenVox() {
 		if !MatchesAny(r.Checkout, r.Branches) && !MatchesAny(r.Checkout, r.Tags) {
 			return fmt.Errorf("repo %s: checkout %q does not match any configured branch or tag pattern", r.Name, r.Checkout)
 		}
@@ -396,11 +451,11 @@ func (c *Config) validateRepo(r *RepoConfig) error {
 }
 
 func validateOpenVoxOptions(r *RepoConfig) error {
-	if r.ProductionAlias != nil && *r.ProductionAlias && (r.OpenVox == nil || !*r.OpenVox) {
+	if r.HasProductionAlias() && !r.IsOpenVox() {
 		return fmt.Errorf("repo %s: production_alias requires openvox=true", r.Name)
 	}
 	if r.OpenVoxMaxWorkers != nil {
-		if r.OpenVox == nil || !*r.OpenVox {
+		if !r.IsOpenVox() {
 			return fmt.Errorf("repo %s: openvox_max_workers requires openvox=true", r.Name)
 		}
 		if *r.OpenVoxMaxWorkers < 1 || *r.OpenVoxMaxWorkers > 64 {
