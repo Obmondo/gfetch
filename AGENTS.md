@@ -18,13 +18,14 @@ internal/cli/
   cat.go                      # "cat" subcommand — print resolved config as YAML
   version.go                  # "version" subcommand + Version/Commit/Date vars
 pkg/config/
-  config.go                   # Config/RepoDefaults/RepoConfig/Pattern structs; RepoConfig embeds RepoDefaults inline; Load(), Validate(), validateRepo(), validateAuth()
+  config.go                   # Config/RepoDefaults/RepoConfig/Pattern structs; RepoConfig embeds RepoDefaults inline; Load(), Validate(), validateRepo(), validateAuth(); PartialValidateError for partial-validate tolerance; per-repo-subdir (<dir>/<repo>/config.yaml) directory discovery — strict fail-fast on load
   duration.go                 # ParseDuration() — support for s, m, h, d
   url.go                      # CheckHTTPSAccessible() helper
   config_test.go              # Config unit tests
 pkg/gsync/
-  auth.go                     # resolveAuth() — SSH key or nil (HTTPS)
-  known_hosts.go              # SSH known_hosts callback helper
+  auth.go                     # resolveAuth() — SSH key or nil (HTTPS); preferredHostKeyAlgorithms + mergeAlgorithms (OpenSSH-style dynamic per-host promotion); sshHostPort()
+  auth_test.go                # SSH auth and host key algorithm tests
+  known_hosts.go              # buildKnownHostsAuth() — host key callback + per-host algorithms via gitssh.NewKnownHostsDb
   syncer.go                   # Syncer, SyncAll(), SyncRepo(), syncBranches(), syncTagsWrapper(), handleCheckout(), ensureCloned()
   refs.go                     # resolveBranches/resolveTags/default branch + staleness and branch discovery helpers
   prune.go                    # shared prune helpers (PruneItems, deleteBranch, pruneOpenVoxDirs)
@@ -33,11 +34,12 @@ pkg/gsync/
   openvox.go                  # OpenVox sync flow and per-ref directory sync/prune logic
   syncer_test.go              # Integration tests using in-process bare repos
 pkg/telemetry/
-  telemetry.go                # Prometheus metrics definitions and registration
+  telemetry.go                # Prometheus metrics definitions and registration (sync metrics + config reload metrics)
 pkg/daemon/
-  scheduler.go                # Scheduler — one goroutine per repo, signal handling
-  scheduler_test.go           # Scheduler construction test
-  server.go                   # HTTP server for health, metrics, and manual sync triggers
+  scheduler.go                # Scheduler — gocron-backed periodic syncing; atomic config pointer + Reload() (cancel all jobs / swap config / reschedule with delayed first-fire)
+  scheduler_test.go           # Scheduler + Reload diff tests
+  server.go                   # HTTP server: /health, /metrics, /sync, /sync/{repo}, POST /reload
+  server_test.go              # HTTP handler tests
 config.example.yaml           # Annotated example configuration
 testdata/config.yaml          # Test fixture
 .goreleaser.yaml              # Release config (linux/darwin, amd64/arm64)
@@ -53,8 +55,12 @@ renovate.json                 # Renovate config (gomod, dockerfile, github-actio
 - **No full clone**: repos are initialized empty via `git.PlainInit` + `CreateRemote`, then only configured refs are fetched with narrow refspecs. This avoids downloading unnecessary data.
 - **Ref-level sync**: branches are updated by setting local refs directly to remote hashes — no merge/pull. The working tree is only touched when `checkout` is configured.
 - **Pre-sync stale skip**: when both prune and stale pruning are enabled, stale branches are skipped before branch sync to avoid unnecessary fetch/sync work.
-- **One goroutine per repo in daemon**: each repo polls independently with its own `time.Ticker`. Shutdown is via context cancellation on SIGINT/SIGTERM.
+- **Daemon scheduling**: `gocron/v2` runs one job per repo with singleton-reschedule mode (overlapping fires are coalesced). Shutdown is via context cancellation on SIGINT/SIGTERM. The scheduler keeps the current config behind an `atomic.Pointer[*config.Config]` so reloads swap the live view in a single atomic write; in-flight syncs already hold their `RepoConfig` snapshot and finish against the old version.
+- **Live config reload (Prometheus-style)**: reloads are triggered explicitly — either `SIGHUP` (handled by `Scheduler.runReloadOnSignal`) or `POST /reload`. There is no filesystem watcher and no combined reload-then-sync endpoint: like Prometheus, gfetch trusts the operator (or the SaaS API) to trigger reload once their write is complete, avoiding races with partial writes / editor swap files / atomic-rename half-states. Both triggers run the same pipeline (`server.go::loadValidateAndReload`): `config.Load` → `Validate` → `Scheduler.Reload`. `Scheduler.Reload` is intentionally simple: it cancels every running gocron job, atomically swaps `s.cfg`, and re-schedules every repo from `newCfg` with a delayed first-fire (one full `poll_interval` out, via `scheduleJob(..., startNow=false)`). The delay is deliberate stampede protection — a single reload can flip many repos at once, and firing them all immediately would hit upstream in one burst. In-flight syncs are not interrupted: cancelling a gocron job does not kill the goroutine it already spawned, and `RunGuardedSync`'s per-repo guard prevents the post-reload fire from racing with an in-flight sync of the same repo.
+- **Strict load, partial validate**: `loadDir` is fail-fast (master behaviour) — any unreadable file, malformed YAML, or duplicate repo name aborts the entire load with an error. The reload pipeline (`server.go::loadValidateAndReload`) treats fatal load errors as HTTP 500 and the previous config keeps running. `Config.Validate` *does* support partial degradation: per-repo validation failures are dropped from `c.Repos`, counted via `telemetry.ConfigRepoValidateFailuresTotal`, and surfaced as `*config.PartialValidateError`. The reloader and `/reload` handler use `errors.As` to treat partial-validate errors as warnings and proceed; the CLI surfaces them as normal errors. The "no repos configured" hard error is preserved for explicitly-empty input.
+- **Directory-mode layout**: `loadDir` discovers per-repo configs at `<dir>/<repo>/config.yaml` via `filepath.Glob`. `<dir>/global.yaml` at the root carries shared defaults.
 - **Pruning in daemon mode**: daemon passes `SyncOptions{}` to `SyncRepo`, which then promotes `repo.Prune`, `repo.PruneStale`, and `repo.StaleAge` from the repo config into the options. Set `prune: true` or `prune_stale: true` in config to enable pruning per-repo in daemon mode. `--prune` and `--dry-run` CLI flags remain exclusive to the `sync` subcommand.
+- **SSH HostKeyAlgorithms**: `gitssh.NewKnownHostsDb` produces both the host-key callback and the list of algorithms our known_hosts has entries for at the dialed `host:port`. `mergeAlgorithms` puts those first, then appends the OpenSSH 9.x default order (Ed25519/ECDSA/RSA-SHA2 plus their cert variants) — mimicking OpenSSH's dynamic per-host HostKeyAlgorithms promotion so negotiation lands on a key type we can verify. Plain `ssh-rsa` (SHA-1) and `ssh-dss` are intentionally omitted.
 - **Package Naming**: `pkg/gsync` is used for git sync logic to avoid conflict with the standard `sync` package. `pkg/telemetry` is used for metrics.
 - **Concurrent OpenVox Sync**: When `openvox: true` is set, branches and tags are synced in parallel using a worker pool (default 5 workers). A mutex protects the shared resolver repo (`.gfetch-meta`) from concurrent access conflicts.
 

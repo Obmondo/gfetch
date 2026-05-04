@@ -18,7 +18,7 @@ import (
 var errSyncInProgress = errors.New("sync already in progress")
 var errDaemonShuttingDown = errors.New("daemon shutting down")
 
-func newServer(s *gsync.Syncer, cfg *config.Config, state *SyncRuntimeState) http.Handler {
+func newServer(sched *Scheduler) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
@@ -28,7 +28,12 @@ func newServer(s *gsync.Syncer, cfg *config.Config, state *SyncRuntimeState) htt
 
 	mux.Handle("GET /metrics", promhttp.Handler())
 
+	mux.HandleFunc("POST /reload", func(w http.ResponseWriter, r *http.Request) {
+		handleReload(w, r, sched)
+	})
+
 	mux.HandleFunc("POST /sync/{repo}", func(w http.ResponseWriter, r *http.Request) {
+		cfg := sched.Config()
 		repoName := r.PathValue("repo")
 		repo, ok := cfg.Repos[repoName]
 		if !ok {
@@ -37,7 +42,7 @@ func newServer(s *gsync.Syncer, cfg *config.Config, state *SyncRuntimeState) htt
 		}
 
 		slog.Info("manual sync triggered", "repo", repoName)
-		result := RunGuardedSync(r.Context(), s, state, &repo, "manual")
+		result := RunGuardedSync(r.Context(), sched.syncer, sched.state, &repo, "manual")
 		if errors.Is(result.Err, errDaemonShuttingDown) {
 			writeResultWithStatus(w, []gsync.Result{result}, http.StatusServiceUnavailable)
 			return
@@ -50,13 +55,14 @@ func newServer(s *gsync.Syncer, cfg *config.Config, state *SyncRuntimeState) htt
 	})
 
 	mux.HandleFunc("POST /sync", func(w http.ResponseWriter, r *http.Request) {
+		cfg := sched.Config()
 		slog.Info("manual sync triggered for all repos")
 		results := make([]gsync.Result, 0, len(cfg.Repos))
 		hasShutdownErr := false
 		hasInProgressErr := false
 		for name := range cfg.Repos {
 			repo := cfg.Repos[name]
-			res := RunGuardedSync(r.Context(), s, state, &repo, "manual")
+			res := RunGuardedSync(r.Context(), sched.syncer, sched.state, &repo, "manual")
 			if errors.Is(res.Err, errDaemonShuttingDown) {
 				hasShutdownErr = true
 			}
@@ -78,6 +84,59 @@ func newServer(s *gsync.Syncer, cfg *config.Config, state *SyncRuntimeState) htt
 	})
 
 	return mux
+}
+
+// handleReload services POST /reload directly.
+func handleReload(w http.ResponseWriter, _ *http.Request, sched *Scheduler) {
+	res, status, err := loadValidateAndReload(sched)
+	w.Header().Set("Content-Type", "application/json")
+	if err != nil {
+		w.WriteHeader(status)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	_ = json.NewEncoder(w).Encode(res)
+}
+
+// loadValidateAndReload reads the config from disk, validates it, and applies
+// it via Scheduler.Reload. On fatal failure the old config keeps running and
+// the returned status is the HTTP status the caller should write. Per-repo
+// validate failures are surfaced as a *config.PartialValidateError and the
+// reload proceeds with the remaining repos; an empty result after partial
+// errors is treated as a 422.
+func loadValidateAndReload(sched *Scheduler) (ReloadResult, int, error) {
+	cfg, err := config.Load(sched.ConfigPath())
+	if err != nil {
+		telemetry.ConfigReloadFailuresTotal.WithLabelValues("load").Inc()
+		slog.Warn("config reload failed (load)", "error", err)
+		return ReloadResult{}, http.StatusInternalServerError, fmt.Errorf("load config: %w", err)
+	}
+
+	var partialValidate *config.PartialValidateError
+	switch err := cfg.Validate(); {
+	case errors.As(err, &partialValidate):
+		slog.Warn("config reload: some repos failed validation, dropping",
+			"failed_repos", len(partialValidate.Failures))
+	case err != nil:
+		telemetry.ConfigReloadFailuresTotal.WithLabelValues("validate").Inc()
+		slog.Warn("config reload failed (validate)", "error", err)
+		return ReloadResult{}, http.StatusUnprocessableEntity, fmt.Errorf("validate config: %w", err)
+	}
+
+	if len(cfg.Repos) == 0 {
+		telemetry.ConfigReloadFailuresTotal.WithLabelValues("validate").Inc()
+		slog.Warn("config reload aborted: no usable repos after load+validate, keeping previous config")
+		return ReloadResult{}, http.StatusUnprocessableEntity, fmt.Errorf("validate config: no usable repos after load+validate")
+	}
+
+	res, err := sched.Reload(cfg)
+	if err != nil {
+		telemetry.ConfigReloadFailuresTotal.WithLabelValues("apply").Inc()
+		slog.Warn("config reload failed (apply)", "error", err)
+		return ReloadResult{}, http.StatusInternalServerError, fmt.Errorf("apply config: %w", err)
+	}
+	slog.Info("config reloaded", "repos", len(res.Repos))
+	return res, http.StatusOK, nil
 }
 
 func RunGuardedSync(ctx context.Context, s *gsync.Syncer, state *SyncRuntimeState, repo *config.RepoConfig, source string) gsync.Result {

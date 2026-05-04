@@ -3,6 +3,8 @@ package cli
 import (
 	"context"
 	"fmt"
+	"os/signal"
+	"syscall"
 
 	"github.com/spf13/cobra"
 
@@ -27,8 +29,12 @@ func newDaemonCmd() *cobra.Command {
 			}
 
 			s := gsync.New()
-			sched := daemon.NewScheduler(s, listenAddr)
-			sched.Run(context.Background(), cfg)
+			sched := daemon.NewScheduler(s, listenAddr, configPath)
+
+			ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+			defer cancel()
+
+			sched.Run(ctx, cfg)
 			return nil
 		},
 	}

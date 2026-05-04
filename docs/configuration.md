@@ -29,6 +29,27 @@ repos:
 
 Using a map for `repos` allows Helm to merge multiple `values.yaml` files correctly. Lists in Helm are always overwritten, but maps are merged by key.
 
+### Directory mode
+
+When `--config` points to a directory, gfetch loads `global.yaml` for shared defaults and discovers per-repo configs at `<dir>/<repo>/config.yaml`. A duplicate repo name across files is a fatal error.
+
+```text
+config.d/
+├── global.yaml                 # shared defaults
+├── repo-a/
+│   └── config.yaml
+├── repo-b/
+│   └── config.yaml
+└── repo-c/
+    └── config.yaml
+```
+
+### Partial-validate tolerance
+
+Loading the config is strict — any unreadable file, malformed YAML, or duplicate repo name aborts the load with a fatal error, and the previous config keeps running.
+
+Validation, however, tolerates per-repo failures: a repo that fails `Validate` (missing required fields, bad regex, unreachable HTTPS URL, …) is dropped from the in-memory config, logged at WARN, counted in `gfetch_config_repo_validate_failures_total{repo}`, and surfaced as `*config.PartialValidateError`. The daemon's `POST /reload` and `SIGHUP` triggers treat partial-validate errors as warnings and continue with the surviving repos. The `validate-config` and `cat` CLI commands surface them as normal errors and exit non-zero. If all repos are dropped, the reload is aborted and the previous config keeps running.
+
 ## Fields
 
 | Field | Type | Required | Description |
@@ -214,12 +235,59 @@ Run `gfetch validate-config` to check your config file without performing any sy
 
 ### `gfetch cat`
 
-Prints the fully resolved configuration as YAML. In directory mode, global defaults are merged from subdirectories before printing.
+Prints the fully resolved configuration as YAML. In directory mode, global defaults are merged before printing.
 
 ```bash
 gfetch cat -c config.yaml       # single-file mode
 gfetch cat -c config.d/         # directory mode
 ```
+
+## Daemon HTTP API
+
+The daemon serves HTTP on its `--listen-addr` (default `:8080`):
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/health` | Returns `200` with `{"status":"ok"}` when running. Suitable as a Kubernetes readiness/liveness probe. |
+| `GET` | `/metrics` | Prometheus metrics endpoint. |
+| `POST` | `/reload` | Re-read the config from disk, validate it, and replace every running job. Response body is `{"repos": [...]}` listing the repos now managed. |
+| `POST` | `/sync` | Trigger a manual sync of every configured repo. |
+| `POST` | `/sync/{repo}` | Trigger a manual sync of a single repo. |
+
+If you need to pick up a config change before syncing, call `POST /reload` first (or send `SIGHUP`), then `POST /sync`.
+
+## Live config reload
+
+When run as `gfetch daemon`, gfetch follows Prometheus's reload model: the config is **not** watched on the filesystem. Reloads are triggered explicitly by one of:
+
+- `SIGHUP` to the gfetch process — convenient for traditional / CLI deployments and for config-management tooling (Ansible, systemd reload, etc.).
+- `POST /reload` on the HTTP server — convenient for cross-pod / SaaS-API deployments where signaling is awkward. The endpoint is always enabled.
+
+This avoids races with partial writes, editor swap files, and atomic-rename half-states; the writer always knows when its write is complete and can trigger reload deterministically.
+
+Each reload performs `Load` → `Validate` → replace-all:
+
+- Every running gocron job is cancelled.
+- The live config pointer is atomically swapped.
+- Every repo in the new config is re-scheduled with a delayed first-fire (one full `poll_interval` out — not immediate). This is deliberate stampede protection: a reload can flip many repos at once and firing them all immediately would hit upstream in one burst.
+
+In-flight syncs are NOT interrupted. Cancelling a gocron job does not kill the goroutine it already spawned; in-flight tasks finish against the `RepoConfig` snapshot they were called with. A per-repo guard prevents the post-reload fire from racing with an in-flight sync of the same repo.
+
+Reload failures (load, validate, apply) are logged and counted; the previous config keeps running. Per-repo validation failures are tolerated (see "Partial-validate tolerance" above) — only a completely empty result after partial-validate aborts the reload.
+
+To pick up a config change and sync immediately, call `POST /reload` then `POST /sync` (or call `POST /sync` and wait for the next scheduled fire — Reload itself schedules every repo one full `poll_interval` out, no immediate fire).
+
+## Prometheus Metrics
+
+In addition to the per-sync metrics, the daemon exposes the following config-reload metrics:
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `gfetch_config_reloads_total` | counter | — | Successful config reloads. |
+| `gfetch_config_reload_failures_total` | counter | `reason` (`load`, `validate`, `apply`) | Config reload failures by stage. |
+| `gfetch_config_repo_validate_failures_total` | counter | `repo` | Per-repo validation failures (the repo is dropped from the running config). |
+| `gfetch_config_last_reload_timestamp` | gauge | — | Unix timestamp of the last successful reload. |
+| `gfetch_config_managed_repos` | gauge | — | Number of repos currently managed by the daemon. |
 
 ## Complete Example
 

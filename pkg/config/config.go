@@ -6,10 +6,13 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/obmondo/gfetch/pkg/telemetry"
 )
 
 var nameRegex = regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
@@ -26,6 +29,26 @@ const (
 type Config struct {
 	Defaults *RepoDefaults         `yaml:"defaults,omitempty"`
 	Repos    map[string]RepoConfig `yaml:"repos"`
+}
+
+// PartialValidateError is returned by Config.Validate when one or more repos
+// failed validation. The invalid repos are removed from c.Repos so the daemon
+// will not try to schedule them.
+type PartialValidateError struct {
+	Failures map[string]error // repo name → validation error
+}
+
+func (e *PartialValidateError) Error() string {
+	names := make([]string, 0, len(e.Failures))
+	for n := range e.Failures {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	parts := make([]string, 0, len(names))
+	for _, n := range names {
+		parts = append(parts, fmt.Sprintf("%s: %v", n, e.Failures[n]))
+	}
+	return fmt.Sprintf("partial config validation: %d repo(s) failed: %s", len(names), strings.Join(parts, "; "))
 }
 
 // Duration is a wrapper around time.Duration that supports extra units like 'd'.
@@ -356,20 +379,34 @@ func applyDefaults(repo *RepoConfig, defaults *RepoDefaults) {
 	}
 }
 
-// Validate checks the configuration for required fields and compiles regex patterns.
+// Validate checks the configuration for required fields and compiles regex
+// patterns. Per-repo failures are logged, counted via
+// telemetry.ConfigRepoValidateFailuresTotal, dropped from c.Repos, and the
+// remaining repos still get validated. When any repo fails, the returned
+// error is a *PartialValidateError carrying the per-repo errors; c.Repos
+// then contains only the valid repos. The "no repos configured" hard error
+// is preserved for empty input so CLI users still see that explicit message.
 func (c *Config) Validate() error {
 	if len(c.Repos) == 0 {
 		return fmt.Errorf("no repos configured")
 	}
 
+	failures := map[string]error{}
 	for name, r := range c.Repos {
 		if err := c.validateRepo(&r); err != nil {
-			return err
+			slog.Warn("repo failed validation, dropping", "repo", name, "error", err)
+			telemetry.ConfigRepoValidateFailuresTotal.WithLabelValues(name).Inc()
+			failures[name] = err
+			delete(c.Repos, name)
+			continue
 		}
 		c.Repos[name] = r
 	}
 
-	return nil
+	if len(failures) == 0 {
+		return nil
+	}
+	return &PartialValidateError{Failures: failures}
 }
 
 func (c *Config) validateRepo(r *RepoConfig) error {

@@ -14,6 +14,8 @@ A CLI tool that selectively mirrors remote Git repositories to local paths based
 - **Pruning** — detect and remove local branches/tags that no longer match any configured pattern
 - **Stale pruning** — optionally remove inactive branches that have no new commits in a specified period (e.g., last 6 months); `prune_stale` only takes effect when `prune` is also enabled — stale branches are skipped before branch sync when both are set
 - **Daemon mode** — run as a foreground polling service with per-repo poll intervals
+- **Live config reload** — daemon re-reads its config on `SIGHUP` or `POST /reload` and applies adds, removes, and edits without a restart (Prometheus-style: explicit trigger, no filesystem watcher)
+- **Partial-validate tolerance** — one invalid repo (missing fields, bad regex, unreachable HTTPS URL) is logged and dropped instead of blocking every other repo
 - **SSH and HTTPS auth** — private repos via SSH key, public repos via anonymous HTTPS
 - **Working tree checkout** — optionally keep a working tree checked out on a specific branch or tag
 - **OpenVox mode** — create per-branch/tag directories with sanitized names, ideal for Puppet environments
@@ -173,9 +175,21 @@ gfetch daemon
 gfetch daemon --config /etc/gfetch/config.yaml --log-level debug
 ```
 
-Pruning is controlled via `prune` and `prune_stale` config fields per-repo. Set `prune: true` in config to enable obsolete-ref pruning; `prune_stale: true` (also requires `prune: true`) to additionally prune inactive branches. The daemon does not reload config on changes — restart it to pick up new configuration.
+Pruning is controlled via `prune` and `prune_stale` config fields per-repo. Set `prune: true` in config to enable obsolete-ref pruning; `prune_stale: true` (also requires `prune: true`) to additionally prune inactive branches.
 
-The daemon exposes `GET /health` on the listen address (default `:8080`) and returns `200` with `{"status":"ok"}` when running. You can use this endpoint as a readiness probe.
+The daemon reloads `--config` (file or directory) explicitly on `SIGHUP` or `POST /reload`, following Prometheus's model — there is no filesystem watcher. Edits, adds, and removes are applied without a restart; in-flight syncs finish against the config snapshot they started with, and the next scheduled fire uses the new config. Reload failures (load, validate, apply) are logged and counted, and the previous config keeps running.
+
+The daemon exposes the following HTTP endpoints on the listen address (default `:8080`):
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/health` | Liveness/readiness probe — returns `200` with `{"status":"ok"}`. |
+| `GET` | `/metrics` | Prometheus metrics. |
+| `POST` | `/reload` | Re-read the config from disk, validate it, and replace every running job. Returns `{"repos": [...]}` listing the repos now managed. |
+| `POST` | `/sync` | Trigger a manual sync of every configured repo. |
+| `POST` | `/sync/{repo}` | Trigger a manual sync of a single repo. |
+
+To pick up a config change before syncing, call `POST /reload` (or send `SIGHUP`) first, then `POST /sync`.
 
 ### `gfetch validate-config`
 

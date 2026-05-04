@@ -63,6 +63,31 @@ var (
 		Name: "gfetch_remote_ref_list_total",
 		Help: "Total number of remote ref-list calls per repo and sync mode.",
 	}, []string{"repo", "mode"})
+
+	ConfigReloadsTotal = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "gfetch_config_reloads_total",
+		Help: "Total number of successful config reloads.",
+	})
+
+	ConfigReloadFailuresTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "gfetch_config_reload_failures_total",
+		Help: "Total number of config reload failures, by reason (load, validate, apply).",
+	}, []string{"reason"})
+
+	ConfigRepoValidateFailuresTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "gfetch_config_repo_validate_failures_total",
+		Help: "Total number of per-repo config validation failures, labelled by repo name. Counted when Validate drops an invalid repo and continues.",
+	}, []string{"repo"})
+
+	ConfigLastReloadTimestamp = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "gfetch_config_last_reload_timestamp",
+		Help: "Unix timestamp of the last successful config reload.",
+	})
+
+	ConfigManagedRepos = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "gfetch_config_managed_repos",
+		Help: "Number of repos currently managed by the daemon.",
+	})
 )
 
 func init() {
@@ -79,5 +104,10 @@ func init() {
 		OpenVoxOrphanLockfilesRemovedTotal,
 		OpenVoxOrphanLockfilesSkippedInUseTotal,
 		RemoteRefListTotal,
+		ConfigReloadsTotal,
+		ConfigReloadFailuresTotal,
+		ConfigRepoValidateFailuresTotal,
+		ConfigLastReloadTimestamp,
+		ConfigManagedRepos,
 	)
 }

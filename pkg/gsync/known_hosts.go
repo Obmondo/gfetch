@@ -5,8 +5,8 @@ import (
 	"os"
 	"strings"
 
+	gitssh "github.com/go-git/go-git/v5/plumbing/transport/ssh"
 	"golang.org/x/crypto/ssh"
-	"golang.org/x/crypto/ssh/knownhosts"
 )
 
 // defaultKnownHosts contains built-in SSH host keys for major Git hosting providers.
@@ -26,9 +26,15 @@ ssh.dev.azure.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC7Hr1oTWqNqOlzGJOfGJ4Nak
 vs-ssh.visualstudio.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC7Hr1oTWqNqOlzGJOfGJ4NakVyIzf1rXYd4d7wo6jBlkLvCA4odBlL0mDUyZ0/QUfTTqeu+tm22gOsv+VrVTMk6vwRU75gY/y9ut5Mb3bR5BV58dKXyq9A9UeB5Cakehn5Zgm6x1mKoVyf+FFn26iYqXJRgzIZZcZ5V6hrE0Qg39kZm4az48o0AUbf6Sp4SLdvnuMa2sVNwHBboS7EJkm57XQPVU3/QpyNLHbWDdzwtrlS+ez30S3AdYhLKEOxAG8weOnyrtLJAUen9mTkol8oII1edf7mWWbWVf0nBmly21+nZcmCTISQBtdcyPaEno7fFQMDD26/s0lfKob4Kw8H
 `
 
-// buildKnownHostsCallback creates an ssh.HostKeyCallback that verifies host keys
-// against the built-in defaults merged with any extra user-provided entries.
-func buildKnownHostsCallback(extraEntries string) (ssh.HostKeyCallback, error) {
+// buildKnownHostsAuth builds the SSH host-key verification material for one
+// connection: the HostKeyCallback (verifies the wire key against known_hosts)
+// and the per-host algorithms slice (which algorithms our known_hosts already
+// has entries for at hostPort).
+//
+// Callers combine the per-host algorithms with a static fallback order (see
+// mergeAlgorithms) to produce a HostKeyAlgorithms preference that mimics
+// OpenSSH's dynamic per-host promotion.
+func buildKnownHostsAuth(extraEntries, hostPort string) (ssh.HostKeyCallback, []string, error) {
 	merged := defaultKnownHosts
 	if extra := strings.TrimSpace(extraEntries); extra != "" {
 		merged = merged + extra + "\n"
@@ -36,22 +42,22 @@ func buildKnownHostsCallback(extraEntries string) (ssh.HostKeyCallback, error) {
 
 	tmpFile, err := os.CreateTemp("", "gfetch-known-hosts-*")
 	if err != nil {
-		return nil, fmt.Errorf("creating temp known_hosts file: %w", err)
+		return nil, nil, fmt.Errorf("creating temp known_hosts file: %w", err)
 	}
 	defer func() { _ = os.Remove(tmpFile.Name()) }()
 
 	if _, err := tmpFile.WriteString(merged); err != nil {
 		_ = tmpFile.Close()
-		return nil, fmt.Errorf("writing temp known_hosts file: %w", err)
+		return nil, nil, fmt.Errorf("writing temp known_hosts file: %w", err)
 	}
 	if err := tmpFile.Close(); err != nil {
-		return nil, fmt.Errorf("closing temp known_hosts file: %w", err)
+		return nil, nil, fmt.Errorf("closing temp known_hosts file: %w", err)
 	}
 
-	callback, err := knownhosts.New(tmpFile.Name())
+	db, err := gitssh.NewKnownHostsDb(tmpFile.Name())
 	if err != nil {
-		return nil, fmt.Errorf("parsing known_hosts: %w", err)
+		return nil, nil, fmt.Errorf("parsing known_hosts: %w", err)
 	}
 
-	return callback, nil
+	return db.HostKeyCallback(), db.HostKeyAlgorithms(hostPort), nil
 }
