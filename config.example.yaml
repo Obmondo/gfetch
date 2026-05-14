@@ -35,13 +35,21 @@ repos:
       - /^v[0-9]+\./
 
 # --- Directory mode ---
-# Instead of a single file, --config can point to a directory:
+# Instead of a single file, --config can point to a directory of per-repo
+# subdirectories, each containing a config.yaml:
 #
 #   config.d/
-#   ├── global.yaml            # shared defaults (uses the same fields as the 'defaults:' key)
+#   ├── global.yaml                # shared defaults (same fields as 'defaults:' above)
 #   ├── repo-a/
-#   │   └── config.yaml        # repos: { repo-a: { url: ..., branches: [...] } }
-#   └── repo-b/
+#   │   └── config.yaml            # repos: { repo-a: { ... } }
+#   ├── repo-b/
+#   │   └── config.yaml
+#   └── repo-c/
 #       └── config.yaml
 #
 # Per-repo values override globals. Use `gfetch cat` to see the resolved config.
+#
+# The daemon reloads its config explicitly (Prometheus-style): send SIGHUP
+# to the process, or call `curl -X POST :8080/reload`. Per-file load errors
+# and per-repo validation errors are logged + counted and skipped;
+# surviving repos keep running. There is no filesystem watcher.

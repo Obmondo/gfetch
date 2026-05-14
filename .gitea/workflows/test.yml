@@ -10,8 +10,8 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-go@v6
+      - uses: https://gitea.obmondo.com/Obmondo/checkout@v6.0.2
+      - uses: https://gitea.obmondo.com/Obmondo/setup-go@v6.4.0
         with:
           go-version-file: go.mod
           cache: true
@@ -23,8 +23,8 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-go@v6
+      - uses: https://gitea.obmondo.com/Obmondo/checkout@v6.0.2
+      - uses: https://gitea.obmondo.com/Obmondo/setup-go@v6.4.0
         with:
           go-version-file: go.mod
           cache: false
@@ -35,8 +35,8 @@ jobs:
   fmt:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-go@v6
+      - uses: https://gitea.obmondo.com/Obmondo/checkout@v6.0.2
+      - uses: https://gitea.obmondo.com/Obmondo/setup-go@v6.4.0
         with:
           go-version-file: go.mod
           cache: false

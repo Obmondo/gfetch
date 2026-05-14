@@ -1,10 +1,15 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus/testutil"
+
+	"github.com/obmondo/gfetch/pkg/telemetry"
 )
 
 const branchMain = "main"
@@ -309,6 +314,142 @@ branches:
 	}
 	if r1.LocalPath != "/tmp/global_path" {
 		t.Errorf("repo1 local_path = %q, want /tmp/global_path", r1.LocalPath)
+	}
+}
+
+// TestLoad_DirectoryDuplicateAcrossSubdirs verifies that a duplicate repo name
+// across two per-repo-subdir files is reported as a fatal error.
+func TestLoad_DirectoryDuplicateAcrossSubdirs(t *testing.T) {
+	dir := t.TempDir()
+
+	body := []byte(`repos:
+  shared-name:
+    url: git@github.com:test/repo.git
+    ssh_key_path: /tmp/key
+    local_path: /tmp/repo
+    poll_interval: 1m
+    branches: [main]
+`)
+	for _, sub := range []string{"first", "second"} {
+		subDir := filepath.Join(dir, sub)
+		if err := os.MkdirAll(subDir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(subDir, "config.yaml"), body, 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	_, err := Load(dir)
+	if err == nil {
+		t.Fatal("expected duplicate-name error, got nil")
+	}
+}
+
+// TestValidate_DropsInvalidRepoAndKeepsRest asserts that one repo with a
+// validation error is dropped (with metric increment) while a sibling repo
+// still validates successfully.
+func TestValidate_DropsInvalidRepoAndKeepsRest(t *testing.T) {
+	keyFile := filepath.Join(t.TempDir(), "key")
+	if err := os.WriteFile(keyFile, []byte("fake"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &Config{Repos: map[string]RepoConfig{
+		"good": {
+			RepoDefaults: RepoDefaults{
+				SSHKeyPath:   keyFile,
+				LocalPath:    "/tmp/good",
+				PollInterval: Duration(30 * time.Second),
+				Branches:     []Pattern{{Raw: branchMain}},
+			},
+			Name: "good",
+			URL:  "git@github.com:test/good.git",
+		},
+		"bad-missing-url": {
+			RepoDefaults: RepoDefaults{
+				SSHKeyPath:   keyFile,
+				LocalPath:    "/tmp/bad",
+				PollInterval: Duration(30 * time.Second),
+				Branches:     []Pattern{{Raw: branchMain}},
+			},
+			Name: "bad-missing-url",
+			// URL intentionally empty
+		},
+	}}
+
+	before := testutil.ToFloat64(telemetry.ConfigRepoValidateFailuresTotal.WithLabelValues("bad-missing-url"))
+
+	err := cfg.Validate()
+
+	var partial *PartialValidateError
+	if !errors.As(err, &partial) {
+		t.Fatalf("expected *PartialValidateError, got %T: %v", err, err)
+	}
+	if _, ok := partial.Failures["bad-missing-url"]; !ok {
+		t.Errorf("expected failure for bad-missing-url, got %v", partial.Failures)
+	}
+	if _, ok := cfg.Repos["bad-missing-url"]; ok {
+		t.Error("expected bad-missing-url to be dropped from cfg.Repos")
+	}
+	if _, ok := cfg.Repos["good"]; !ok {
+		t.Error("expected good repo to remain after partial validate")
+	}
+	if got := testutil.ToFloat64(telemetry.ConfigRepoValidateFailuresTotal.WithLabelValues("bad-missing-url")); got != before+1 {
+		t.Errorf("ConfigRepoValidateFailuresTotal{bad-missing-url}: got %v, want %v", got, before+1)
+	}
+}
+
+// TestValidate_AllReposInvalid asserts that when every repo fails validation,
+// Validate returns *PartialValidateError listing them all and c.Repos is
+// emptied. (The reloader and HTTP server treat this as "no usable repos" and
+// keep the old config.)
+func TestValidate_AllReposInvalid(t *testing.T) {
+	keyFile := filepath.Join(t.TempDir(), "key")
+	if err := os.WriteFile(keyFile, []byte("fake"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &Config{Repos: map[string]RepoConfig{
+		"bad-a": {
+			RepoDefaults: RepoDefaults{SSHKeyPath: keyFile, LocalPath: "/tmp/a", PollInterval: Duration(30 * time.Second), Branches: []Pattern{{Raw: branchMain}}},
+			Name:         "bad-a",
+		},
+		"bad-b": {
+			RepoDefaults: RepoDefaults{SSHKeyPath: keyFile, LocalPath: "/tmp/b", PollInterval: Duration(30 * time.Second), Branches: []Pattern{{Raw: branchMain}}},
+			Name:         "bad-b",
+		},
+	}}
+
+	err := cfg.Validate()
+
+	var partial *PartialValidateError
+	if !errors.As(err, &partial) {
+		t.Fatalf("expected *PartialValidateError, got %T: %v", err, err)
+	}
+	if len(partial.Failures) != 2 {
+		t.Errorf("expected 2 failures, got %d: %v", len(partial.Failures), partial.Failures)
+	}
+	if len(cfg.Repos) != 0 {
+		t.Errorf("expected cfg.Repos to be empty after all-invalid validate, got %v", cfg.Repos)
+	}
+}
+
+// TestValidate_NoReposConfigured guards the entry condition: an empty Config
+// returns the plain "no repos configured" error, not a *PartialValidateError.
+// CLI users who provide an empty config still see that explicit message.
+func TestValidate_NoReposConfigured(t *testing.T) {
+	cfg := &Config{Repos: map[string]RepoConfig{}}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for empty config, got nil")
+	}
+	var partial *PartialValidateError
+	if errors.As(err, &partial) {
+		t.Fatalf("expected plain error, got *PartialValidateError: %v", err)
+	}
+	if err.Error() != "no repos configured" {
+		t.Errorf("expected %q, got %q", "no repos configured", err.Error())
 	}
 }
 
