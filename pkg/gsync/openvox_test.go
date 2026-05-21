@@ -34,7 +34,7 @@ func TestEnsureClonedOpenVox_RecreatesNonRepoDir(t *testing.T) {
 		URL:          "https://example.com/repo.git",
 	}
 
-	r, err := ensureClonedOpenVox(context.Background(), repoCfg, nil)
+	r, err := getRepoWithSharedCache(localPath, filepath.Join(basePath, ".git", "cache.git"), "https://example.com/repo.git", nil)
 	if err != nil {
 		t.Fatalf("ensureClonedOpenVox failed: %v", err)
 	}

@@ -21,7 +21,6 @@ import (
 	"github.com/obmondo/gfetch/pkg/telemetry"
 )
 
-// metaDir is the hidden directory used to store the resolver repo for listing remote refs.
 const (
 	metaDir             = ".gfetch-meta"
 	locksDirName        = "locks"
@@ -209,9 +208,6 @@ func openVoxWorkerCount(repo *config.RepoConfig) int {
 	return *repo.OpenVoxMaxWorkers
 }
 
-// SanitizeName converts a Git ref name into a valid Puppet environment name.
-// Puppet environments only allow [a-zA-Z0-9_]. Any character outside this set
-// is replaced with an underscore.
 func SanitizeName(name string) string {
 	return strings.Map(func(r rune) rune {
 		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' {
@@ -221,8 +217,6 @@ func SanitizeName(name string) string {
 	}, name)
 }
 
-// syncRepoOpenVox syncs a repository in OpenVox mode: each matching branch/tag gets
-// its own directory under local_path with a sanitized name, checked out as a working tree.
 func (s *Syncer) syncRepoOpenVox(ctx context.Context, repo *config.RepoConfig, opts SyncOptions) Result {
 	start := time.Now()
 	result := Result{RepoName: repo.Name}
@@ -235,15 +229,14 @@ func (s *Syncer) syncRepoOpenVox(ctx context.Context, repo *config.RepoConfig, o
 		return result
 	}
 
-	// Ensure the base local_path exists.
 	if err := os.MkdirAll(repo.LocalPath, defaultDirMode); err != nil {
 		result.Err = fmt.Errorf("creating local_path %s: %w", repo.LocalPath, err)
 		return result
 	}
 
-	// Use a hidden resolver repo to list remote refs without polluting the workspace.
+	cachePath := filepath.Join(filepath.Dir(repo.LocalPath), metaDir, "cache.git")
 	resolverPath := filepath.Join(repo.LocalPath, metaDir)
-	resolverRepo, refs, err := loadResolverRepoAndRefs(ctx, repo.Name, resolverPath, repo.URL, auth)
+	resolverRepo, refs, err := loadResolverRepoAndRefs(ctx, repo.Name, resolverPath, cachePath, repo.URL, auth)
 	if err != nil {
 		telemetry.SyncFailuresTotal.WithLabelValues(repo.Name, "clone").Inc()
 		result.Err = fmt.Errorf("resolver repo: %w", err)
@@ -253,13 +246,26 @@ func (s *Syncer) syncRepoOpenVox(ctx context.Context, repo *config.RepoConfig, o
 	defaultBranch, remoteBranches, matchedBranches, matchedTags := extractRemoteRefState(refs, repo.Branches, repo.Tags)
 	workers := openVoxWorkerCount(repo)
 
-	// Track active names separately for stale-branch pruning, and combined for
-	// collision detection and obsolete-dir pruning.
+	refSpecs := make([]gitconfig.RefSpec, 0, len(matchedBranches)+len(matchedTags))
+	for _, ref := range matchedBranches {
+		branch := ref.Name().Short()
+		refSpecs = append(refSpecs, gitconfig.RefSpec(fmt.Sprintf("+refs/heads/%s:refs/heads/%s", branch, branch)))
+	}
+	for _, ref := range matchedTags {
+		tag := ref.Name().Short()
+		refSpecs = append(refSpecs, gitconfig.RefSpec(fmt.Sprintf("+refs/tags/%s:refs/tags/%s", tag, tag)))
+	}
+	if err := SyncCentralCache(ctx, cachePath, repo.URL, auth, refSpecs); err != nil {
+		telemetry.SyncFailuresTotal.WithLabelValues(repo.Name, "cache_sync").Inc()
+		result.Err = fmt.Errorf("syncing central cache: %w", err)
+		return result
+	}
+
 	activeBranchNames := make(map[string]string)
 	activeTagNames := make(map[string]string)
 	sanitizedToOriginal := make(map[string]string)
 
-	if err := s.syncOpenVoxBranches(ctx, resolverRepo, resolverPath, repo, opts, auth, matchedBranches, workers, activeBranchNames, sanitizedToOriginal, log, &result); err != nil {
+	if err := s.syncOpenVoxBranches(ctx, resolverRepo, cachePath, repo, opts, auth, matchedBranches, workers, activeBranchNames, sanitizedToOriginal, log, &result); err != nil {
 		return result
 	}
 
@@ -270,13 +276,11 @@ func (s *Syncer) syncRepoOpenVox(ctx context.Context, repo *config.RepoConfig, o
 
 	s.syncOpenVoxTags(ctx, repo, auth, matchedTags, workers, activeTagNames, sanitizedToOriginal, log, &result)
 
-	// Prune stale directories that no longer correspond to any matched ref.
 	if opts.Prune {
 		pruneOpenVoxDirs(ctx, repo.Name, repo.LocalPath, sanitizedToOriginal, opts.DryRun, &result)
 		cleanupOrphanOpenVoxLockFiles(repo.Name, repo.LocalPath, opts.DryRun)
 	}
 
-	// Prune directories whose latest commit is older than staleAge.
 	if opts.PruneStale {
 		pruneStaleOpenVoxDirs(ctx, repo, activeBranchNames, opts.StaleAge, opts.DryRun, defaultBranch, &result)
 		cleanupOrphanOpenVoxLockFiles(repo.Name, repo.LocalPath, opts.DryRun)
@@ -286,11 +290,11 @@ func (s *Syncer) syncRepoOpenVox(ctx context.Context, repo *config.RepoConfig, o
 	return result
 }
 
-func loadResolverRepoAndRefs(ctx context.Context, repoName, resolverPath, remoteURL string, auth transport.AuthMethod) (*git.Repository, []*plumbing.Reference, error) {
+func loadResolverRepoAndRefs(ctx context.Context, repoName, resolverPath, cachePath, remoteURL string, auth transport.AuthMethod) (*git.Repository, []*plumbing.Reference, error) {
 	releaseResolverLock := acquireResolverLock(resolverPath)
 	defer releaseResolverLock()
 
-	resolverRepo, err := ensureResolverRepo(ctx, resolverPath, remoteURL, auth)
+	resolverRepo, err := getRepoWithSharedCache(resolverPath, cachePath, remoteURL, auth)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -303,8 +307,93 @@ func loadResolverRepoAndRefs(ctx context.Context, repoName, resolverPath, remote
 	return resolverRepo, refs, nil
 }
 
+func getRepoWithSharedCache(repoPath, cachePath, remoteURL string, auth transport.AuthMethod) (*git.Repository, error) {
+	// Initialize Central Cache
+	_, err := git.PlainInit(cachePath, true)
+	if err != nil && !errors.Is(err, git.ErrRepositoryAlreadyExists) {
+		return nil, fmt.Errorf("init cache repo: %w", err)
+	}
+
+	// Try to open existing local ref repo
+	r, err := git.PlainOpen(repoPath)
+	if err == nil {
+		// Verify it's using the shared cache. If not, destroy and recreate to migrate.
+		altPath := filepath.Join(repoPath, ".git", "objects", "info", "alternates")
+		altContent, err := os.ReadFile(altPath)
+		expectedAlt := filepath.Join(cachePath, "objects")
+		if err != nil || strings.TrimSpace(string(altContent)) != expectedAlt {
+			slog.Info("Migrating legacy repository to shared cache", "repo", repoPath)
+			_ = os.RemoveAll(repoPath)
+		} else {
+			return r, nil
+		}
+	}
+
+	// Clone from cache
+	r, err = git.PlainClone(repoPath, false, &git.CloneOptions{
+		URL:    cachePath,
+		Auth:   auth,
+		Shared: true,
+	})
+	if err != nil {
+		// If clone failed, maybe because cache is empty.
+		// PlainClone might have left a partially created .git directory which breaks PlainInit.
+		_ = os.RemoveAll(filepath.Join(repoPath, ".git"))
+
+		r, err = git.PlainInit(repoPath, false)
+		if err != nil {
+			return nil, fmt.Errorf("init local repo: %w", err)
+		}
+
+		// Manually setup alternates for shared cache
+		altPath := filepath.Join(repoPath, ".git", "objects", "info", "alternates")
+		_ = os.MkdirAll(filepath.Dir(altPath), 0755)
+		_ = os.WriteFile(altPath, []byte(filepath.Join(cachePath, "objects")+"\n"), 0644)
+	}
+
+	// Ensure remote exists in local repo
+	_, err = r.CreateRemote(&gitconfig.RemoteConfig{
+		Name: RemoteOrigin,
+		URLs: []string{remoteURL},
+	})
+	if err != nil && !errors.Is(err, git.ErrRemoteExists) {
+		return nil, fmt.Errorf("creating remote: %w", err)
+	}
+
+	return r, nil
+}
+
+func SyncCentralCache(ctx context.Context, cachePath, remoteURL string, auth transport.AuthMethod, refSpecs []gitconfig.RefSpec) error {
+	r, err := git.PlainInit(cachePath, true)
+	if err != nil && !errors.Is(err, git.ErrRepositoryAlreadyExists) {
+		return fmt.Errorf("init cache repo: %w", err)
+	}
+	if err == git.ErrRepositoryAlreadyExists {
+		r, err = git.PlainOpen(cachePath)
+		if err != nil {
+			return fmt.Errorf("open cache repo: %w", err)
+		}
+	}
+
+	_, err = r.CreateRemote(&gitconfig.RemoteConfig{
+		Name: RemoteOrigin,
+		URLs: []string{remoteURL},
+	})
+	if err != nil && !errors.Is(err, git.ErrRemoteExists) {
+		return fmt.Errorf("creating remote: %w", err)
+	}
+
+	return r.FetchContext(ctx, &git.FetchOptions{
+		RemoteName: RemoteOrigin,
+		RefSpecs:   refSpecs,
+		Auth:       auth,
+		Tags:       git.NoTags,
+		Force:      true,
+	})
+}
+
 func listRemoteRefs(ctx context.Context, repo *git.Repository, auth transport.AuthMethod, repoName, mode string) ([]*plumbing.Reference, error) {
-	remote, err := repo.Remote("origin")
+	remote, err := repo.Remote(RemoteOrigin)
 	if err != nil {
 		return nil, fmt.Errorf("getting remote: %w", err)
 	}
@@ -524,7 +613,7 @@ func cleanupOrphanOpenVoxLockFilesInDir(repoName, basePath, scanPath, suffix str
 	}
 }
 
-func (s *Syncer) syncOpenVoxBranches(ctx context.Context, resolverRepo *git.Repository, resolverPath string, repo *config.RepoConfig, opts SyncOptions, auth transport.AuthMethod, branches []*plumbing.Reference, workers int, activeBranchNames map[string]string, sanitizedToOriginal map[string]string, log *slog.Logger, result *Result) error {
+func (s *Syncer) syncOpenVoxBranches(ctx context.Context, resolverRepo *git.Repository, cachePath string, repo *config.RepoConfig, opts SyncOptions, auth transport.AuthMethod, branches []*plumbing.Reference, workers int, activeBranchNames map[string]string, sanitizedToOriginal map[string]string, log *slog.Logger, result *Result) error {
 	if len(branches) == 0 {
 		return nil
 	}
@@ -543,7 +632,7 @@ func (s *Syncer) syncOpenVoxBranches(ctx context.Context, resolverRepo *git.Repo
 		activeBranchNames[SanitizeName(branch)] = branch
 	}
 
-	toSync := filterOpenVoxBranchesForSync(ctx, resolverRepo, resolverPath, repo, opts, auth, branches)
+	toSync := filterOpenVoxBranchesForSync(ctx, resolverRepo, cachePath, repo, opts, auth, branches)
 
 	var wg sync.WaitGroup
 	jobs := make(chan *plumbing.Reference, len(toSync))
@@ -579,7 +668,7 @@ func (s *Syncer) syncOpenVoxBranches(ctx context.Context, resolverRepo *git.Repo
 	return nil
 }
 
-func filterOpenVoxBranchesForSync(ctx context.Context, resolverRepo *git.Repository, resolverPath string, repo *config.RepoConfig, opts SyncOptions, auth transport.AuthMethod, branches []*plumbing.Reference) []*plumbing.Reference {
+func filterOpenVoxBranchesForSync(ctx context.Context, resolverRepo *git.Repository, cachePath string, repo *config.RepoConfig, opts SyncOptions, auth transport.AuthMethod, branches []*plumbing.Reference) []*plumbing.Reference {
 	if !opts.PruneStale || !opts.Prune {
 		return branches
 	}
@@ -600,17 +689,17 @@ func filterOpenVoxBranchesForSync(ctx context.Context, resolverRepo *git.Reposit
 		telemetry.OpenVoxStaleBranchesSkippedTotal.WithLabelValues(repo.Name).Inc()
 	}
 
-	nonStale = resolveUnresolvedBranchStaleness(ctx, resolverRepo, resolverPath, repo, opts, auth, unresolved, nonStale)
+	nonStale = resolveUnresolvedBranchStaleness(ctx, resolverRepo, cachePath, repo, opts, auth, unresolved, nonStale)
 	slog.Debug("staleness filter applied", "total", len(branches), "non_stale", len(nonStale), "unresolved", len(unresolved))
 	return nonStale
 }
 
-func resolveUnresolvedBranchStaleness(ctx context.Context, resolverRepo *git.Repository, resolverPath string, repo *config.RepoConfig, opts SyncOptions, auth transport.AuthMethod, unresolved, nonStale []*plumbing.Reference) []*plumbing.Reference {
+func resolveUnresolvedBranchStaleness(ctx context.Context, resolverRepo *git.Repository, cachePath string, repo *config.RepoConfig, opts SyncOptions, auth transport.AuthMethod, unresolved, nonStale []*plumbing.Reference) []*plumbing.Reference {
 	if len(unresolved) == 0 {
 		return nonStale
 	}
 
-	releaseResolverLock := acquireResolverLock(resolverPath)
+	releaseResolverLock := acquireResolverLock(cachePath)
 	cleanup, err := batchFetchForStaleness(ctx, resolverRepo, unresolved, auth)
 	if err != nil {
 		releaseResolverLock()
@@ -633,9 +722,6 @@ func resolveUnresolvedBranchStaleness(ctx context.Context, resolverRepo *git.Rep
 	return nonStale
 }
 
-// shouldSyncBranchLocalFirst returns whether a branch should be synced based on
-// local state first. If unresolved is true, caller should fallback to resolver
-// based stale checks.
 func shouldSyncBranchLocalFirst(basePath string, ref *plumbing.Reference, staleAge time.Duration) (shouldSync bool, unresolved bool) {
 	if staleAge <= 0 {
 		return true, false
@@ -712,6 +798,7 @@ func (s *Syncer) syncOneOpenVoxBranch(ctx context.Context, repo *config.RepoConf
 
 	dirName := SanitizeName(branch)
 	dirPath := filepath.Join(repo.LocalPath, dirName)
+	cachePath := filepath.Join(filepath.Dir(repo.LocalPath), metaDir, "cache.git")
 	releaseDirLock := acquireOpenVoxDirLock(dirPath)
 	defer releaseDirLock()
 
@@ -737,21 +824,21 @@ func (s *Syncer) syncOneOpenVoxBranch(ctx context.Context, repo *config.RepoConf
 	subCfg := *repo
 	subCfg.LocalPath = dirPath
 
-	updated, err := syncOpenVoxBranchOnce(ctx, &subCfg, branch, remoteHash, auth)
+	updated, err := syncOpenVoxBranchOnce(ctx, &subCfg, branch, remoteHash, auth, cachePath)
 	if isContextCancellationError(err) {
 		slog.Debug("skipping openvox branch sync due to shutdown", "branch", branch, "dir", dirName, "reason", "shutdown_cancelled", "error", err)
 		return
 	}
 	if err != nil && isRecoverableOpenVoxRepoError(err) {
 		slog.Warn("openvox branch encountered recoverable repository error, recreating and retrying", "branch", branch, "dir", dirName, "error", err)
-		if repairErr := recreateOpenVoxRepo(ctx, &subCfg, auth); repairErr != nil {
+		if repairErr := recreateOpenVoxRepo(ctx, &subCfg, auth, cachePath); repairErr != nil {
 			slog.Error("openvox branch repair failed", "branch", branch, "dir", dirName, "error", repairErr)
 			telemetry.SyncFailuresTotal.WithLabelValues(repo.Name, "branch_sync").Inc()
 			s.addBranchFailed(result, branch)
 			return
 		}
 
-		updated, err = syncOpenVoxBranchOnce(ctx, &subCfg, branch, remoteHash, auth)
+		updated, err = syncOpenVoxBranchOnce(ctx, &subCfg, branch, remoteHash, auth, cachePath)
 		if isContextCancellationError(err) {
 			slog.Debug("skipping openvox branch retry due to shutdown", "branch", branch, "dir", dirName, "reason", "shutdown_cancelled", "error", err)
 			return
@@ -772,12 +859,12 @@ func (s *Syncer) syncOneOpenVoxBranch(ctx context.Context, repo *config.RepoConf
 	s.addBranchSynced(result, branch)
 }
 
-func syncOpenVoxBranchOnce(ctx context.Context, subCfg *config.RepoConfig, branch string, remoteHash plumbing.Hash, auth transport.AuthMethod) (bool, error) {
+func syncOpenVoxBranchOnce(ctx context.Context, subCfg *config.RepoConfig, branch string, remoteHash plumbing.Hash, auth transport.AuthMethod, cachePath string) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, fmt.Errorf("branch sync cancelled %s: %w", branch, err)
 	}
 
-	r, err := ensureClonedOpenVox(ctx, subCfg, auth)
+	r, err := getRepoWithSharedCache(subCfg.LocalPath, cachePath, subCfg.URL, auth)
 	if err != nil {
 		return false, fmt.Errorf("clone/open repo: %w", err)
 	}
@@ -826,11 +913,11 @@ func finishOpenVoxBranchSync(ctx context.Context, r *git.Repository, branch stri
 	return updated, nil
 }
 
-func recreateOpenVoxRepo(ctx context.Context, subCfg *config.RepoConfig, auth transport.AuthMethod) error {
+func recreateOpenVoxRepo(ctx context.Context, subCfg *config.RepoConfig, auth transport.AuthMethod, cachePath string) error {
 	if err := os.RemoveAll(subCfg.LocalPath); err != nil {
 		return fmt.Errorf("removing repo path %s: %w", subCfg.LocalPath, err)
 	}
-	if _, err := ensureClonedOpenVox(ctx, subCfg, auth); err != nil {
+	if _, err := getRepoWithSharedCache(subCfg.LocalPath, cachePath, subCfg.URL, auth); err != nil {
 		return fmt.Errorf("recreating repo at %s: %w", subCfg.LocalPath, err)
 	}
 	return nil
@@ -896,6 +983,7 @@ func (s *Syncer) syncOneOpenVoxTag(ctx context.Context, repo *config.RepoConfig,
 
 	dirName := SanitizeName(tag)
 	dirPath := filepath.Join(repo.LocalPath, dirName)
+	cachePath := filepath.Join(filepath.Dir(repo.LocalPath), metaDir, "cache.git")
 	releaseDirLock := acquireOpenVoxDirLock(dirPath)
 	defer releaseDirLock()
 
@@ -921,14 +1009,14 @@ func (s *Syncer) syncOneOpenVoxTag(ctx context.Context, repo *config.RepoConfig,
 	subCfg := *repo
 	subCfg.LocalPath = dirPath
 
-	updated, err := syncOpenVoxTagOnce(ctx, &subCfg, tag, remoteHash, auth)
+	updated, err := syncOpenVoxTagOnce(ctx, &subCfg, tag, remoteHash, auth, cachePath)
 	if isContextCancellationError(err) {
 		log.Debug("skipping openvox tag sync due to shutdown", "tag", tag, "dir", dirName, "reason", "shutdown_cancelled", "error", err)
 		return
 	}
 	if err != nil && isRecoverableOpenVoxRepoError(err) {
 		log.Warn("openvox tag encountered recoverable repository error, recreating and retrying", "tag", tag, "dir", dirName, "error", err)
-		if repairErr := recreateOpenVoxRepo(ctx, &subCfg, auth); repairErr != nil {
+		if repairErr := recreateOpenVoxRepo(ctx, &subCfg, auth, cachePath); repairErr != nil {
 			log.Error("openvox tag repair failed", "tag", tag, "dir", dirName, "error", repairErr)
 			telemetry.SyncFailuresTotal.WithLabelValues(repo.Name, "tag_sync").Inc()
 			s.setErr(result, fmt.Errorf("tag sync %s: %w", tag, repairErr))
@@ -936,7 +1024,7 @@ func (s *Syncer) syncOneOpenVoxTag(ctx context.Context, repo *config.RepoConfig,
 			return
 		}
 
-		updated, err = syncOpenVoxTagOnce(ctx, &subCfg, tag, remoteHash, auth)
+		updated, err = syncOpenVoxTagOnce(ctx, &subCfg, tag, remoteHash, auth, cachePath)
 		if isContextCancellationError(err) {
 			log.Debug("skipping openvox tag retry due to shutdown", "tag", tag, "dir", dirName, "reason", "shutdown_cancelled", "error", err)
 			return
@@ -958,12 +1046,12 @@ func (s *Syncer) syncOneOpenVoxTag(ctx context.Context, repo *config.RepoConfig,
 	s.addTagFetched(result, tag)
 }
 
-func syncOpenVoxTagOnce(ctx context.Context, subCfg *config.RepoConfig, tag string, remoteHash plumbing.Hash, auth transport.AuthMethod) (bool, error) {
+func syncOpenVoxTagOnce(ctx context.Context, subCfg *config.RepoConfig, tag string, remoteHash plumbing.Hash, auth transport.AuthMethod, cachePath string) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, fmt.Errorf("tag sync cancelled %s: %w", tag, err)
 	}
 
-	r, err := ensureClonedOpenVox(ctx, subCfg, auth)
+	r, err := getRepoWithSharedCache(subCfg.LocalPath, cachePath, subCfg.URL, auth)
 	if err != nil {
 		return false, fmt.Errorf("clone/open repo: %w", err)
 	}
@@ -989,32 +1077,7 @@ func syncOpenVoxTagOnce(ctx context.Context, subCfg *config.RepoConfig, tag stri
 	return updated, nil
 }
 
-// ensureClonedOpenVox opens/initializes a per-ref OpenVox repo and self-heals
-// directories that exist but are not valid git repositories.
-func ensureClonedOpenVox(ctx context.Context, repo *config.RepoConfig, auth transport.AuthMethod) (*git.Repository, error) {
-	r, err := ensureCloned(ctx, repo, auth)
-	if err == nil {
-		return r, nil
-	}
-
-	if !errors.Is(err, git.ErrRepositoryNotExists) {
-		return nil, err
-	}
-
-	slog.Warn("openvox directory is not a git repo, recreating", "path", repo.LocalPath)
-	if err := os.RemoveAll(repo.LocalPath); err != nil {
-		return nil, fmt.Errorf("removing non-repo path %s: %w", repo.LocalPath, err)
-	}
-
-	r, err = ensureCloned(ctx, repo, auth)
-	if err != nil {
-		return nil, fmt.Errorf("recreating repo at %s: %w", repo.LocalPath, err)
-	}
-
-	return r, nil
-}
-
-func (*Syncer) recordOpenVoxMetrics(repo *config.RepoConfig, start time.Time, result *Result) {
+func (s *Syncer) recordOpenVoxMetrics(repo *config.RepoConfig, start time.Time, result *Result) {
 	duration := time.Since(start)
 	telemetry.SyncDurationSeconds.WithLabelValues(repo.Name, "total").Observe(duration.Seconds())
 
@@ -1056,34 +1119,10 @@ func protectProductionAlias(sanitizedToOriginal map[string]string) {
 	}
 }
 
-// ensureResolverRepo opens or creates a bare repo used only for listing remote refs.
-func ensureResolverRepo(_ context.Context, path, remoteURL string, _ transport.AuthMethod) (*git.Repository, error) {
-	if _, err := os.Stat(path); err == nil {
-		return git.PlainOpen(path)
-	}
-
-	r, err := git.PlainInit(path, true)
-	if err != nil {
-		return nil, fmt.Errorf("init resolver repo at %s: %w", path, err)
-	}
-
-	_, err = r.CreateRemote(&gitconfig.RemoteConfig{
-		Name: "origin",
-		URLs: []string{remoteURL},
-	})
-	if err != nil {
-		return nil, fmt.Errorf("creating remote in resolver repo: %w", err)
-	}
-
-	return r, nil
-}
-
-// syncOpenVoxTag fetches a single tag into a per-directory repo and checks it out.
-// Returns true if the tag was updated, false if already up-to-date.
 func syncOpenVoxTag(ctx context.Context, r *git.Repository, tag string, auth transport.AuthMethod) (bool, error) {
 	refSpec := gitconfig.RefSpec(fmt.Sprintf("+refs/tags/%s:refs/tags/%s", tag, tag))
 	err := r.FetchContext(ctx, &git.FetchOptions{
-		RemoteName: "origin",
+		RemoteName: RemoteOrigin,
 		RefSpecs:   []gitconfig.RefSpec{refSpec},
 		Auth:       auth,
 		Tags:       git.NoTags,
@@ -1102,8 +1141,6 @@ func syncOpenVoxTag(ctx context.Context, r *git.Repository, tag string, auth tra
 	return updated, nil
 }
 
-// detectCollisions checks if any names collide after sanitization and adds them to the map.
-// Returns a descriptive error string if a collision is found, empty string otherwise.
 func detectCollisions(names []string, sanitizedToOriginal map[string]string) string {
 	for _, name := range names {
 		sanitized := SanitizeName(name)
@@ -1115,8 +1152,6 @@ func detectCollisions(names []string, sanitizedToOriginal map[string]string) str
 	return ""
 }
 
-// pruneStaleOpenVoxDirs removes per-branch directories whose tip commit is older than staleAge.
-// The remote's default branch is protected from stale pruning.
 func pruneStaleOpenVoxDirs(ctx context.Context, repo *config.RepoConfig, activeNames map[string]string, staleAge time.Duration, dryRun bool, defaultBranch string, result *Result) {
 	if staleAge == 0 {
 		return
