@@ -221,6 +221,7 @@ func SanitizeName(name string) string {
 func (s *Syncer) syncRepoOpenVox(ctx context.Context, repo *config.RepoConfig, opts SyncOptions) Result {
 	start := time.Now()
 	result := Result{RepoName: repo.Name}
+	defer s.recordOpenVoxMetrics(repo, start, &result)
 	log := slog.With("repo", repo.Name, "mode", "openvox")
 
 	auth, err := resolveAuth(repo)
@@ -287,7 +288,6 @@ func (s *Syncer) syncRepoOpenVox(ctx context.Context, repo *config.RepoConfig, o
 		cleanupOrphanOpenVoxLockFiles(repo.Name, repo.LocalPath, opts.DryRun)
 	}
 
-	s.recordOpenVoxMetrics(repo, start, &result)
 	return result
 }
 
@@ -789,6 +789,11 @@ func isTagUpToDateLocal(repo *git.Repository, tag string, remoteHash plumbing.Ha
 }
 
 func (s *Syncer) syncOneOpenVoxBranch(ctx context.Context, repo *config.RepoConfig, ref *plumbing.Reference, auth transport.AuthMethod, result *Result) {
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("syncOneOpenVoxBranch panicked", "panic", r)
+		}
+	}()
 	branch := ref.Name().Short()
 	remoteHash := ref.Hash()
 	if err := ctx.Err(); err != nil {
@@ -974,6 +979,11 @@ func (s *Syncer) syncOpenVoxTags(ctx context.Context, repo *config.RepoConfig, a
 }
 
 func (s *Syncer) syncOneOpenVoxTag(ctx context.Context, repo *config.RepoConfig, tagRef *plumbing.Reference, auth transport.AuthMethod, log *slog.Logger, result *Result) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Error("syncOneOpenVoxTag panicked", "panic", r)
+		}
+	}()
 	tag := tagRef.Name().Short()
 	remoteHash := tagRef.Hash()
 	if err := ctx.Err(); err != nil {
