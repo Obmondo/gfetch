@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	branchMain = "main"
+	branchMain    = "main"
 	testRepoName  = "test"
 	testLocalPath = "/tmp/test"
 	testRepoURL   = "git@github.com:test/repo.git"

@@ -471,9 +471,9 @@ func TestPruneStaleOpenVoxDirs(t *testing.T) {
 	initOpenVoxBranchRepo(t, basePath, "fresh-feature", now)
 
 	activeNames := map[string]string{
-		testDefaultBranch:          testDefaultBranch,
-		"stale_feature": "stale-feature",
-		"fresh_feature": "fresh-feature",
+		testDefaultBranch: testDefaultBranch,
+		"stale_feature":   "stale-feature",
+		"fresh_feature":   "fresh-feature",
 	}
 
 	repo := &config.RepoConfig{

@@ -257,10 +257,36 @@ func (s *Syncer) syncRepoOpenVox(ctx context.Context, repo *config.RepoConfig, o
 		tag := ref.Name().Short()
 		refSpecs = append(refSpecs, gitconfig.RefSpec(fmt.Sprintf("+refs/tags/%s:refs/tags/%s", tag, tag)))
 	}
-	if err := SyncCentralCache(ctx, cachePath, repo.URL, auth, refSpecs); err != nil {
-		telemetry.SyncFailuresTotal.WithLabelValues(repo.Name, "cache_sync").Inc()
-		result.Err = fmt.Errorf("syncing central cache: %w", err)
-		return result
+	err = SyncCentralCache(ctx, cachePath, repo.URL, auth, refSpecs)
+	if err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) {
+		if !strings.Contains(err.Error(), "couldn't find remote ref") {
+			telemetry.SyncFailuresTotal.WithLabelValues(repo.Name, "cache_sync").Inc()
+			result.Err = fmt.Errorf("syncing central cache: %w", err)
+			return result
+		}
+
+		slog.Warn("cache sync failed due to missing ref, retrying with refreshed ref list", "repo", repo.Name, "error", err)
+		resolverRepo, refs, err = loadResolverRepoAndRefs(ctx, repo.Name, resolverPath, cachePath, repo.URL, auth)
+		if err != nil {
+			telemetry.SyncFailuresTotal.WithLabelValues(repo.Name, "clone").Inc()
+			result.Err = fmt.Errorf("resolver repo refresh: %w", err)
+			return result
+		}
+		_, _, matchedBranches, matchedTags = extractRemoteRefState(refs, repo.Branches, repo.Tags)
+		refSpecs = make([]gitconfig.RefSpec, 0, len(matchedBranches)+len(matchedTags))
+		for _, ref := range matchedBranches {
+			branch := ref.Name().Short()
+			refSpecs = append(refSpecs, gitconfig.RefSpec(fmt.Sprintf("+refs/heads/%s:refs/heads/%s", branch, branch)))
+		}
+		for _, ref := range matchedTags {
+			tag := ref.Name().Short()
+			refSpecs = append(refSpecs, gitconfig.RefSpec(fmt.Sprintf("+refs/tags/%s:refs/tags/%s", tag, tag)))
+		}
+		if err := SyncCentralCache(ctx, cachePath, repo.URL, auth, refSpecs); err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) {
+			telemetry.SyncFailuresTotal.WithLabelValues(repo.Name, "cache_sync").Inc()
+			result.Err = fmt.Errorf("syncing central cache (retry): %w", err)
+			return result
+		}
 	}
 
 	activeBranchNames := make(map[string]string)
@@ -383,13 +409,18 @@ func SyncCentralCache(ctx context.Context, cachePath, remoteURL string, auth tra
 		return fmt.Errorf("creating remote: %w", err)
 	}
 
-	return r.FetchContext(ctx, &git.FetchOptions{
+	err = r.FetchContext(ctx, &git.FetchOptions{
 		RemoteName: RemoteOrigin,
 		RefSpecs:   refSpecs,
 		Auth:       auth,
 		Tags:       git.NoTags,
 		Force:      true,
 	})
+	if err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) {
+		return fmt.Errorf("fetching refs: %w", err)
+	}
+
+	return nil
 }
 
 func listRemoteRefs(ctx context.Context, repo *git.Repository, auth transport.AuthMethod, repoName, mode string) ([]*plumbing.Reference, error) {
