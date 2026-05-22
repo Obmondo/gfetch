@@ -284,7 +284,7 @@ func logSyncSuccess(ctx context.Context, result Result, duration time.Duration) 
 		level = slog.LevelWarn
 	}
 
-	attrs := []any{"duration", duration.Round(time.Millisecond)}
+	attrs := []any{"repo", result.RepoName, "duration", duration.Round(time.Millisecond)}
 	if numErrors > 0 {
 		attrs = append(attrs, "errors", numErrors)
 	}

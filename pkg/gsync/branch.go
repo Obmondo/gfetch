@@ -22,7 +22,7 @@ func isContextCancellationError(err error) bool {
 // Returns true if the branch was updated, false if already up-to-date.
 func syncBranch(ctx context.Context, repo *git.Repository, branch, _ string, auth transport.AuthMethod, repoName string) (bool, error) {
 	start := time.Now()
-	remoteName := "origin"
+	remoteName := RemoteOrigin
 	refSpec := fmt.Sprintf("+refs/heads/%s:refs/remotes/%s/%s", branch, remoteName, branch)
 
 	err := repo.FetchContext(ctx, &git.FetchOptions{

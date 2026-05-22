@@ -31,7 +31,7 @@ func checkStaleness(ctx context.Context, repo *git.Repository, ref *plumbing.Ref
 	refSpec := fmt.Sprintf("+%s:%s", refName, tmpRef)
 
 	err = repo.FetchContext(ctx, &git.FetchOptions{
-		RemoteName: "origin",
+		RemoteName: RemoteOrigin,
 		RefSpecs:   []gitconfig.RefSpec{gitconfig.RefSpec(refSpec)},
 		Depth:      1,
 		Auth:       auth,
@@ -87,7 +87,7 @@ func batchFetchForStaleness(ctx context.Context, repo *git.Repository, refs []*p
 	}
 
 	err = repo.FetchContext(ctx, &git.FetchOptions{
-		RemoteName: "origin",
+		RemoteName: RemoteOrigin,
 		RefSpecs:   refSpecs,
 		Depth:      1,
 		Auth:       auth,

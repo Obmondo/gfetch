@@ -19,7 +19,7 @@ import (
 
 func TestMatchesAnyPattern(t *testing.T) {
 	patterns := []config.Pattern{
-		{Raw: "v1.0.0"},
+		{Raw: DefaultTag},
 		{Raw: "/^v[0-9]+\\./"},
 	}
 	// Compile regex patterns.
@@ -33,7 +33,7 @@ func TestMatchesAnyPattern(t *testing.T) {
 		name   string
 		expect bool
 	}{
-		{"v1.0.0", true},
+		{DefaultTag, true},
 		{"v2.3.4", true},
 		{"release-1.0", false},
 		{"v0.1-beta", true},
@@ -47,7 +47,7 @@ func TestMatchesAnyPattern(t *testing.T) {
 
 func TestMatchesAnyPattern_Branches(t *testing.T) {
 	patterns := []config.Pattern{
-		{Raw: "main"},
+		{Raw: testDefaultBranch},
 		{Raw: "/^release-.*/"},
 	}
 	for i := range patterns {
@@ -60,10 +60,10 @@ func TestMatchesAnyPattern_Branches(t *testing.T) {
 		name   string
 		expect bool
 	}{
-		{"main", true},
+		{testDefaultBranch, true},
 		{"release-1.0", true},
 		{"release-2.0-beta", true},
-		{"develop", false},
+		{DevelopBranch, false},
 		{"main2", false},
 	}
 	for _, tt := range tests {
@@ -103,7 +103,7 @@ func initBareAndClone(t *testing.T, bareDir, localDir string, extraBranches []st
 			t.Fatal(err)
 		}
 		_, err = clone.CreateRemote(&gitconfig.RemoteConfig{
-			Name: "origin",
+			Name: RemoteOrigin,
 			URLs: []string{bareDir},
 		})
 		if err != nil {
@@ -125,7 +125,7 @@ func initBareAndClone(t *testing.T, bareDir, localDir string, extraBranches []st
 		t.Fatal(err)
 	}
 	commitHash, err := wt.Commit("initial commit", &git.CommitOptions{
-		Author: &object.Signature{Name: "test", Email: "test@test.com", When: time.Now()},
+		Author: &object.Signature{Name: DefaultTestName, Email: DefaultTestEmail, When: time.Now()},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -156,7 +156,7 @@ func initBareAndClone(t *testing.T, bareDir, localDir string, extraBranches []st
 		if err := local.Fetch(&git.FetchOptions{RefSpecs: []gitconfig.RefSpec{refSpec}}); err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) {
 			t.Fatal(err)
 		}
-		remoteRef, err := local.Reference(plumbing.NewRemoteReferenceName("origin", branch), true)
+		remoteRef, err := local.Reference(plumbing.NewRemoteReferenceName(RemoteOrigin, branch), true)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -174,11 +174,11 @@ func TestCheckoutBranchNotPruned(t *testing.T) {
 	localDir := filepath.Join(t.TempDir(), "local")
 
 	// Create a repo with main + obsolete-branch + checkout-branch.
-	// Configure patterns to only match "main", making the others obsolete.
+	// Configure patterns to only match testDefaultBranch, making the others obsolete.
 	// Set checkout to "checkout-branch" — it should survive pruning.
 	repo := initBareAndClone(t, bareDir, localDir, []string{"obsolete-branch", "checkout-branch"})
 
-	patterns := []config.Pattern{{Raw: "main"}}
+	patterns := []config.Pattern{{Raw: testDefaultBranch}}
 	for i := range patterns {
 		if err := patterns[i].Compile(); err != nil {
 			t.Fatal(err)
@@ -237,10 +237,10 @@ func TestCheckoutRef(t *testing.T) {
 	bareDir := filepath.Join(t.TempDir(), "bare.git")
 	localDir := filepath.Join(t.TempDir(), "local")
 
-	repo := initBareAndClone(t, bareDir, localDir, []string{"develop"})
+	repo := initBareAndClone(t, bareDir, localDir, []string{DevelopBranch})
 
 	// Checkout develop branch.
-	if err := checkoutRef(repo, "develop"); err != nil {
+	if err := checkoutRef(repo, DevelopBranch); err != nil {
 		t.Fatalf("checkoutRef(develop) failed: %v", err)
 	}
 
@@ -249,7 +249,7 @@ func TestCheckoutRef(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if head.Name() != plumbing.NewBranchReferenceName("develop") {
+	if head.Name() != plumbing.NewBranchReferenceName(DevelopBranch) {
 		t.Errorf("HEAD = %s, want refs/heads/develop", head.Name())
 	}
 }
@@ -264,7 +264,7 @@ func TestSyncHTTPS_Example(t *testing.T) {
 	repoConfig := &config.RepoConfig{
 		RepoDefaults: config.RepoDefaults{
 			LocalPath: localDir,
-			Branches:  []config.Pattern{{Raw: "main"}},
+			Branches:  []config.Pattern{{Raw: testDefaultBranch}},
 		},
 		Name: "linuxaid-config-template",
 		URL:  "https://github.com/Obmondo/linuxaid-config-template.git",
@@ -296,7 +296,7 @@ func TestPruneStaleBranches(t *testing.T) {
 
 	// Create a commit in the past (e.g., 1 year ago).
 	past := time.Now().Add(-365 * 24 * time.Hour)
-	signature := &object.Signature{Name: "test", Email: "test@test.com", When: past}
+	signature := &object.Signature{Name: DefaultTestName, Email: DefaultTestEmail, When: past}
 
 	tmpClone := t.TempDir()
 	clone, err := git.PlainClone(tmpClone, false, &git.CloneOptions{URL: bareDir})
@@ -305,7 +305,7 @@ func TestPruneStaleBranches(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, err = clone.CreateRemote(&gitconfig.RemoteConfig{Name: "origin", URLs: []string{bareDir}})
+		_, err = clone.CreateRemote(&gitconfig.RemoteConfig{Name: RemoteOrigin, URLs: []string{bareDir}})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -341,7 +341,7 @@ func TestPruneStaleBranches(t *testing.T) {
 	if _, err := wt.Add("file"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := wt.Commit("fresh commit", &git.CommitOptions{Author: &object.Signature{Name: "test", Email: "test@test.com", When: time.Now()}}); err != nil {
+	if _, err := wt.Commit("fresh commit", &git.CommitOptions{Author: &object.Signature{Name: DefaultTestName, Email: DefaultTestEmail, When: time.Now()}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := clone.Push(&git.PushOptions{}); err != nil {
@@ -377,7 +377,7 @@ func TestPruneStaleBranches(t *testing.T) {
 			PruneStale: &pruneStaleTrue,
 			StaleAge:   config.Duration(180 * 24 * time.Hour),
 		},
-		Name: "test",
+		Name: DefaultTestName,
 		URL:  bareDir,
 	}
 
@@ -425,7 +425,7 @@ func TestSyncSkippingStaleBranches(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = r.CreateRemote(&gitconfig.RemoteConfig{
-		Name: "origin",
+		Name: RemoteOrigin,
 		URLs: []string{bareDir},
 	})
 	if err != nil {
@@ -465,7 +465,7 @@ func TestSyncSkippingStaleBranches(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := r.Push(&git.PushOptions{RemoteName: "origin", RefSpecs: []gitconfig.RefSpec{"refs/heads/stale-branch:refs/heads/stale-branch"}}); err != nil {
+	if err := r.Push(&git.PushOptions{RemoteName: RemoteOrigin, RefSpecs: []gitconfig.RefSpec{"refs/heads/stale-branch:refs/heads/stale-branch"}}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -484,7 +484,7 @@ func TestSyncSkippingStaleBranches(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := r.Push(&git.PushOptions{RemoteName: "origin", RefSpecs: []gitconfig.RefSpec{"refs/heads/fresh-branch:refs/heads/fresh-branch"}}); err != nil {
+	if err := r.Push(&git.PushOptions{RemoteName: RemoteOrigin, RefSpecs: []gitconfig.RefSpec{"refs/heads/fresh-branch:refs/heads/fresh-branch"}}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -564,7 +564,7 @@ func TestPruneFalseOverridesDefault(t *testing.T) {
 			Branches:   []config.Pattern{{Raw: "master"}}, // extra-branch does not match
 			Prune:      &pruneFalse,
 		},
-		Name: "test",
+		Name: DefaultTestName,
 		URL:  bareDir,
 	}
 
@@ -609,7 +609,7 @@ func TestPruneTrueFromConfigIsApplied(t *testing.T) {
 			Branches:   []config.Pattern{{Raw: "master"}}, // extra-branch does not match
 			Prune:      &pruneTrue,
 		},
-		Name: "test",
+		Name: DefaultTestName,
 		URL:  bareDir,
 	}
 

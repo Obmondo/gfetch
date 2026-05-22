@@ -12,7 +12,12 @@ import (
 	"github.com/obmondo/gfetch/pkg/telemetry"
 )
 
-const branchMain = "main"
+const (
+	branchMain = "main"
+	testRepoName  = "test"
+	testLocalPath = "/tmp/test"
+	testRepoURL   = "git@github.com:test/repo.git"
+)
 
 func TestPattern_IsRegex(t *testing.T) {
 	tests := []struct {
@@ -191,15 +196,15 @@ func TestValidate_PollIntervalTooLow(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cfg := &Config{Repos: map[string]RepoConfig{"test": {
+	cfg := &Config{Repos: map[string]RepoConfig{testRepoName: {
 		RepoDefaults: RepoDefaults{
 			SSHKeyPath:   keyFile,
-			LocalPath:    "/tmp/test",
+			LocalPath:    testLocalPath,
 			PollInterval: Duration(5 * time.Second),
 			Branches:     []Pattern{{Raw: branchMain}},
 		},
-		Name: "test",
-		URL:  "git@github.com:test/repo.git",
+		Name: testRepoName,
+		URL:  testRepoURL,
 	}}}
 	err := cfg.Validate()
 	if err == nil {
@@ -210,7 +215,7 @@ func TestValidate_PollIntervalTooLow(t *testing.T) {
 func TestValidate_HTTPSPublicRepo(t *testing.T) {
 	cfg := &Config{Repos: map[string]RepoConfig{"public-repo": {
 		RepoDefaults: RepoDefaults{
-			LocalPath:    "/tmp/test",
+			LocalPath:    testLocalPath,
 			PollInterval: Duration(30 * time.Second),
 			Branches:     []Pattern{{Raw: branchMain}},
 		},
@@ -468,8 +473,8 @@ func TestApplyDefaults(t *testing.T) {
 	}
 
 	repo := &RepoConfig{
-		Name: "test",
-		URL:  "git@github.com:test/repo.git",
+		Name: testRepoName,
+		URL:  testRepoURL,
 	}
 	applyDefaults(repo, defaults)
 
@@ -494,16 +499,16 @@ func TestValidate_ProductionAliasRequiresOpenVox(t *testing.T) {
 	}
 
 	productionAlias := true
-	cfg := &Config{Repos: map[string]RepoConfig{"test": {
+	cfg := &Config{Repos: map[string]RepoConfig{testRepoName: {
 		RepoDefaults: RepoDefaults{
 			SSHKeyPath:      keyFile,
-			LocalPath:       "/tmp/test",
+			LocalPath:       testLocalPath,
 			PollInterval:    Duration(30 * time.Second),
 			Branches:        []Pattern{{Raw: branchMain}},
 			ProductionAlias: &productionAlias,
 		},
-		Name: "test",
-		URL:  "git@github.com:test/repo.git",
+		Name: testRepoName,
+		URL:  testRepoURL,
 	}}}
 
 	err := cfg.Validate()
@@ -520,17 +525,17 @@ func TestValidate_OpenVoxMaxWorkers(t *testing.T) {
 
 	openvox := true
 	workers := 9
-	cfg := &Config{Repos: map[string]RepoConfig{"test": {
+	cfg := &Config{Repos: map[string]RepoConfig{testRepoName: {
 		RepoDefaults: RepoDefaults{
 			SSHKeyPath:        keyFile,
-			LocalPath:         "/tmp/test",
+			LocalPath:         testLocalPath,
 			PollInterval:      Duration(30 * time.Second),
 			Branches:          []Pattern{{Raw: branchMain}},
 			OpenVox:           &openvox,
 			OpenVoxMaxWorkers: &workers,
 		},
-		Name: "test",
-		URL:  "git@github.com:test/repo.git",
+		Name: testRepoName,
+		URL:  testRepoURL,
 	}}}
 
 	if err := cfg.Validate(); err != nil {
@@ -545,16 +550,16 @@ func TestValidate_OpenVoxMaxWorkersRequiresOpenVox(t *testing.T) {
 	}
 
 	workers := 9
-	cfg := &Config{Repos: map[string]RepoConfig{"test": {
+	cfg := &Config{Repos: map[string]RepoConfig{testRepoName: {
 		RepoDefaults: RepoDefaults{
 			SSHKeyPath:        keyFile,
-			LocalPath:         "/tmp/test",
+			LocalPath:         testLocalPath,
 			PollInterval:      Duration(30 * time.Second),
 			Branches:          []Pattern{{Raw: branchMain}},
 			OpenVoxMaxWorkers: &workers,
 		},
-		Name: "test",
-		URL:  "git@github.com:test/repo.git",
+		Name: testRepoName,
+		URL:  testRepoURL,
 	}}}
 
 	err := cfg.Validate()
@@ -571,17 +576,17 @@ func TestValidate_OpenVoxMaxWorkersRange(t *testing.T) {
 
 	openvox := true
 	workers := 0
-	cfg := &Config{Repos: map[string]RepoConfig{"test": {
+	cfg := &Config{Repos: map[string]RepoConfig{testRepoName: {
 		RepoDefaults: RepoDefaults{
 			SSHKeyPath:        keyFile,
-			LocalPath:         "/tmp/test",
+			LocalPath:         testLocalPath,
 			PollInterval:      Duration(30 * time.Second),
 			Branches:          []Pattern{{Raw: branchMain}},
 			OpenVox:           &openvox,
 			OpenVoxMaxWorkers: &workers,
 		},
-		Name: "test",
-		URL:  "git@github.com:test/repo.git",
+		Name: testRepoName,
+		URL:  testRepoURL,
 	}}}
 
 	err := cfg.Validate()
@@ -642,8 +647,8 @@ func TestApplyDefaults_PruneBoolOverride(t *testing.T) {
 				PruneStale:   tt.defaultStale,
 			}
 			repo := &RepoConfig{
-				Name: "test",
-				URL:  "git@github.com:test/repo.git",
+				Name: testRepoName,
+				URL:  testRepoURL,
 				RepoDefaults: RepoDefaults{
 					Prune:      tt.repoPrune,
 					PruneStale: tt.repoStale,

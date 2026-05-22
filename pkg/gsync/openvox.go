@@ -26,6 +26,7 @@ const (
 	locksDirName        = "locks"
 	productionAliasName = "production"
 	defaultDirMode      = 0755
+	defaultFileMode     = 0644
 	defaultLockFileMode = os.FileMode(0o600)
 	defaultMaxWorkers   = 5
 	lockPollDelay       = 100 * time.Millisecond
@@ -321,12 +322,11 @@ func getRepoWithSharedCache(repoPath, cachePath, remoteURL string, auth transpor
 		altPath := filepath.Join(repoPath, ".git", "objects", "info", "alternates")
 		altContent, err := os.ReadFile(altPath)
 		expectedAlt := filepath.Join(cachePath, "objects")
-		if err != nil || strings.TrimSpace(string(altContent)) != expectedAlt {
-			slog.Info("Migrating legacy repository to shared cache", "repo", repoPath)
-			_ = os.RemoveAll(repoPath)
-		} else {
+		if err == nil && strings.TrimSpace(string(altContent)) == expectedAlt {
 			return r, nil
 		}
+		slog.Info("Migrating legacy repository to shared cache", "repo", repoPath)
+		_ = os.RemoveAll(repoPath)
 	}
 
 	// Clone from cache
@@ -347,8 +347,8 @@ func getRepoWithSharedCache(repoPath, cachePath, remoteURL string, auth transpor
 
 		// Manually setup alternates for shared cache
 		altPath := filepath.Join(repoPath, ".git", "objects", "info", "alternates")
-		_ = os.MkdirAll(filepath.Dir(altPath), 0755)
-		_ = os.WriteFile(altPath, []byte(filepath.Join(cachePath, "objects")+"\n"), 0644)
+		_ = os.MkdirAll(filepath.Dir(altPath), defaultDirMode)
+		_ = os.WriteFile(altPath, []byte(filepath.Join(cachePath, "objects")+"\n"), defaultFileMode)
 	}
 
 	// Ensure remote exists in local repo
@@ -368,7 +368,7 @@ func SyncCentralCache(ctx context.Context, cachePath, remoteURL string, auth tra
 	if err != nil && !errors.Is(err, git.ErrRepositoryAlreadyExists) {
 		return fmt.Errorf("init cache repo: %w", err)
 	}
-	if err == git.ErrRepositoryAlreadyExists {
+	if errors.Is(err, git.ErrRepositoryAlreadyExists) {
 		r, err = git.PlainOpen(cachePath)
 		if err != nil {
 			return fmt.Errorf("open cache repo: %w", err)
@@ -913,7 +913,7 @@ func finishOpenVoxBranchSync(ctx context.Context, r *git.Repository, branch stri
 	return updated, nil
 }
 
-func recreateOpenVoxRepo(ctx context.Context, subCfg *config.RepoConfig, auth transport.AuthMethod, cachePath string) error {
+func recreateOpenVoxRepo(_ context.Context, subCfg *config.RepoConfig, auth transport.AuthMethod, cachePath string) error {
 	if err := os.RemoveAll(subCfg.LocalPath); err != nil {
 		return fmt.Errorf("removing repo path %s: %w", subCfg.LocalPath, err)
 	}
@@ -1077,13 +1077,13 @@ func syncOpenVoxTagOnce(ctx context.Context, subCfg *config.RepoConfig, tag stri
 	return updated, nil
 }
 
-func (s *Syncer) recordOpenVoxMetrics(repo *config.RepoConfig, start time.Time, result *Result) {
+func (*Syncer) recordOpenVoxMetrics(repo *config.RepoConfig, start time.Time, result *Result) {
 	duration := time.Since(start)
 	telemetry.SyncDurationSeconds.WithLabelValues(repo.Name, "total").Observe(duration.Seconds())
 
 	if result.Err != nil {
 		telemetry.LastFailureTimestamp.WithLabelValues(repo.Name).Set(float64(time.Now().Unix()))
-		slog.Error("openvox sync failed", "error", result.Err, "duration", duration)
+		slog.Error("openvox sync failed", "repo", repo.Name, "error", result.Err, "duration", duration)
 		return
 	}
 
