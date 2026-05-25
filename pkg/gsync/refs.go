@@ -89,7 +89,6 @@ func batchFetchForStaleness(ctx context.Context, repo *git.Repository, refs []*p
 	err = repo.FetchContext(ctx, &git.FetchOptions{
 		RemoteName: RemoteOrigin,
 		RefSpecs:   refSpecs,
-		Depth:      1,
 		Auth:       auth,
 		Tags:       git.NoTags,
 	})
