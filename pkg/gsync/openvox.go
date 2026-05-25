@@ -247,7 +247,9 @@ func (s *Syncer) syncRepoOpenVox(ctx context.Context, repo *config.RepoConfig, o
 
 	defaultBranch, remoteBranches, matchedBranches, matchedTags := extractRemoteRefState(refs, repo.Branches, repo.Tags)
 	workers := openVoxWorkerCount(repo)
-	
+
+	telemetry.RemoteRefsCount.WithLabelValues(repo.Name).Set(float64(len(matchedBranches) + len(matchedTags)))
+
 	activeBranchNames := make(map[string]string)
 	activeTagNames := make(map[string]string)
 	sanitizedToOriginal := make(map[string]string)
@@ -279,34 +281,11 @@ func (s *Syncer) syncRepoOpenVox(ctx context.Context, repo *config.RepoConfig, o
 	// Apply staleness filter *before* requesting fetch from central cache
 	matchedBranches = filterOpenVoxBranchesForSync(ctx, resolverRepo, cachePath, repo, opts, auth, matchedBranches, defaultBranch)
 
-	// Filter matches against existing refs to avoid "couldn't find remote ref"
-	existingRefs := make(map[string]bool)
-	for _, ref := range refs {
-		existingRefs[ref.Name().String()] = true
-	}
+	telemetry.LocalActiveRefsCount.WithLabelValues(repo.Name).Set(float64(len(matchedBranches) + len(matchedTags)))
 
-	refSpecs := make([]gitconfig.RefSpec, 0, len(matchedBranches)+len(matchedTags))
-	for _, ref := range matchedBranches {
-		if !existingRefs[ref.Name().String()] {
-			slog.Warn("skipping missing remote branch", "repo", repo.Name, "branch", ref.Name().Short())
-			continue
-		}
-		branch := ref.Name().Short()
-		refSpecs = append(refSpecs, gitconfig.RefSpec(fmt.Sprintf("+refs/heads/%s:refs/heads/%s", branch, branch)))
-	}
-	for _, ref := range matchedTags {
-		if !existingRefs[ref.Name().String()] {
-			slog.Warn("skipping missing remote tag", "repo", repo.Name, "tag", ref.Name().Short())
-			continue
-		}
-		tag := ref.Name().Short()
-		refSpecs = append(refSpecs, gitconfig.RefSpec(fmt.Sprintf("+refs/tags/%s:refs/tags/%s", tag, tag)))
-	}
+	refSpecs := s.prepareRefSpecs(repo, refs, matchedBranches, matchedTags)
 
-	err = SyncCentralCache(ctx, cachePath, repo.URL, auth, refSpecs)
-	if err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) {
-		telemetry.SyncFailuresTotal.WithLabelValues(repo.Name, "cache_sync").Inc()
-		result.Err = fmt.Errorf("syncing central cache: %w", err)
+	if err := s.syncCache(ctx, cachePath, repo, auth, refSpecs, &result); err != nil {
 		return result
 	}
 
@@ -332,6 +311,66 @@ func (s *Syncer) syncRepoOpenVox(ctx context.Context, repo *config.RepoConfig, o
 	}
 
 	return result
+}
+
+func (*Syncer) prepareRefSpecs(repo *config.RepoConfig, refs []*plumbing.Reference, matchedBranches, matchedTags []*plumbing.Reference) []gitconfig.RefSpec {
+	existingRefs := make(map[string]bool)
+	for _, ref := range refs {
+		existingRefs[ref.Name().String()] = true
+	}
+
+	refSpecs := make([]gitconfig.RefSpec, 0, len(matchedBranches)+len(matchedTags))
+	for _, ref := range matchedBranches {
+		if !existingRefs[ref.Name().String()] {
+			slog.Warn("skipping missing remote branch", "repo", repo.Name, "branch", ref.Name().Short())
+			continue
+		}
+		branch := ref.Name().Short()
+		refSpecs = append(refSpecs, gitconfig.RefSpec(fmt.Sprintf("+refs/heads/%s:refs/heads/%s", branch, branch)))
+	}
+	for _, ref := range matchedTags {
+		if !existingRefs[ref.Name().String()] {
+			slog.Warn("skipping missing remote tag", "repo", repo.Name, "tag", ref.Name().Short())
+			continue
+		}
+		tag := ref.Name().Short()
+		refSpecs = append(refSpecs, gitconfig.RefSpec(fmt.Sprintf("+refs/tags/%s:refs/tags/%s", tag, tag)))
+	}
+	return refSpecs
+}
+
+func (s *Syncer) syncCache(ctx context.Context, cachePath string, repo *config.RepoConfig, auth transport.AuthMethod, refSpecs []gitconfig.RefSpec, result *Result) error {
+	err := SyncCentralCache(ctx, cachePath, repo.URL, auth, refSpecs)
+	if err == nil || errors.Is(err, git.NoErrAlreadyUpToDate) {
+		return nil
+	}
+
+	if !strings.Contains(err.Error(), "couldn't find remote ref") {
+		telemetry.SyncFailuresTotal.WithLabelValues(repo.Name, "cache_sync").Inc()
+		result.Err = fmt.Errorf("syncing central cache: %w", err)
+		return result.Err
+	}
+
+	slog.Warn("cache sync failed due to missing ref, retrying with refreshed ref list", "repo", repo.Name, "error", err)
+	telemetry.CacheSyncRetriesTotal.WithLabelValues(repo.Name).Inc()
+
+	resolverPath := filepath.Join(repo.LocalPath, metaDir)
+	_, refs, err := loadResolverRepoAndRefs(ctx, repo.Name, resolverPath, cachePath, repo.URL, auth)
+	if err != nil {
+		telemetry.SyncFailuresTotal.WithLabelValues(repo.Name, "clone").Inc()
+		result.Err = fmt.Errorf("resolver repo refresh: %w", err)
+		return result.Err
+	}
+
+	_, _, matchedBranches, matchedTags := extractRemoteRefState(refs, repo.Branches, repo.Tags)
+	refSpecs = s.prepareRefSpecs(repo, refs, matchedBranches, matchedTags)
+
+	if err := SyncCentralCache(ctx, cachePath, repo.URL, auth, refSpecs); err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) {
+		telemetry.SyncFailuresTotal.WithLabelValues(repo.Name, "cache_sync").Inc()
+		result.Err = fmt.Errorf("syncing central cache (retry): %w", err)
+		return result.Err
+	}
+	return nil
 }
 
 func loadResolverRepoAndRefs(ctx context.Context, repoName, resolverPath, cachePath, remoteURL string, auth transport.AuthMethod) (*git.Repository, []*plumbing.Reference, error) {

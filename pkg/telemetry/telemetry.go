@@ -62,7 +62,7 @@ var (
 	}, []string{labelRepo})
 
 	RemoteRefListTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name: "gfetch_remote_ref_list_total",
+		Name: "gfetch_remote_ref_list_calls_total",
 		Help: "Total number of remote ref-list calls per repo and sync mode.",
 	}, []string{labelRepo, "mode"})
 
@@ -90,6 +90,21 @@ var (
 		Name: "gfetch_config_managed_repos",
 		Help: "Number of repos currently managed by the daemon.",
 	})
+
+	RemoteRefsCount = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "gfetch_remote_refs_count",
+		Help: "Total number of branches and tags advertised by the remote server.",
+	}, []string{labelRepo})
+
+	LocalActiveRefsCount = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "gfetch_local_active_refs_count",
+		Help: "Total number of branches and tags actively tracked and synced locally (after staleness filtering).",
+	}, []string{labelRepo})
+
+	CacheSyncRetriesTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "gfetch_cache_sync_retries_total",
+		Help: "Total number of times the central cache sync was retried due to missing remote refs.",
+	}, []string{labelRepo})
 )
 
 func init() {
@@ -111,5 +126,8 @@ func init() {
 		ConfigRepoValidateFailuresTotal,
 		ConfigLastReloadTimestamp,
 		ConfigManagedRepos,
+		RemoteRefsCount,
+		LocalActiveRefsCount,
+		CacheSyncRetriesTotal,
 	)
 }
