@@ -277,7 +277,7 @@ func (s *Syncer) syncRepoOpenVox(ctx context.Context, repo *config.RepoConfig, o
 	}
 
 	// Apply staleness filter *before* requesting fetch from central cache
-	matchedBranches = filterOpenVoxBranchesForSync(ctx, resolverRepo, cachePath, repo, opts, auth, matchedBranches)
+	matchedBranches = filterOpenVoxBranchesForSync(ctx, resolverRepo, cachePath, repo, opts, auth, matchedBranches, defaultBranch)
 
 	// Filter matches against existing refs to avoid "couldn't find remote ref"
 	existingRefs := make(map[string]bool)
@@ -702,7 +702,7 @@ func (s *Syncer) syncOpenVoxBranches(ctx context.Context, repo *config.RepoConfi
 	return nil
 }
 
-func filterOpenVoxBranchesForSync(ctx context.Context, resolverRepo *git.Repository, cachePath string, repo *config.RepoConfig, opts SyncOptions, auth transport.AuthMethod, branches []*plumbing.Reference) []*plumbing.Reference {
+func filterOpenVoxBranchesForSync(ctx context.Context, resolverRepo *git.Repository, cachePath string, repo *config.RepoConfig, opts SyncOptions, auth transport.AuthMethod, branches []*plumbing.Reference, defaultBranch string) []*plumbing.Reference {
 	if !opts.PruneStale || !opts.Prune {
 		return branches
 	}
@@ -710,6 +710,11 @@ func filterOpenVoxBranchesForSync(ctx context.Context, resolverRepo *git.Reposit
 	var nonStale []*plumbing.Reference
 	var unresolved []*plumbing.Reference
 	for _, ref := range branches {
+		if ref.Name().Short() == defaultBranch {
+			nonStale = append(nonStale, ref)
+			continue
+		}
+
 		doSync, unresolvedLocal := shouldSyncBranchLocalFirst(repo.LocalPath, ref, opts.StaleAge)
 		if unresolvedLocal {
 			unresolved = append(unresolved, ref)
