@@ -248,6 +248,34 @@ func (s *Syncer) syncRepoOpenVox(ctx context.Context, repo *config.RepoConfig, o
 	defaultBranch, remoteBranches, matchedBranches, matchedTags := extractRemoteRefState(refs, repo.Branches, repo.Tags)
 	workers := openVoxWorkerCount(repo)
 	
+	activeBranchNames := make(map[string]string)
+	activeTagNames := make(map[string]string)
+	sanitizedToOriginal := make(map[string]string)
+
+	var branchNames []string
+	for _, b := range matchedBranches {
+		branchNames = append(branchNames, b.Name().Short())
+	}
+	if collision := detectCollisions(branchNames, sanitizedToOriginal); collision != "" {
+		result.Err = fmt.Errorf("name collision after sanitization: %s", collision)
+		return result
+	}
+	for _, branch := range branchNames {
+		activeBranchNames[SanitizeName(branch)] = branch
+	}
+
+	var tagNames []string
+	for _, t := range matchedTags {
+		tagNames = append(tagNames, t.Name().Short())
+	}
+	if collision := detectCollisions(tagNames, sanitizedToOriginal); collision != "" {
+		result.Err = fmt.Errorf("name collision after sanitization: %s", collision)
+		return result
+	}
+	for _, tag := range tagNames {
+		activeTagNames[SanitizeName(tag)] = tag
+	}
+
 	// Apply staleness filter *before* requesting fetch from central cache
 	matchedBranches = filterOpenVoxBranchesForSync(ctx, resolverRepo, cachePath, repo, opts, auth, matchedBranches)
 
@@ -282,11 +310,7 @@ func (s *Syncer) syncRepoOpenVox(ctx context.Context, repo *config.RepoConfig, o
 		return result
 	}
 
-	activeBranchNames := make(map[string]string)
-	activeTagNames := make(map[string]string)
-	sanitizedToOriginal := make(map[string]string)
-
-	if err := s.syncOpenVoxBranches(ctx, repo, auth, matchedBranches, workers, activeBranchNames, sanitizedToOriginal, log, &result); err != nil {
+	if err := s.syncOpenVoxBranches(ctx, repo, auth, matchedBranches, workers, log, &result); err != nil {
 		return result
 	}
 
@@ -295,7 +319,7 @@ func (s *Syncer) syncRepoOpenVox(ctx context.Context, repo *config.RepoConfig, o
 		protectProductionAlias(sanitizedToOriginal)
 	}
 
-	s.syncOpenVoxTags(ctx, repo, auth, matchedTags, workers, activeTagNames, sanitizedToOriginal, log, &result)
+	s.syncOpenVoxTags(ctx, repo, auth, matchedTags, workers, log, &result)
 
 	if opts.Prune {
 		pruneOpenVoxDirs(ctx, repo.Name, repo.LocalPath, sanitizedToOriginal, opts.DryRun, &result)
@@ -637,24 +661,12 @@ func cleanupOrphanOpenVoxLockFilesInDir(repoName, basePath, scanPath, suffix str
 	}
 }
 
-func (s *Syncer) syncOpenVoxBranches(ctx context.Context, repo *config.RepoConfig, auth transport.AuthMethod, branches []*plumbing.Reference, workers int, activeBranchNames map[string]string, sanitizedToOriginal map[string]string, log *slog.Logger, result *Result) error {
+func (s *Syncer) syncOpenVoxBranches(ctx context.Context, repo *config.RepoConfig, auth transport.AuthMethod, branches []*plumbing.Reference, workers int, log *slog.Logger, result *Result) error {
 	if len(branches) == 0 {
 		return nil
 	}
 
 	log.Debug("syncing branches", "count", len(branches))
-	var branchNames []string
-	for _, b := range branches {
-		branchNames = append(branchNames, b.Name().Short())
-	}
-
-	if collision := detectCollisions(branchNames, sanitizedToOriginal); collision != "" {
-		s.setErr(result, fmt.Errorf("name collision after sanitization: %s", collision))
-		return result.Err
-	}
-	for _, branch := range branchNames {
-		activeBranchNames[SanitizeName(branch)] = branch
-	}
 
 	var wg sync.WaitGroup
 	jobs := make(chan *plumbing.Reference, len(branches))
@@ -950,23 +962,12 @@ func recreateOpenVoxRepo(_ context.Context, subCfg *config.RepoConfig, auth tran
 	return nil
 }
 
-func (s *Syncer) syncOpenVoxTags(ctx context.Context, repo *config.RepoConfig, auth transport.AuthMethod, tags []*plumbing.Reference, workers int, activeTagNames map[string]string, sanitizedToOriginal map[string]string, log *slog.Logger, result *Result) {
+func (s *Syncer) syncOpenVoxTags(ctx context.Context, repo *config.RepoConfig, auth transport.AuthMethod, tags []*plumbing.Reference, workers int, log *slog.Logger, result *Result) {
 	if len(tags) == 0 {
 		return
 	}
 
 	log.Debug("syncing tags", "count", len(tags))
-	tagNames := make([]string, 0, len(tags))
-	for _, ref := range tags {
-		tagNames = append(tagNames, ref.Name().Short())
-	}
-	if collision := detectCollisions(tagNames, sanitizedToOriginal); collision != "" {
-		s.setErr(result, fmt.Errorf("name collision after sanitization: %s", collision))
-		return
-	}
-	for _, tag := range tagNames {
-		activeTagNames[SanitizeName(tag)] = tag
-	}
 
 	var wg sync.WaitGroup
 	jobs := make(chan *plumbing.Reference, len(tags))
