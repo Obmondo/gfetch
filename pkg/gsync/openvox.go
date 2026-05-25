@@ -236,7 +236,7 @@ func (s *Syncer) syncRepoOpenVox(ctx context.Context, repo *config.RepoConfig, o
 		return result
 	}
 
-	cachePath := filepath.Join(filepath.Dir(repo.LocalPath), metaDir, "cache.git")
+	cachePath := filepath.Join(repo.LocalPath, metaDir, "cache.git")
 	resolverPath := filepath.Join(repo.LocalPath, metaDir)
 	resolverRepo, refs, err := loadResolverRepoAndRefs(ctx, repo.Name, resolverPath, cachePath, repo.URL, auth)
 	if err != nil {
@@ -825,7 +825,7 @@ func (s *Syncer) syncOneOpenVoxBranch(ctx context.Context, repo *config.RepoConf
 
 	dirName := SanitizeName(branch)
 	dirPath := filepath.Join(repo.LocalPath, dirName)
-	cachePath := filepath.Join(filepath.Dir(repo.LocalPath), metaDir, "cache.git")
+	cachePath := filepath.Join(repo.LocalPath, metaDir, "cache.git")
 	releaseDirLock := acquireOpenVoxDirLock(dirPath)
 	defer releaseDirLock()
 
@@ -1015,7 +1015,7 @@ func (s *Syncer) syncOneOpenVoxTag(ctx context.Context, repo *config.RepoConfig,
 
 	dirName := SanitizeName(tag)
 	dirPath := filepath.Join(repo.LocalPath, dirName)
-	cachePath := filepath.Join(filepath.Dir(repo.LocalPath), metaDir, "cache.git")
+	cachePath := filepath.Join(repo.LocalPath, metaDir, "cache.git")
 	releaseDirLock := acquireOpenVoxDirLock(dirPath)
 	defer releaseDirLock()
 
