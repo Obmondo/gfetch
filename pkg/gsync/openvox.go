@@ -247,6 +247,9 @@ func (s *Syncer) syncRepoOpenVox(ctx context.Context, repo *config.RepoConfig, o
 
 	defaultBranch, remoteBranches, matchedBranches, matchedTags := extractRemoteRefState(refs, repo.Branches, repo.Tags)
 	workers := openVoxWorkerCount(repo)
+	
+	// Apply staleness filter *before* requesting fetch from central cache
+	matchedBranches = filterOpenVoxBranchesForSync(ctx, resolverRepo, cachePath, repo, opts, auth, matchedBranches)
 
 	// Filter matches against existing refs to avoid "couldn't find remote ref"
 	existingRefs := make(map[string]bool)
@@ -283,7 +286,7 @@ func (s *Syncer) syncRepoOpenVox(ctx context.Context, repo *config.RepoConfig, o
 	activeTagNames := make(map[string]string)
 	sanitizedToOriginal := make(map[string]string)
 
-	if err := s.syncOpenVoxBranches(ctx, resolverRepo, cachePath, repo, opts, auth, matchedBranches, workers, activeBranchNames, sanitizedToOriginal, log, &result); err != nil {
+	if err := s.syncOpenVoxBranches(ctx, repo, auth, matchedBranches, workers, activeBranchNames, sanitizedToOriginal, log, &result); err != nil {
 		return result
 	}
 
@@ -634,7 +637,7 @@ func cleanupOrphanOpenVoxLockFilesInDir(repoName, basePath, scanPath, suffix str
 	}
 }
 
-func (s *Syncer) syncOpenVoxBranches(ctx context.Context, resolverRepo *git.Repository, cachePath string, repo *config.RepoConfig, opts SyncOptions, auth transport.AuthMethod, branches []*plumbing.Reference, workers int, activeBranchNames map[string]string, sanitizedToOriginal map[string]string, log *slog.Logger, result *Result) error {
+func (s *Syncer) syncOpenVoxBranches(ctx context.Context, repo *config.RepoConfig, auth transport.AuthMethod, branches []*plumbing.Reference, workers int, activeBranchNames map[string]string, sanitizedToOriginal map[string]string, log *slog.Logger, result *Result) error {
 	if len(branches) == 0 {
 		return nil
 	}
@@ -653,10 +656,8 @@ func (s *Syncer) syncOpenVoxBranches(ctx context.Context, resolverRepo *git.Repo
 		activeBranchNames[SanitizeName(branch)] = branch
 	}
 
-	toSync := filterOpenVoxBranchesForSync(ctx, resolverRepo, cachePath, repo, opts, auth, branches)
-
 	var wg sync.WaitGroup
-	jobs := make(chan *plumbing.Reference, len(toSync))
+	jobs := make(chan *plumbing.Reference, len(branches))
 
 	for range workers {
 		wg.Go(func() {
@@ -674,7 +675,7 @@ func (s *Syncer) syncOpenVoxBranches(ctx context.Context, resolverRepo *git.Repo
 		})
 	}
 
-	for _, ref := range toSync {
+	for _, ref := range branches {
 		select {
 		case <-ctx.Done():
 			close(jobs)
