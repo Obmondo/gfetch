@@ -102,6 +102,44 @@ func TestReloadEndpoint_InvalidConfigKeepsOldConfig(t *testing.T) {
 	}
 }
 
+// TestSyncEndpoint_DroppedRepoGuardGates covers a repo that a reload removed
+// from config while a sync of it is still in flight. /sync must report 409
+// while the guard is held (so a caller deleting the clone waits) and only the
+// terminal 404 once the sync has drained.
+func TestSyncEndpoint_DroppedRepoGuardGates(t *testing.T) {
+	sched := newTestScheduler(t)
+	sched.cfg.Store(&config.Config{Repos: map[string]config.RepoConfig{}})
+	h := newServer(sched)
+
+	const dropped = "dropped-repo"
+	syncURL := "/sync/" + dropped
+
+	// Not in config, no in-flight sync: terminal 404.
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodPost, syncURL, nil))
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("quiescent: status = %d, want %d, body=%s", rr.Code, http.StatusNotFound, rr.Body.String())
+	}
+
+	// Dropped from config but a sync still holds the guard: 409.
+	if !sched.state.guard.TryStart(dropped) {
+		t.Fatalf("TryStart(%q) = false, want true", dropped)
+	}
+	rr = httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodPost, syncURL, nil))
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("in-flight: status = %d, want %d, body=%s", rr.Code, http.StatusConflict, rr.Body.String())
+	}
+
+	// Sync finished, guard cleared: back to terminal 404.
+	sched.state.guard.Finish(dropped)
+	rr = httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodPost, syncURL, nil))
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("after finish: status = %d, want %d, body=%s", rr.Code, http.StatusNotFound, rr.Body.String())
+	}
+}
+
 // writeFakeSSHKey writes a placeholder SSH key file under dir and returns the path.
 // This satisfies validateAuth's existence check without requiring a real SSH key.
 func writeFakeSSHKey(t *testing.T, dir string) string {

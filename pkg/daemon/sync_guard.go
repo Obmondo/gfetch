@@ -26,3 +26,13 @@ func (g *repoSyncGuard) Finish(repoName string) {
 	delete(g.active, repoName)
 	g.mu.Unlock()
 }
+
+// IsActive reports whether a sync is currently running for repoName. The guard
+// is keyed by name and outlives config membership, so this stays true for a
+// repo dropped by a reload until its in-flight sync drains.
+func (g *repoSyncGuard) IsActive(repoName string) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	_, exists := g.active[repoName]
+	return exists
+}

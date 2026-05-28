@@ -37,6 +37,16 @@ func newServer(sched *Scheduler) http.Handler {
 		repoName := r.PathValue("repo")
 		repo, ok := cfg.Repos[repoName]
 		if !ok {
+			// A repo dropped by a reload can still have an in-flight sync (jobs
+			// are cancelled but the running goroutine finishes against its
+			// captured config) writing to the clone dir. The guard outlives
+			// config membership, so report 409 until that sync drains; only a
+			// quiescent dropped repo gets the terminal 404. This lets a caller
+			// tearing the clone down wait instead of racing the live sync.
+			if sched.state.guard.IsActive(repoName) {
+				http.Error(w, `{"error":"sync already in progress"}`, http.StatusConflict)
+				return
+			}
 			http.Error(w, `{"error":"repo not found"}`, http.StatusNotFound)
 			return
 		}
