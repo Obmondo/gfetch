@@ -633,3 +633,83 @@ func TestPruneTrueFromConfigIsApplied(t *testing.T) {
 		t.Errorf("expected extra-branch in pruned list, got %v", result.BranchesPruned)
 	}
 }
+
+func TestHandleCheckout_FallbackToDefault(t *testing.T) {
+	// Setup repo
+	repoDir := t.TempDir()
+	r, err := git.PlainInit(repoDir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wt, err := r.Worktree()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Create initial commit on main
+	err = os.WriteFile(filepath.Join(repoDir, "README.md"), []byte("hello"), 0644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = wt.Add("README.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sig := &object.Signature{Name: "test", Email: "test@test.com", When: time.Now()}
+	_, err = wt.Commit("initial", &git.CommitOptions{Author: sig, Committer: sig})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The default branch "master" (or "main") now exists locally
+	headRef, err := r.Head()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defaultBranch := headRef.Name().Short()
+
+	s := New()
+
+	t.Run("Checkout non-existent ref with fallback", func(t *testing.T) {
+		repoCfg := &config.RepoConfig{Checkout: "non-existent-branch"}
+		result := &Result{}
+
+		// It should fail to checkout "non-existent-branch", fallback to defaultBranch, and succeed.
+		s.handleCheckout(r, repoCfg, defaultBranch, result)
+
+		if result.Err != nil {
+			t.Fatalf("expected successful fallback, got error: %v", result.Err)
+		}
+		if result.Checkout != defaultBranch {
+			t.Fatalf("expected result.Checkout to be %s, got %s", defaultBranch, result.Checkout)
+		}
+	})
+
+	t.Run("Checkout non-existent ref without fallback", func(t *testing.T) {
+		repoCfg := &config.RepoConfig{Checkout: "another-missing-branch"}
+		result := &Result{}
+
+		// Empty default branch string -> should fail
+		s.handleCheckout(r, repoCfg, "", result)
+
+		if result.Err == nil {
+			t.Fatal("expected error for missing branch with no fallback")
+		}
+	})
+
+	t.Run("Checkout valid ref", func(t *testing.T) {
+		repoCfg := &config.RepoConfig{Checkout: defaultBranch}
+		result := &Result{}
+
+		// Valid checkout -> should succeed without error
+		s.handleCheckout(r, repoCfg, defaultBranch, result)
+
+		if result.Err != nil {
+			t.Fatalf("expected success, got error: %v", result.Err)
+		}
+		if result.Checkout != defaultBranch {
+			t.Fatalf("expected result.Checkout to be %s, got %s", defaultBranch, result.Checkout)
+		}
+	})
+}
