@@ -19,7 +19,7 @@ const testDefaultBranch = "main"
 
 func TestEnsureClonedOpenVox_RecreatesNonRepoDir(t *testing.T) {
 	basePath := t.TempDir()
-	localPath := filepath.Join(basePath, "main")
+	localPath := filepath.Join(basePath, testDefaultBranch)
 
 	if err := os.MkdirAll(localPath, 0755); err != nil {
 		t.Fatal(err)
@@ -30,11 +30,11 @@ func TestEnsureClonedOpenVox_RecreatesNonRepoDir(t *testing.T) {
 
 	repoCfg := &config.RepoConfig{
 		RepoDefaults: config.RepoDefaults{LocalPath: localPath},
-		Name:         "test",
+		Name:         DefaultTestName,
 		URL:          "https://example.com/repo.git",
 	}
 
-	r, err := ensureClonedOpenVox(context.Background(), repoCfg, nil)
+	r, err := getRepoWithSharedCache(localPath, filepath.Join(basePath, ".git", "cache.git"), "https://example.com/repo.git", nil)
 	if err != nil {
 		t.Fatalf("ensureClonedOpenVox failed: %v", err)
 	}
@@ -43,7 +43,7 @@ func TestEnsureClonedOpenVox_RecreatesNonRepoDir(t *testing.T) {
 		t.Fatalf("expected .git to exist after recovery: %v", err)
 	}
 
-	remote, err := r.Remote("origin")
+	remote, err := r.Remote(RemoteOrigin)
 	if err != nil {
 		t.Fatalf("expected origin remote: %v", err)
 	}
@@ -104,7 +104,7 @@ func TestEnsureProductionAlias(t *testing.T) {
 			OpenVox:         &openVox,
 			ProductionAlias: &productionAlias,
 		},
-		Name: "test",
+		Name: DefaultTestName,
 	}
 
 	ensureProductionAlias(context.Background(), repo, testDefaultBranch, map[string]struct{}{testDefaultBranch: {}})
@@ -140,7 +140,7 @@ func TestEnsureProductionAlias_SkipsWhenProductionBranchExists(t *testing.T) {
 			OpenVox:         &openVox,
 			ProductionAlias: &productionAlias,
 		},
-		Name: "test",
+		Name: DefaultTestName,
 	}
 
 	ensureProductionAlias(context.Background(), repo, testDefaultBranch, map[string]struct{}{testDefaultBranch: {}, productionAliasName: {}})
@@ -176,7 +176,7 @@ func TestExtractRemoteRefState(t *testing.T) {
 		plumbing.NewHashReference(plumbing.NewBranchReferenceName(testDefaultBranch), plumbing.ZeroHash),
 		plumbing.NewHashReference(plumbing.NewBranchReferenceName("feature-a"), plumbing.ZeroHash),
 		plumbing.NewHashReference(plumbing.NewBranchReferenceName(productionAliasName), plumbing.ZeroHash),
-		plumbing.NewHashReference(plumbing.NewTagReferenceName("v1.0.0"), plumbing.ZeroHash),
+		plumbing.NewHashReference(plumbing.NewTagReferenceName(DefaultTag), plumbing.ZeroHash),
 	}
 
 	defaultBranch, branches, matchedBranches, matchedTags := extractRemoteRefState(
@@ -194,7 +194,7 @@ func TestExtractRemoteRefState(t *testing.T) {
 	if len(matchedBranches) != 3 {
 		t.Fatalf("matched branches = %d, want 3", len(matchedBranches))
 	}
-	if len(matchedTags) != 1 || matchedTags[0].Name().Short() != "v1.0.0" {
+	if len(matchedTags) != 1 || matchedTags[0].Name().Short() != DefaultTag {
 		t.Fatalf("matched tags = %v, want [v1.0.0]", matchedTags)
 	}
 }
@@ -207,7 +207,7 @@ func TestCleanupOrphanOpenVoxLockFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := os.MkdirAll(filepath.Join(basePath, "main"), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Join(basePath, testDefaultBranch), 0755); err != nil {
 		t.Fatal(err)
 	}
 	activeLock := filepath.Join(basePath, "main.gfetch.lock")
@@ -215,7 +215,7 @@ func TestCleanupOrphanOpenVoxLockFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cleanupOrphanOpenVoxLockFiles("test", basePath, false)
+	cleanupOrphanOpenVoxLockFiles(DefaultTestName, basePath, false)
 
 	if _, err := os.Stat(orphanLock); !os.IsNotExist(err) {
 		t.Fatalf("expected orphan lock to be removed, stat err=%v", err)
@@ -330,7 +330,7 @@ func initTestRepoWithCommitAtPath(t *testing.T, dir string) *git.Repository {
 		t.Fatal(err)
 	}
 
-	sig := &object.Signature{Name: "test", Email: "test@test.com", When: time.Now()}
+	sig := &object.Signature{Name: DefaultTestName, Email: DefaultTestEmail, When: time.Now()}
 	if _, err := wt.Commit("initial", &git.CommitOptions{Author: sig, Committer: sig}); err != nil {
 		t.Fatal(err)
 	}
@@ -345,8 +345,8 @@ func TestSanitizeName(t *testing.T) {
 	}{
 		{"production", "production"},
 		{"feature-branch", "feature_branch"},
-		{"v1.0.0", "v1_0_0"},
-		{"feature-auth", "feature_auth"},
+		{DefaultTag, "v1_0_0"},
+		{FeatureAuth, "feature_auth"},
 		{"v2.0.0", "v2_0_0"},
 		{"a-b.c", "a_b_c"},
 		{"no_change", "no_change"},
@@ -375,7 +375,7 @@ func TestSanitizeName(t *testing.T) {
 func TestDetectCollisions(t *testing.T) {
 	t.Run("no collision", func(t *testing.T) {
 		m := make(map[string]string)
-		names := []string{"main", "develop", "feature-auth"}
+		names := []string{testDefaultBranch, DevelopBranch, FeatureAuth}
 		if msg := detectCollisions(names, m); msg != "" {
 			t.Errorf("expected no collision, got: %s", msg)
 		}
@@ -405,7 +405,7 @@ func TestDetectCollisions(t *testing.T) {
 
 	t.Run("slash vs hyphen collision", func(t *testing.T) {
 		m := make(map[string]string)
-		names := []string{"feature/auth", "feature-auth"}
+		names := []string{"feature/auth", FeatureAuth}
 		msg := detectCollisions(names, m)
 		if msg == "" {
 			t.Error("expected collision between feature/auth and feature-auth")
@@ -414,7 +414,7 @@ func TestDetectCollisions(t *testing.T) {
 
 	t.Run("same name no collision", func(t *testing.T) {
 		m := make(map[string]string)
-		names := []string{"main", "main"}
+		names := []string{testDefaultBranch, testDefaultBranch}
 		if msg := detectCollisions(names, m); msg != "" {
 			t.Errorf("same name should not collide, got: %s", msg)
 		}
@@ -433,7 +433,7 @@ func initOpenVoxBranchRepo(t *testing.T, basePath, branch string, commitTime tim
 		t.Fatal(err)
 	}
 	_, err = r.CreateRemote(&gitconfig.RemoteConfig{
-		Name: "origin",
+		Name: RemoteOrigin,
 		URLs: []string{"https://example.com/repo.git"},
 	})
 	if err != nil {
@@ -452,7 +452,7 @@ func initOpenVoxBranchRepo(t *testing.T, basePath, branch string, commitTime tim
 	if _, err := wt.Add("README.md"); err != nil {
 		t.Fatal(err)
 	}
-	sig := &object.Signature{Name: "test", Email: "test@test.com", When: commitTime}
+	sig := &object.Signature{Name: DefaultTestName, Email: DefaultTestEmail, When: commitTime}
 	if _, err := wt.Commit("commit on "+branch, &git.CommitOptions{Author: sig, Committer: sig}); err != nil {
 		t.Fatal(err)
 	}
@@ -466,25 +466,25 @@ func TestPruneStaleOpenVoxDirs(t *testing.T) {
 	now := time.Now()
 	past := now.Add(-365 * 24 * time.Hour) // 1 year ago
 
-	initOpenVoxBranchRepo(t, basePath, "main", now)
+	initOpenVoxBranchRepo(t, basePath, testDefaultBranch, now)
 	initOpenVoxBranchRepo(t, basePath, "stale-feature", past)
 	initOpenVoxBranchRepo(t, basePath, "fresh-feature", now)
 
 	activeNames := map[string]string{
-		"main":          "main",
-		"stale_feature": "stale-feature",
-		"fresh_feature": "fresh-feature",
+		testDefaultBranch: testDefaultBranch,
+		"stale_feature":   "stale-feature",
+		"fresh_feature":   "fresh-feature",
 	}
 
 	repo := &config.RepoConfig{
 		RepoDefaults: config.RepoDefaults{LocalPath: basePath},
-		Name:         "test",
+		Name:         DefaultTestName,
 	}
 
-	result := &Result{RepoName: "test"}
+	result := &Result{RepoName: DefaultTestName}
 
-	// "main" is the default branch — should be protected even if stale.
-	pruneStaleOpenVoxDirs(context.Background(), repo, activeNames, staleAge, false, "main", result)
+	// testDefaultBranch is the default branch — should be protected even if stale.
+	pruneStaleOpenVoxDirs(context.Background(), repo, activeNames, staleAge, false, testDefaultBranch, result)
 
 	// stale-feature should be pruned.
 	if _, err := os.Stat(filepath.Join(basePath, "stale_feature")); !os.IsNotExist(err) {
@@ -497,7 +497,7 @@ func TestPruneStaleOpenVoxDirs(t *testing.T) {
 	}
 
 	// main should still exist (protected as default branch).
-	if _, err := os.Stat(filepath.Join(basePath, "main")); err != nil {
+	if _, err := os.Stat(filepath.Join(basePath, testDefaultBranch)); err != nil {
 		t.Error("main directory should NOT have been pruned (default branch)")
 	}
 
@@ -507,7 +507,7 @@ func TestPruneStaleOpenVoxDirs(t *testing.T) {
 		if b == "stale-feature" {
 			found = true
 		}
-		if b == "main" {
+		if b == testDefaultBranch {
 			t.Error("main should not appear in pruned list")
 		}
 	}
@@ -521,18 +521,18 @@ func TestPruneStaleOpenVoxDirs_DryRun(t *testing.T) {
 	staleAge := 180 * 24 * time.Hour
 	past := time.Now().Add(-365 * 24 * time.Hour)
 
-	initOpenVoxBranchRepo(t, basePath, "old-branch", past)
+	initOpenVoxBranchRepo(t, basePath, OldBranch, past)
 
 	activeNames := map[string]string{
-		"old_branch": "old-branch",
+		"old_branch": OldBranch,
 	}
 
 	repo := &config.RepoConfig{
 		RepoDefaults: config.RepoDefaults{LocalPath: basePath},
-		Name:         "test",
+		Name:         DefaultTestName,
 	}
 
-	result := &Result{RepoName: "test"}
+	result := &Result{RepoName: DefaultTestName}
 
 	// Dry run — directory should NOT be removed.
 	pruneStaleOpenVoxDirs(context.Background(), repo, activeNames, staleAge, true, "", result)
@@ -542,7 +542,7 @@ func TestPruneStaleOpenVoxDirs_DryRun(t *testing.T) {
 	}
 
 	// But it should still appear in stale/pruned lists.
-	if len(result.BranchesStale) != 1 || result.BranchesStale[0] != "old-branch" {
+	if len(result.BranchesStale) != 1 || result.BranchesStale[0] != OldBranch {
 		t.Errorf("expected old-branch in stale list, got %v", result.BranchesStale)
 	}
 }
@@ -552,7 +552,7 @@ func TestPruneStaleOpenVoxDirs_LeavesLockFileForOrphanCleanup(t *testing.T) {
 	staleAge := 180 * 24 * time.Hour
 	past := time.Now().Add(-365 * 24 * time.Hour)
 
-	initOpenVoxBranchRepo(t, basePath, "old-branch", past)
+	initOpenVoxBranchRepo(t, basePath, OldBranch, past)
 	lockPath := openVoxLockPath(filepath.Join(basePath, "old_branch"))
 	if err := os.MkdirAll(filepath.Dir(lockPath), 0755); err != nil {
 		t.Fatal(err)
@@ -562,22 +562,22 @@ func TestPruneStaleOpenVoxDirs_LeavesLockFileForOrphanCleanup(t *testing.T) {
 	}
 
 	activeNames := map[string]string{
-		"old_branch": "old-branch",
+		"old_branch": OldBranch,
 	}
 
 	repo := &config.RepoConfig{
 		RepoDefaults: config.RepoDefaults{LocalPath: basePath},
-		Name:         "test",
+		Name:         DefaultTestName,
 	}
 
-	result := &Result{RepoName: "test"}
+	result := &Result{RepoName: DefaultTestName}
 	pruneStaleOpenVoxDirs(context.Background(), repo, activeNames, staleAge, false, "", result)
 
 	if _, err := os.Stat(lockPath); err != nil {
 		t.Fatalf("expected lock file to remain after stale prune, stat err=%v", err)
 	}
 
-	cleanupOrphanOpenVoxLockFiles("test", basePath, false)
+	cleanupOrphanOpenVoxLockFiles(DefaultTestName, basePath, false)
 	if _, err := os.Stat(lockPath); !os.IsNotExist(err) {
 		t.Fatalf("expected orphan cleanup to remove lock file, stat err=%v", err)
 	}
@@ -593,10 +593,10 @@ func TestPruneStaleOpenVoxDirs_MissingDir(t *testing.T) {
 
 	repo := &config.RepoConfig{
 		RepoDefaults: config.RepoDefaults{LocalPath: basePath},
-		Name:         "test",
+		Name:         DefaultTestName,
 	}
 
-	result := &Result{RepoName: "test"}
+	result := &Result{RepoName: DefaultTestName}
 
 	// Should NOT log a warning or fail if the directory is missing.
 	// We can't easily check logs here without a custom handler, but we can ensure it doesn't crash or add to results.

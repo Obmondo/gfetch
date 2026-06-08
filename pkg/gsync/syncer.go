@@ -129,7 +129,7 @@ func (s *Syncer) SyncRepo(ctx context.Context, repo *config.RepoConfig, opts Syn
 		return result
 	}
 
-	_, _, matchedBranches, matchedTagRefs := extractRemoteRefState(refs, repo.Branches, repo.Tags)
+	defaultBranch, _, matchedBranches, matchedTagRefs := extractRemoteRefState(refs, repo.Branches, repo.Tags)
 	matchedTags := make([]string, 0, len(matchedTagRefs))
 	for _, tagRef := range matchedTagRefs {
 		matchedTags = append(matchedTags, tagRef.Name().Short())
@@ -137,7 +137,7 @@ func (s *Syncer) SyncRepo(ctx context.Context, repo *config.RepoConfig, opts Syn
 
 	s.syncBranches(ctx, r, repo, auth, opts, matchedBranches, &result)
 	s.syncTagsWrapper(ctx, r, repo, auth, opts, matchedTags, &result)
-	s.handleCheckout(r, repo, &result)
+	s.handleCheckout(r, repo, defaultBranch, &result)
 
 	duration := time.Since(start)
 	telemetry.SyncDurationSeconds.WithLabelValues(repo.Name, "total").Observe(duration.Seconds())
@@ -284,7 +284,7 @@ func logSyncSuccess(ctx context.Context, result Result, duration time.Duration) 
 		level = slog.LevelWarn
 	}
 
-	attrs := []any{"duration", duration.Round(time.Millisecond)}
+	attrs := []any{"repo", result.RepoName, "duration", duration.Round(time.Millisecond)}
 	if numErrors > 0 {
 		attrs = append(attrs, "errors", numErrors)
 	}
@@ -401,16 +401,34 @@ func (s *Syncer) syncTagsWrapper(ctx context.Context, r *git.Repository, repo *c
 	s.mu.Unlock()
 }
 
-func (s *Syncer) handleCheckout(r *git.Repository, repo *config.RepoConfig, result *Result) {
+func (s *Syncer) handleCheckout(r *git.Repository, repo *config.RepoConfig, defaultBranch string, result *Result) {
 	if repo.Checkout == "" {
 		return
 	}
 
-	if err := checkoutRef(r, repo.Checkout); err != nil {
-		slog.Error("failed to checkout", "ref", repo.Checkout, "error", err)
-		s.setErr(result, fmt.Errorf("checkout %s: %w", repo.Checkout, err))
+	err := checkoutRef(r, repo.Checkout)
+	if err != nil {
+		if defaultBranch == "" || repo.Checkout == defaultBranch {
+			slog.Error("failed to checkout", "ref", repo.Checkout, "error", err)
+			s.setErr(result, fmt.Errorf("checkout %s: %w", repo.Checkout, err))
+			return
+		}
+
+		slog.Warn("failed to checkout configured ref, falling back to default branch", "ref", repo.Checkout, "fallback", defaultBranch, "error", err)
+
+		fallbackErr := checkoutRef(r, defaultBranch)
+		if fallbackErr != nil {
+			slog.Error("fallback checkout also failed", "ref", defaultBranch, "error", fallbackErr)
+			s.setErr(result, fmt.Errorf("checkout %s: %w", repo.Checkout, err))
+			return
+		}
+
+		s.mu.Lock()
+		result.Checkout = defaultBranch
+		s.mu.Unlock()
 		return
 	}
+
 	s.mu.Lock()
 	result.Checkout = repo.Checkout
 	s.mu.Unlock()

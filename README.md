@@ -5,7 +5,6 @@
 [![Go Report Card](https://goreportcard.com/badge/github.com/obmondo/gfetch)](https://goreportcard.com/report/github.com/obmondo/gfetch)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/Obmondo/gfetch)
 
-
 A CLI tool that selectively mirrors remote Git repositories to local paths based on YAML configuration.
 
 ## Features
