@@ -3,7 +3,7 @@ module github.com/obmondo/gfetch
 go 1.26.3
 
 require (
-	github.com/go-co-op/gocron/v2 v2.21.1
+	github.com/go-co-op/gocron/v2 v2.21.2
 	github.com/go-git/go-git/v5 v5.18.0
 	github.com/google/uuid v1.6.0
 	github.com/prometheus/client_golang v1.23.2
