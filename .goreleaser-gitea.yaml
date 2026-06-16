@@ -1,0 +1,65 @@
+version: 2
+
+before:
+  hooks:
+    - go mod tidy
+
+changelog:
+  use: gitea
+  sort: asc
+  format: "[{{ .SHA }}](https://gitea.obmondo.com/Obmondo/gfetch/commit/{{ .SHA }}) {{ .Message }}{{ with .AuthorUsername }} (@{{ . }}){{ end }}"
+  abbrev: 7
+  filters:
+    exclude:
+      - init
+      - Merge pull request
+      - Merge remote-tracking branch
+      - Merge branch
+  groups:
+    - title: 💫 Features
+      regexp: '^.*?feat(\([[:word:]]+\))??!?:.+$'
+      order: 0
+    - title: 🐛 Bug fixes
+      regexp: '^.*?fix(\([[:word:]]+\))??!?:.+$'
+      order: 1
+    - title: 🥴 Others
+      order: 999
+
+builds:
+  - id: "gfetch"
+    main: ./cmd/gfetch
+    binary: gfetch
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -v
+    ldflags:
+      - -X github.com/obmondo/gfetch/internal/cli.Version={{.Tag}}
+      - -X github.com/obmondo/gfetch/internal/cli.Commit={{.ShortCommit}}
+      - -X github.com/obmondo/gfetch/internal/cli.Date={{.Date}}
+      - -s -w
+
+archives:
+  - formats: [tar.gz]
+    name_template: >-
+      {{- .ProjectName }}_
+      {{- .Tag }}_
+      {{- .Os }}_
+      {{- .Arch }}
+
+dockers:
+  - use: buildx
+    image_templates:
+      - "harbor.obmondo.com/obmondo/gfetch:{{.Tag}}"
+      - "harbor.obmondo.com/obmondo/gfetch:latest"
+    build_flag_templates:
+      - "--platform=linux/amd64,linux/arm64"
+      - "--build-arg=VERSION={{.Tag}}"
+      - "--build-arg=COMMIT={{.Commit}}"
+      - "--build-arg=DATE={{.Date}}"
+    push: true
