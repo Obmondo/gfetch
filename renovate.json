@@ -11,6 +11,9 @@
         ":assignAndReview(sidharth)",
         ":label(Renovate/Dependency)"
     ],
+    "prBodyNotes": [
+        "Part of [gfetch Dependencies](https://gitea.obmondo.com/EnableIT/gfetch/issues/3)."
+    ],
     "packageRules": [
         {
             "matchDatasources": [
