@@ -21,7 +21,7 @@ RUN go build -ldflags "-s -w \
     -o /usr/local/bin/gfetch ./cmd/gfetch
 
 # Stage 2 — runtime
-FROM alpine:3.24.0
+FROM alpine:3.24.1
 
 # uid/gid 999 is on purpose, cause puppetserver runs as 999(puppet) user
 RUN apk upgrade --no-cache \
