@@ -418,6 +418,9 @@ func getRepoWithSharedCache(repoPath, cachePath, remoteURL string, auth transpor
 		Shared: true,
 	})
 	if err != nil {
+		if !strings.Contains(err.Error(), "remote repository is empty") {
+			return nil, fmt.Errorf("clone from cache: %w", err)
+		}
 		// If clone failed, maybe because cache is empty.
 		// PlainClone might have left a partially created .git directory which breaks PlainInit.
 		_ = os.RemoveAll(filepath.Join(repoPath, ".git"))
@@ -870,6 +873,8 @@ func (s *Syncer) syncOneOpenVoxBranch(ctx context.Context, repo *config.RepoConf
 	defer func() {
 		if r := recover(); r != nil {
 			slog.Error("syncOneOpenVoxBranch panicked", "panic", r)
+			telemetry.SyncFailuresTotal.WithLabelValues(repo.Name, "branch_sync").Inc()
+			s.addBranchFailed(result, ref.Name().Short())
 		}
 	}()
 	branch := ref.Name().Short()
@@ -1049,6 +1054,8 @@ func (s *Syncer) syncOneOpenVoxTag(ctx context.Context, repo *config.RepoConfig,
 	defer func() {
 		if r := recover(); r != nil {
 			log.Error("syncOneOpenVoxTag panicked", "panic", r)
+			telemetry.SyncFailuresTotal.WithLabelValues(repo.Name, "tag_sync").Inc()
+			s.addTagFailed(result, tagRef.Name().Short())
 		}
 	}()
 	tag := tagRef.Name().Short()
