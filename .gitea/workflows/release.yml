@@ -14,11 +14,11 @@ jobs:
         with:
           fetch-depth: 0
       - name: Set up Go
-        uses: https://gitea.obmondo.com/Obmondo/setup-go@v6.5.0
+        uses: https://gitea.obmondo.com/Obmondo/setup-go@v7.0.0
         with:
           go-version-file: go.mod
       - name: Login to Harbor
-        uses: https://gitea.obmondo.com/Obmondo/setup-go@v6.5.0
+        uses: https://gitea.obmondo.com/Obmondo/setup-go@v7.0.0
         with:
           registry: harbor.obmondo.com
           username: ${{ secrets.HARBOR_USERNAME }}
