@@ -20,6 +20,13 @@
                 "golang-version"
             ],
             "rangeStrategy": "bump"
+        },
+        {
+            "matchPackageNames": [
+                "gitea.obmondo.com/Obmondo/goreleaser-action",
+                "Obmondo/goreleaser-action"
+            ],
+            "enabled": false
         }
     ],
     "postUpdateOptions": [
