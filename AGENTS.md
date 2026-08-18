@@ -43,10 +43,13 @@ pkg/daemon/
 config.example.yaml           # Annotated example configuration
 testdata/config.yaml          # Test fixture
 .goreleaser.yaml              # Release config (linux/darwin, amd64/arm64)
+.goreleaser-github.yaml       # Release config used by the GitHub release workflow
 Dockerfile                    # Multi-stage build (Go builder + Alpine runtime)
+.github/workflows/
+  test.yml                    # CI: tests, lint, fmt on push/PR
+  release.yml                 # On v* tag: GoReleaser binaries/release + GHCR image
 .gitea/workflows/
-  docker.yaml                 # CI: Docker build on push/PR, push on tag
-  test.yml                    # CI: Gitea tests on push/PR
+  release.yml                 # On v* tag: Harbor image only — the mirror runs nothing else
 renovate.json                 # Renovate config (gomod, dockerfile, github-actions)
 ```
 
