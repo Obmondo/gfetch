@@ -52,14 +52,3 @@ archives:
       {{- .Os }}_
       {{- .Arch }}
 
-dockers:
-  - use: buildx
-    image_templates:
-      - "ghcr.io/{{.Env.GITHUB_REPOSITORY}}/gfetch:{{.Tag}}"
-      - "ghcr.io/{{.Env.GITHUB_REPOSITORY}}/gfetch:latest"
-    build_flag_templates:
-      - "--platform=linux/amd64,linux/arm64"
-      - "--build-arg=VERSION={{.Tag}}"
-      - "--build-arg=COMMIT={{.Commit}}"
-      - "--build-arg=DATE={{.Date}}"
-    push: true
