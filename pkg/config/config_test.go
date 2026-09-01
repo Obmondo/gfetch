@@ -449,8 +449,7 @@ func TestValidate_NoReposConfigured(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for empty config, got nil")
 	}
-	var partial *PartialValidateError
-	if errors.As(err, &partial) {
+	if _, ok := errors.AsType[*PartialValidateError](err); ok {
 		t.Fatalf("expected plain error, got *PartialValidateError: %v", err)
 	}
 	if err.Error() != "no repos configured" {
