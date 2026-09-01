@@ -2,6 +2,7 @@ package gsync
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -114,30 +115,26 @@ func (s *Syncer) SyncRepo(ctx context.Context, repo *config.RepoConfig, opts Syn
 		return result
 	}
 
-	r, err := ensureCloned(ctx, repo, auth)
-	if err != nil {
-		telemetry.SyncFailuresTotal.WithLabelValues(repo.Name, "clone").Inc()
-		result.Err = err
+	result, emptyRepo := s.runStandardSync(ctx, repo, auth, opts)
+	if !emptyRepo && isObjectNotFoundErr(result.Err) {
+		// The local object store is incomplete (a ref resolves but its object
+		// graph is missing) — typically an interrupted prior fetch on a
+		// persistent volume. go-git won't repair it in place because it treats
+		// the present-but-partial commit as a "have", so wipe the local mirror
+		// and rebuild it once from scratch.
+		log.Warn("local repository has incomplete objects, recreating and retrying", "path", repo.LocalPath, "error", result.Err)
+		telemetry.SyncFailuresTotal.WithLabelValues(repo.Name, "object_repair").Inc()
+		if rmErr := os.RemoveAll(repo.LocalPath); rmErr != nil {
+			log.Error("failed to remove local repo for repair", "error", rmErr)
+		} else {
+			result, emptyRepo = s.runStandardSync(ctx, repo, auth, opts)
+		}
+	}
+	if emptyRepo {
+		log.Info("remote repository has no commits yet, nothing to sync")
+		s.recordSyncSuccess(ctx, &result, time.Since(start))
 		return result
 	}
-
-	refs, err := listRemoteRefs(ctx, r, auth, repo.Name, "standard")
-	if err != nil {
-		log.Error("failed to list remote refs", "error", err)
-		telemetry.SyncFailuresTotal.WithLabelValues(repo.Name, "clone").Inc()
-		result.Err = fmt.Errorf("listing remote refs: %w", err)
-		return result
-	}
-
-	defaultBranch, _, matchedBranches, matchedTagRefs := extractRemoteRefState(refs, repo.Branches, repo.Tags)
-	matchedTags := make([]string, 0, len(matchedTagRefs))
-	for _, tagRef := range matchedTagRefs {
-		matchedTags = append(matchedTags, tagRef.Name().Short())
-	}
-
-	s.syncBranches(ctx, r, repo, auth, opts, matchedBranches, &result)
-	s.syncTagsWrapper(ctx, r, repo, auth, opts, matchedTags, &result)
-	s.handleCheckout(r, repo, defaultBranch, &result)
 
 	duration := time.Since(start)
 	telemetry.SyncDurationSeconds.WithLabelValues(repo.Name, "total").Observe(duration.Seconds())
@@ -166,6 +163,55 @@ func (s *Syncer) SyncRepo(ctx context.Context, repo *config.RepoConfig, opts Syn
 		"duration", duration,
 	)
 	return result
+}
+
+// runStandardSync performs the clone/list/branch/tag/checkout flow for a single
+// non-openvox repo. It returns the Result and whether the remote is empty (has
+// no commits yet), which the caller records as a benign no-op success. It is
+// safe to call twice (the caller wipes the local path and retries once on an
+// incomplete local object store).
+func (s *Syncer) runStandardSync(ctx context.Context, repo *config.RepoConfig, auth transport.AuthMethod, opts SyncOptions) (Result, bool) {
+	result := Result{RepoName: repo.Name}
+
+	r, err := ensureCloned(ctx, repo, auth)
+	if err != nil {
+		telemetry.SyncFailuresTotal.WithLabelValues(repo.Name, "clone").Inc()
+		result.Err = err
+		return result, false
+	}
+
+	refs, err := listRemoteRefs(ctx, r, auth, repo.Name, "standard")
+	if err != nil {
+		if errors.Is(err, transport.ErrEmptyRemoteRepository) {
+			return result, true
+		}
+		slog.Error("failed to list remote refs", "repo", repo.Name, "error", err)
+		telemetry.SyncFailuresTotal.WithLabelValues(repo.Name, "clone").Inc()
+		result.Err = fmt.Errorf("listing remote refs: %w", err)
+		return result, false
+	}
+
+	defaultBranch, _, matchedBranches, matchedTagRefs := extractRemoteRefState(refs, repo.Branches, repo.Tags)
+	matchedTags := make([]string, 0, len(matchedTagRefs))
+	for _, tagRef := range matchedTagRefs {
+		matchedTags = append(matchedTags, tagRef.Name().Short())
+	}
+
+	s.syncBranches(ctx, r, repo, auth, opts, matchedBranches, &result)
+	s.syncTagsWrapper(ctx, r, repo, auth, opts, matchedTags, &result)
+	s.handleCheckout(r, repo, defaultBranch, &result)
+
+	return result, false
+}
+
+// recordSyncSuccess marks a repo sync as successful, emitting the same success
+// logs and metrics as the normal completion path. Used for benign no-op syncs
+// such as an upstream that has no commits yet.
+func (s *Syncer) recordSyncSuccess(ctx context.Context, result *Result, duration time.Duration) {
+	telemetry.SyncDurationSeconds.WithLabelValues(result.RepoName, "total").Observe(duration.Seconds())
+	logSyncSuccess(ctx, *result, duration)
+	telemetry.SyncSuccessTotal.WithLabelValues(result.RepoName).Inc()
+	telemetry.LastSuccessTimestamp.WithLabelValues(result.RepoName).Set(float64(time.Now().Unix()))
 }
 
 func (s *Syncer) addBranchSynced(result *Result, branch string) {
@@ -402,24 +448,39 @@ func (s *Syncer) syncTagsWrapper(ctx context.Context, r *git.Repository, repo *c
 }
 
 func (s *Syncer) handleCheckout(r *git.Repository, repo *config.RepoConfig, defaultBranch string, result *Result) {
-	if repo.Checkout == "" {
-		return
+	// When no checkout is configured, default to the remote's HEAD (default) branch.
+	implicit := repo.Checkout == ""
+	target := repo.Checkout
+	if implicit {
+		if defaultBranch == "" {
+			// Empty upstream (no commits) or unknown default branch: nothing to check out.
+			slog.Debug("no checkout configured and no default branch available, skipping checkout", "repo", repo.Name)
+			return
+		}
+		target = defaultBranch
 	}
 
-	err := checkoutRef(r, repo.Checkout)
+	err := checkoutRef(r, target)
 	if err != nil {
-		if defaultBranch == "" || repo.Checkout == defaultBranch {
-			slog.Error("failed to checkout", "ref", repo.Checkout, "error", err)
-			s.setErr(result, fmt.Errorf("checkout %s: %w", repo.Checkout, err))
+		if defaultBranch == "" || target == defaultBranch {
+			// An implicit default-branch checkout is best-effort: the head branch may
+			// simply not be mirrored locally (e.g. excluded by the branches patterns).
+			// Don't fail the whole sync over it.
+			if implicit {
+				slog.Warn("skipping default-branch checkout: ref not available locally", "ref", target, "error", err)
+				return
+			}
+			slog.Error("failed to checkout", "ref", target, "error", err)
+			s.setErr(result, fmt.Errorf("checkout %s: %w", target, err))
 			return
 		}
 
-		slog.Warn("failed to checkout configured ref, falling back to default branch", "ref", repo.Checkout, "fallback", defaultBranch, "error", err)
+		slog.Warn("failed to checkout configured ref, falling back to default branch", "ref", target, "fallback", defaultBranch, "error", err)
 
 		fallbackErr := checkoutRef(r, defaultBranch)
 		if fallbackErr != nil {
 			slog.Error("fallback checkout also failed", "ref", defaultBranch, "error", fallbackErr)
-			s.setErr(result, fmt.Errorf("checkout %s: %w", repo.Checkout, err))
+			s.setErr(result, fmt.Errorf("checkout %s: %w", target, err))
 			return
 		}
 
@@ -430,7 +491,7 @@ func (s *Syncer) handleCheckout(r *git.Repository, repo *config.RepoConfig, defa
 	}
 
 	s.mu.Lock()
-	result.Checkout = repo.Checkout
+	result.Checkout = target
 	s.mu.Unlock()
 }
 

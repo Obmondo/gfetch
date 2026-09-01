@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	git "github.com/go-git/go-git/v5"
@@ -117,6 +118,18 @@ func checkoutRefContext(ctx context.Context, repo *git.Repository, name string) 
 
 	slog.Debug("checked out ref", "ref", name, "hash", hash.String()[:12])
 	return nil
+}
+
+// isObjectNotFoundErr reports whether err is a missing-object failure. This
+// happens when a ref resolves but its object graph is incomplete locally — e.g.
+// an interrupted prior fetch on a persistent volume left the commit but not its
+// tree/blobs. go-git then advertises the commit as a "have", so an ordinary
+// fetch never repairs it and the checkout fails reading the missing tree.
+func isObjectNotFoundErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	return errors.Is(err, plumbing.ErrObjectNotFound) || strings.Contains(err.Error(), "object not found")
 }
 
 // shouldCheckoutBranch reports whether checkoutRef should run for a branch sync.
