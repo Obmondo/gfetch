@@ -199,7 +199,33 @@ func isRecoverableOpenVoxRepoError(err error) bool {
 	}
 
 	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "ref file is empty")
+	// "object not found" covers a ref that resolves locally while the commit/
+	// tree/blob objects it points at are missing (e.g. a shared-cache alternate
+	// that no longer holds them, or an interrupted prior sync). Recreating the
+	// repo from the cache and refetching from origin restores the objects.
+	return strings.Contains(msg, "ref file is empty") || strings.Contains(msg, "object not found")
+}
+
+// objectPresentLocally reports whether the object identified by hash is
+// materialised in the repo's object store (including via alternates).
+func objectPresentLocally(repo *git.Repository, hash plumbing.Hash) bool {
+	_, err := repo.Object(plumbing.AnyObject, hash)
+	return err == nil
+}
+
+// isUnclonableCacheErr reports whether a clone-from-cache failure is one we can
+// recover from by initialising an empty repo wired to the cache via alternates:
+// an empty cache, or a cache that has refs but no resolvable HEAD (e.g. its
+// default branch isn't "master"). Any other clone error is a real failure.
+func isUnclonableCacheErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, transport.ErrEmptyRemoteRepository) || errors.Is(err, plumbing.ErrReferenceNotFound) {
+		return true
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "remote repository is empty") || strings.Contains(msg, "reference not found")
 }
 
 func openVoxWorkerCount(repo *config.RepoConfig) int {
@@ -240,6 +266,10 @@ func (s *Syncer) syncRepoOpenVox(ctx context.Context, repo *config.RepoConfig, o
 	resolverPath := filepath.Join(repo.LocalPath, metaDir)
 	resolverRepo, refs, err := loadResolverRepoAndRefs(ctx, repo.Name, resolverPath, cachePath, repo.URL, auth)
 	if err != nil {
+		if errors.Is(err, transport.ErrEmptyRemoteRepository) {
+			log.Info("remote repository has no commits yet, nothing to sync")
+			return result
+		}
 		telemetry.SyncFailuresTotal.WithLabelValues(repo.Name, "clone").Inc()
 		result.Err = fmt.Errorf("resolver repo: %w", err)
 		return result
@@ -418,10 +448,16 @@ func getRepoWithSharedCache(repoPath, cachePath, remoteURL string, auth transpor
 		Shared: true,
 	})
 	if err != nil {
-		if !strings.Contains(err.Error(), "remote repository is empty") {
+		if !isUnclonableCacheErr(err) {
 			return nil, fmt.Errorf("clone from cache: %w", err)
 		}
-		// If clone failed, maybe because cache is empty.
+		// The cache can't be cloned from directly: it's either empty, or it has
+		// refs but no resolvable HEAD. The latter happens on the first sync of a
+		// repo whose default branch isn't "master" (go-git's init-time HEAD for
+		// the bare cache): SyncCentralCache fetches refs/heads/<default> but the
+		// cache HEAD still dangles at refs/heads/master, so PlainClone fails with
+		// "reference not found". Fall back to an empty repo wired to the shared
+		// cache via alternates; refs are then fetched per-branch from origin.
 		// PlainClone might have left a partially created .git directory which breaks PlainInit.
 		_ = os.RemoveAll(filepath.Join(repoPath, ".git"))
 
@@ -858,7 +894,14 @@ func isBranchUpToDateLocal(repo *git.Repository, branch string, remoteHash plumb
 	if err != nil {
 		return false, err
 	}
-	return localRef.Hash() == remoteHash, nil
+	if localRef.Hash() != remoteHash {
+		return false, nil
+	}
+	// The ref matches, but only skip the fetch if the objects are actually
+	// present locally. A ref can resolve while its objects are missing (shared
+	// cache via alternates, or a partial prior sync); taking the fast path then
+	// makes the subsequent checkout fail with "object not found".
+	return objectPresentLocally(repo, remoteHash), nil
 }
 
 func isTagUpToDateLocal(repo *git.Repository, tag string, remoteHash plumbing.Hash) (bool, error) {
@@ -866,7 +909,10 @@ func isTagUpToDateLocal(repo *git.Repository, tag string, remoteHash plumbing.Ha
 	if err != nil {
 		return false, err
 	}
-	return localRef.Hash() == remoteHash, nil
+	if localRef.Hash() != remoteHash {
+		return false, nil
+	}
+	return objectPresentLocally(repo, remoteHash), nil
 }
 
 func (s *Syncer) syncOneOpenVoxBranch(ctx context.Context, repo *config.RepoConfig, ref *plumbing.Reference, auth transport.AuthMethod, result *Result) {

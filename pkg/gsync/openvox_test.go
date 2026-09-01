@@ -606,3 +606,197 @@ func TestPruneStaleOpenVoxDirs_MissingDir(t *testing.T) {
 		t.Errorf("expected no branches pruned, got %v", result.BranchesPruned)
 	}
 }
+
+func TestIsBranchUpToDateLocal_RefMatchesButObjectMissing(t *testing.T) {
+	repo := initTestRepoWithCommit(t)
+
+	head, err := repo.Head()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Real branch whose object is present: up to date.
+	upToDate, err := isBranchUpToDateLocal(repo, head.Name().Short(), head.Hash())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !upToDate {
+		t.Fatal("expected up-to-date for a branch whose objects are present")
+	}
+
+	// Ref present but points at a missing object: must NOT take the fast path,
+	// otherwise the subsequent checkout fails with "object not found".
+	missing := plumbing.NewHash("1234567890123456789012345678901234567890")
+	ghost := plumbing.NewHashReference(plumbing.NewBranchReferenceName("ghost"), missing)
+	if err := repo.Storer.SetReference(ghost); err != nil {
+		t.Fatal(err)
+	}
+	upToDate, err = isBranchUpToDateLocal(repo, "ghost", missing)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if upToDate {
+		t.Fatal("expected NOT up-to-date when the ref's objects are missing locally")
+	}
+}
+
+func TestIsTagUpToDateLocal_RefMatchesButObjectMissing(t *testing.T) {
+	repo := initTestRepoWithCommit(t)
+
+	head, err := repo.Head()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Lightweight tag at a present commit: up to date.
+	realTag := plumbing.NewHashReference(plumbing.NewTagReferenceName("v-real"), head.Hash())
+	if err := repo.Storer.SetReference(realTag); err != nil {
+		t.Fatal(err)
+	}
+	upToDate, err := isTagUpToDateLocal(repo, "v-real", head.Hash())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !upToDate {
+		t.Fatal("expected up-to-date for a tag whose objects are present")
+	}
+
+	missing := plumbing.NewHash("1234567890123456789012345678901234567890")
+	ghost := plumbing.NewHashReference(plumbing.NewTagReferenceName("v-ghost"), missing)
+	if err := repo.Storer.SetReference(ghost); err != nil {
+		t.Fatal(err)
+	}
+	upToDate, err = isTagUpToDateLocal(repo, "v-ghost", missing)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if upToDate {
+		t.Fatal("expected NOT up-to-date when the tag's objects are missing locally")
+	}
+}
+
+func TestIsRecoverableOpenVoxRepoError_ObjectNotFound(t *testing.T) {
+	// The exact shape checkoutRefContext returns when a ref exists but its
+	// objects are missing. This must be recoverable so the caller recreates
+	// the repo and retries instead of failing the branch/tag.
+	if !isRecoverableOpenVoxRepoError(errors.New("checkout main: object not found")) {
+		t.Fatal("expected 'object not found' checkout error to be recoverable")
+	}
+	if !isRecoverableOpenVoxRepoError(errors.New("object not found")) {
+		t.Fatal("expected 'object not found' to be recoverable")
+	}
+	if isRecoverableOpenVoxRepoError(errors.New("permission denied")) {
+		t.Fatal("did not expect an unrelated error to be recoverable")
+	}
+	if isRecoverableOpenVoxRepoError(nil) {
+		t.Fatal("nil must not be recoverable")
+	}
+}
+
+// initBareRemoteWithDefaultBranch creates a bare remote whose default branch is
+// defaultBranch (e.g. "main", not go-git's "master"), plus extra branches, each
+// pointing at a single seeded commit. Returns the commit hash.
+func initBareRemoteWithDefaultBranch(t *testing.T, bareDir, defaultBranch string, extraBranches []string) plumbing.Hash {
+	t.Helper()
+	bare, err := git.PlainInit(bareDir, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bare.Storer.SetReference(plumbing.NewSymbolicReference(plumbing.HEAD, plumbing.NewBranchReferenceName(defaultBranch))); err != nil {
+		t.Fatal(err)
+	}
+
+	tmp := filepath.Join(t.TempDir(), "seed")
+	work, err := git.PlainInit(tmp, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := work.CreateRemote(&gitconfig.RemoteConfig{Name: RemoteOrigin, URLs: []string{bareDir}}); err != nil {
+		t.Fatal(err)
+	}
+	wt, err := work.Worktree()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmp, "README.md"), []byte("init"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := wt.Add("README.md"); err != nil {
+		t.Fatal(err)
+	}
+	sig := &object.Signature{Name: DefaultTestName, Email: DefaultTestEmail, When: time.Now()}
+	commit, err := wt.Commit("initial", &git.CommitOptions{Author: sig, Committer: sig})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := work.Storer.SetReference(plumbing.NewHashReference(plumbing.NewBranchReferenceName(defaultBranch), commit)); err != nil {
+		t.Fatal(err)
+	}
+	if err := work.Push(&git.PushOptions{RefSpecs: []gitconfig.RefSpec{gitconfig.RefSpec("+refs/heads/" + defaultBranch + ":refs/heads/" + defaultBranch)}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, b := range extraBranches {
+		if err := bare.Storer.SetReference(plumbing.NewHashReference(plumbing.NewBranchReferenceName(b), commit)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return commit
+}
+
+// TestSyncRepo_OpenVoxFirstCloneNonMasterDefault guards the first-clone case
+// where the upstream default branch isn't "master". The shared cache is created
+// with a bare "master" HEAD; after refs are fetched into it the cache HEAD still
+// dangles, so cloning per-branch dirs from it fails with "reference not found"
+// unless getRepoWithSharedCache falls back to init+alternates.
+func TestSyncRepo_OpenVoxFirstCloneNonMasterDefault(t *testing.T) {
+	bareDir := filepath.Join(t.TempDir(), "bare.git")
+	initBareRemoteWithDefaultBranch(t, bareDir, "main", []string{DevelopBranch, FeatureAuth})
+
+	localDir := filepath.Join(t.TempDir(), "openvox-local") // does not exist yet -> first clone
+
+	patterns := []config.Pattern{{Raw: "*"}}
+	if err := patterns[0].Compile(); err != nil {
+		t.Fatal(err)
+	}
+	openvox := true
+	repo := &config.RepoConfig{
+		RepoDefaults: config.RepoDefaults{LocalPath: localDir, Branches: patterns, OpenVox: &openvox},
+		Name:         DefaultTestName,
+		URL:          bareDir,
+	}
+
+	res := New().SyncRepo(context.Background(), repo, SyncOptions{})
+	if res.Err != nil {
+		t.Fatalf("first-clone openvox sync errored: %v", res.Err)
+	}
+	if len(res.BranchesFailed) != 0 {
+		t.Fatalf("branches failed on first clone: %v", res.BranchesFailed)
+	}
+
+	// Every branch dir must exist with the checked-out working tree.
+	for _, b := range []string{"main", DevelopBranch, FeatureAuth} {
+		f := filepath.Join(localDir, SanitizeName(b), "README.md")
+		if _, err := os.Stat(f); err != nil {
+			t.Errorf("missing checked-out file for branch %q at %s: %v", b, f, err)
+		}
+	}
+}
+
+func TestIsUnclonableCacheErr(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"empty-remote", errors.New("remote repository is empty"), true},
+		{"headless-cache", errors.New("reference not found"), true},
+		{"wrapped-headless", errors.New("some context: reference not found"), true},
+		{"unrelated", errors.New("permission denied"), false},
+	}
+	for _, tc := range cases {
+		if got := isUnclonableCacheErr(tc.err); got != tc.want {
+			t.Errorf("%s: isUnclonableCacheErr=%v want %v", tc.name, got, tc.want)
+		}
+	}
+}
