@@ -100,7 +100,7 @@ For AI coding agents: after making code changes, run `go fix ./...` before tests
 
 ## Code Conventions
 
-- **Go version**: 1.25 (see `go.mod`)
+- **Go version**: 1.27 (see `go.mod`)
 - **Module path**: `github.com/obmondo/gfetch`
 - **Logging**: `log/slog` with text handler to stderr. Logger is passed through structs (e.g., `Syncer.logger`), not globals. Use `.With("key", value)` for structured fields.
 - **CLI framework**: `github.com/spf13/cobra`. Commands are defined in `internal/cli/` with `newXxxCmd()` factory functions. Flags use package-level vars.
