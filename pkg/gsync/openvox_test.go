@@ -29,9 +29,9 @@ func TestEnsureClonedOpenVox_RecreatesNonRepoDir(t *testing.T) {
 	}
 
 	repoCfg := &config.RepoConfig{
-		RepoDefaults: config.RepoDefaults{LocalPath: localPath},
-		Name:         DefaultTestName,
-		URL:          "https://example.com/repo.git",
+		LocalPath: localPath,
+		Name:      DefaultTestName,
+		URL:       "https://example.com/repo.git",
 	}
 
 	r, err := getRepoWithSharedCache(localPath, filepath.Join(basePath, ".git", "cache.git"), "https://example.com/repo.git", nil)
@@ -99,12 +99,10 @@ func TestEnsureProductionAlias(t *testing.T) {
 	openVox := true
 	productionAlias := true
 	repo := &config.RepoConfig{
-		RepoDefaults: config.RepoDefaults{
-			LocalPath:       basePath,
-			OpenVox:         &openVox,
-			ProductionAlias: &productionAlias,
-		},
-		Name: DefaultTestName,
+		LocalPath:       basePath,
+		OpenVox:         &openVox,
+		ProductionAlias: &productionAlias,
+		Name:            DefaultTestName,
 	}
 
 	ensureProductionAlias(context.Background(), repo, testDefaultBranch, map[string]struct{}{testDefaultBranch: {}})
@@ -135,12 +133,10 @@ func TestEnsureProductionAlias_SkipsWhenProductionBranchExists(t *testing.T) {
 	openVox := true
 	productionAlias := true
 	repo := &config.RepoConfig{
-		RepoDefaults: config.RepoDefaults{
-			LocalPath:       basePath,
-			OpenVox:         &openVox,
-			ProductionAlias: &productionAlias,
-		},
-		Name: DefaultTestName,
+		LocalPath:       basePath,
+		OpenVox:         &openVox,
+		ProductionAlias: &productionAlias,
+		Name:            DefaultTestName,
 	}
 
 	ensureProductionAlias(context.Background(), repo, testDefaultBranch, map[string]struct{}{testDefaultBranch: {}, productionAliasName: {}})
@@ -477,8 +473,8 @@ func TestPruneStaleOpenVoxDirs(t *testing.T) {
 	}
 
 	repo := &config.RepoConfig{
-		RepoDefaults: config.RepoDefaults{LocalPath: basePath},
-		Name:         DefaultTestName,
+		LocalPath: basePath,
+		Name:      DefaultTestName,
 	}
 
 	result := &Result{RepoName: DefaultTestName}
@@ -528,8 +524,8 @@ func TestPruneStaleOpenVoxDirs_DryRun(t *testing.T) {
 	}
 
 	repo := &config.RepoConfig{
-		RepoDefaults: config.RepoDefaults{LocalPath: basePath},
-		Name:         DefaultTestName,
+		LocalPath: basePath,
+		Name:      DefaultTestName,
 	}
 
 	result := &Result{RepoName: DefaultTestName}
@@ -566,8 +562,8 @@ func TestPruneStaleOpenVoxDirs_LeavesLockFileForOrphanCleanup(t *testing.T) {
 	}
 
 	repo := &config.RepoConfig{
-		RepoDefaults: config.RepoDefaults{LocalPath: basePath},
-		Name:         DefaultTestName,
+		LocalPath: basePath,
+		Name:      DefaultTestName,
 	}
 
 	result := &Result{RepoName: DefaultTestName}
@@ -592,8 +588,8 @@ func TestPruneStaleOpenVoxDirs_MissingDir(t *testing.T) {
 	}
 
 	repo := &config.RepoConfig{
-		RepoDefaults: config.RepoDefaults{LocalPath: basePath},
-		Name:         DefaultTestName,
+		LocalPath: basePath,
+		Name:      DefaultTestName,
 	}
 
 	result := &Result{RepoName: DefaultTestName}

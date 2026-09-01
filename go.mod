@@ -1,6 +1,6 @@
 module github.com/obmondo/gfetch
 
-go 1.26.6
+go 1.27
 
 require (
 	github.com/go-co-op/gocron/v2 v2.22.0

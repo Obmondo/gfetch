@@ -262,12 +262,10 @@ func TestSyncHTTPS_Example(t *testing.T) {
 	syncer := New()
 	localDir := t.TempDir()
 	repoConfig := &config.RepoConfig{
-		RepoDefaults: config.RepoDefaults{
-			LocalPath: localDir,
-			Branches:  []config.Pattern{{Raw: testDefaultBranch}},
-		},
-		Name: "linuxaid-config-template",
-		URL:  "https://github.com/Obmondo/linuxaid-config-template.git",
+		LocalPath: localDir,
+		Branches:  []config.Pattern{{Raw: testDefaultBranch}},
+		Name:      "linuxaid-config-template",
+		URL:       "https://github.com/Obmondo/linuxaid-config-template.git",
 	}
 
 	result := syncer.SyncRepo(context.Background(), repoConfig, SyncOptions{})
@@ -370,15 +368,13 @@ func TestPruneStaleBranches(t *testing.T) {
 	syncer := New()
 	pruneStaleTrue := true
 	repoConfig := &config.RepoConfig{
-		RepoDefaults: config.RepoDefaults{
-			LocalPath:  localDir,
-			SSHKeyPath: sshKey,
-			Branches:   []config.Pattern{{Raw: "*"}},
-			PruneStale: &pruneStaleTrue,
-			StaleAge:   config.Duration(180 * 24 * time.Hour),
-		},
-		Name: DefaultTestName,
-		URL:  bareDir,
+		LocalPath:  localDir,
+		SSHKeyPath: sshKey,
+		Branches:   []config.Pattern{{Raw: "*"}},
+		PruneStale: &pruneStaleTrue,
+		StaleAge:   config.Duration(180 * 24 * time.Hour),
+		Name:       DefaultTestName,
+		URL:        bareDir,
 	}
 
 	// First verify it's there.
@@ -558,14 +554,12 @@ func TestPruneFalseOverridesDefault(t *testing.T) {
 
 	pruneFalse := false
 	repoConfig := &config.RepoConfig{
-		RepoDefaults: config.RepoDefaults{
-			LocalPath:  localDir,
-			SSHKeyPath: sshKey,
-			Branches:   []config.Pattern{{Raw: "master"}}, // extra-branch does not match
-			Prune:      &pruneFalse,
-		},
-		Name: DefaultTestName,
-		URL:  bareDir,
+		LocalPath:  localDir,
+		SSHKeyPath: sshKey,
+		Branches:   []config.Pattern{{Raw: "master"}}, // extra-branch does not match
+		Prune:      &pruneFalse,
+		Name:       DefaultTestName,
+		URL:        bareDir,
 	}
 
 	// Verify extra-branch exists before sync.
@@ -603,14 +597,12 @@ func TestPruneTrueFromConfigIsApplied(t *testing.T) {
 
 	pruneTrue := true
 	repoConfig := &config.RepoConfig{
-		RepoDefaults: config.RepoDefaults{
-			LocalPath:  localDir,
-			SSHKeyPath: sshKey,
-			Branches:   []config.Pattern{{Raw: "master"}}, // extra-branch does not match
-			Prune:      &pruneTrue,
-		},
-		Name: DefaultTestName,
-		URL:  bareDir,
+		LocalPath:  localDir,
+		SSHKeyPath: sshKey,
+		Branches:   []config.Pattern{{Raw: "master"}}, // extra-branch does not match
+		Prune:      &pruneTrue,
+		Name:       DefaultTestName,
+		URL:        bareDir,
 	}
 
 	// Verify extra-branch exists before sync.
@@ -712,4 +704,129 @@ func TestHandleCheckout_FallbackToDefault(t *testing.T) {
 			t.Fatalf("expected result.Checkout to be %s, got %s", defaultBranch, result.Checkout)
 		}
 	})
+}
+
+func TestSyncRepo_EmptyRemote(t *testing.T) {
+	tmp := t.TempDir()
+	bareDir := filepath.Join(tmp, "bare.git")
+	localDir := filepath.Join(tmp, "local")
+
+	if _, err := git.PlainInit(bareDir, true); err != nil {
+		t.Fatal(err)
+	}
+
+	repoCfg := &config.RepoConfig{
+		LocalPath:    localDir,
+		PollInterval: config.Duration(10 * time.Second),
+		Branches:     []config.Pattern{{Raw: "main"}},
+		Name:         "empty-repo",
+		URL:          bareDir,
+		Checkout:     "main",
+	}
+
+	s := New()
+	result := s.SyncRepo(context.Background(), repoCfg, SyncOptions{})
+
+	if result.Err != nil {
+		t.Fatalf("expected successful sync on empty remote, got error: %v", result.Err)
+	}
+	if result.RepoName != "empty-repo" {
+		t.Fatalf("expected RepoName to be 'empty-repo', got %s", result.RepoName)
+	}
+}
+
+func TestHandleCheckout_Table(t *testing.T) {
+	tmp := t.TempDir()
+	bareDir := filepath.Join(tmp, "bare.git")
+	localDir := filepath.Join(tmp, "local")
+
+	if _, err := git.PlainInit(bareDir, true); err != nil {
+		t.Fatal(err)
+	}
+
+	r, err := git.PlainClone(localDir, false, &git.CloneOptions{URL: bareDir})
+	if err != nil {
+		wt, initErr := git.PlainInit(localDir, false)
+		if initErr != nil {
+			t.Fatal(initErr)
+		}
+		r = wt
+	}
+
+	sig := &object.Signature{Name: DefaultTestName, Email: DefaultTestEmail, When: time.Now()}
+	wt, err := r.Worktree()
+	if err != nil {
+		t.Fatal(err)
+	}
+	testFile := filepath.Join(localDir, "README.md")
+	if err := os.WriteFile(testFile, []byte("# Test"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := wt.Add("README.md"); err != nil {
+		t.Fatal(err)
+	}
+	_, err = wt.Commit("init", &git.CommitOptions{Author: sig, Committer: sig})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	head, err := r.Head()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defBranch := head.Name().Short()
+
+	s := New()
+
+	tests := []struct {
+		name          string
+		checkout      string
+		defaultBranch string
+		wantErr       bool
+		wantCheckout  string
+	}{
+		{
+			name:          "empty checkout does nothing",
+			checkout:      "",
+			defaultBranch: defBranch,
+			wantErr:       false,
+			wantCheckout:  "",
+		},
+		{
+			name:          "valid checkout",
+			checkout:      defBranch,
+			defaultBranch: defBranch,
+			wantErr:       false,
+			wantCheckout:  defBranch,
+		},
+		{
+			name:          "missing checkout with valid fallback",
+			checkout:      "missing",
+			defaultBranch: defBranch,
+			wantErr:       false,
+			wantCheckout:  defBranch,
+		},
+		{
+			name:          "missing checkout with empty fallback",
+			checkout:      "missing",
+			defaultBranch: "",
+			wantErr:       true,
+			wantCheckout:  "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repoCfg := &config.RepoConfig{Checkout: tt.checkout}
+			result := &Result{}
+			s.handleCheckout(r, repoCfg, tt.defaultBranch, result)
+
+			if (result.Err != nil) != tt.wantErr {
+				t.Errorf("handleCheckout() error = %v, wantErr %v", result.Err, tt.wantErr)
+			}
+			if !tt.wantErr && result.Checkout != tt.wantCheckout {
+				t.Errorf("handleCheckout() checkout = %q, want %q", result.Checkout, tt.wantCheckout)
+			}
+		})
+	}
 }

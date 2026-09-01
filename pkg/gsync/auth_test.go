@@ -154,6 +154,8 @@ func TestSSHHostPort(t *testing.T) {
 		{"ssh://git@git.example.com:2223/foo/bar.git", "git.example.com:2223"},
 		{"ssh://git@github.com/foo/bar.git", "github.com:22"},
 		{"git@github.com:foo/bar.git", "github.com:22"},
+		{"git@192.168.1.10:repo.git", "192.168.1.10:22"},
+		{"ssh://git@[2001:db8::1]:2222/repo.git", "[2001:db8::1]:2222"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.url, func(t *testing.T) {
@@ -192,6 +194,12 @@ func TestMergeAlgorithms(t *testing.T) {
 			hostAlgos: []string{"x", "x", "y"},
 			fallback:  []string{"y", "z"},
 			want:      []string{"x", "y", "z"},
+		},
+		{
+			name:      "multiple overlapping hostAlgos and fallback",
+			hostAlgos: []string{"a", "c"},
+			fallback:  []string{"a", "b", "c", "d"},
+			want:      []string{"a", "c", "b", "d"},
 		},
 	}
 	for _, tc := range cases {

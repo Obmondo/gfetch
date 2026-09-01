@@ -449,8 +449,7 @@ func TestValidate_NoReposConfigured(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for empty config, got nil")
 	}
-	var partial *PartialValidateError
-	if errors.As(err, &partial) {
+	if _, ok := errors.AsType[*PartialValidateError](err); ok {
 		t.Fatalf("expected plain error, got *PartialValidateError: %v", err)
 	}
 	if err.Error() != "no repos configured" {
@@ -647,12 +646,10 @@ func TestApplyDefaults_PruneBoolOverride(t *testing.T) {
 				PruneStale:   tt.defaultStale,
 			}
 			repo := &RepoConfig{
-				Name: testRepoName,
-				URL:  testRepoURL,
-				RepoDefaults: RepoDefaults{
-					Prune:      tt.repoPrune,
-					PruneStale: tt.repoStale,
-				},
+				Name:       testRepoName,
+				URL:        testRepoURL,
+				Prune:      tt.repoPrune,
+				PruneStale: tt.repoStale,
 			}
 			applyDefaults(repo, defaults)
 
@@ -672,6 +669,35 @@ func TestApplyDefaults_PruneBoolOverride(t *testing.T) {
 				t.Errorf("prune_stale: want %v, got nil", *tt.wantStale)
 			case tt.wantStale != nil && *repo.PruneStale != *tt.wantStale:
 				t.Errorf("prune_stale: want %v, got %v", *tt.wantStale, *repo.PruneStale)
+			}
+		})
+	}
+}
+
+func TestParseDuration(t *testing.T) {
+	tests := []struct {
+		input   string
+		want    time.Duration
+		wantErr bool
+	}{
+		{"", 0, false},
+		{"30s", 30 * time.Second, false},
+		{"5m", 5 * time.Minute, false},
+		{"2h", 2 * time.Hour, false},
+		{"1d", 24 * time.Hour, false},
+		{"0.5d", 12 * time.Hour, false},
+		{"invalid", 0, true},
+		{"10x", 0, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got, err := ParseDuration(tt.input)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ParseDuration(%q) error = %v, wantErr %v", tt.input, err, tt.wantErr)
+				return
+			}
+			if !tt.wantErr && got != tt.want {
+				t.Errorf("ParseDuration(%q) = %v, want %v", tt.input, got, tt.want)
 			}
 		})
 	}

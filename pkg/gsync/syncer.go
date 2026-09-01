@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -123,9 +124,28 @@ func (s *Syncer) SyncRepo(ctx context.Context, repo *config.RepoConfig, opts Syn
 
 	refs, err := listRemoteRefs(ctx, r, auth, repo.Name, "standard")
 	if err != nil {
+		if strings.Contains(err.Error(), "empty") {
+			log.Info("remote repository is empty; skipping sync and checkout")
+			duration := time.Since(start)
+			telemetry.SyncDurationSeconds.WithLabelValues(repo.Name, "total").Observe(duration.Seconds())
+			logSyncSuccess(ctx, result, duration)
+			telemetry.SyncSuccessTotal.WithLabelValues(repo.Name).Inc()
+			telemetry.LastSuccessTimestamp.WithLabelValues(repo.Name).Set(float64(time.Now().Unix()))
+			return result
+		}
 		log.Error("failed to list remote refs", "error", err)
 		telemetry.SyncFailuresTotal.WithLabelValues(repo.Name, "clone").Inc()
 		result.Err = fmt.Errorf("listing remote refs: %w", err)
+		return result
+	}
+
+	if len(refs) == 0 {
+		log.Info("remote repository is empty; skipping sync and checkout")
+		duration := time.Since(start)
+		telemetry.SyncDurationSeconds.WithLabelValues(repo.Name, "total").Observe(duration.Seconds())
+		logSyncSuccess(ctx, result, duration)
+		telemetry.SyncSuccessTotal.WithLabelValues(repo.Name).Inc()
+		telemetry.LastSuccessTimestamp.WithLabelValues(repo.Name).Set(float64(time.Now().Unix()))
 		return result
 	}
 
@@ -408,6 +428,11 @@ func (s *Syncer) handleCheckout(r *git.Repository, repo *config.RepoConfig, defa
 
 	err := checkoutRef(r, repo.Checkout)
 	if err != nil {
+		if _, headErr := r.Head(); headErr != nil {
+			slog.Info("skipping checkout: repository has no commits or HEAD yet", "ref", repo.Checkout)
+			return
+		}
+
 		if defaultBranch == "" || repo.Checkout == defaultBranch {
 			slog.Error("failed to checkout", "ref", repo.Checkout, "error", err)
 			s.setErr(result, fmt.Errorf("checkout %s: %w", repo.Checkout, err))

@@ -147,13 +147,11 @@ func newTestScheduler(t *testing.T) *Scheduler {
 
 func testRepo(name, branch string) config.RepoConfig {
 	return config.RepoConfig{
-		RepoDefaults: config.RepoDefaults{
-			LocalPath:    "/tmp/" + name,
-			PollInterval: config.Duration(time.Minute),
-			Branches:     []config.Pattern{{Raw: branch}},
-		},
-		Name: name,
-		URL:  "https://example.com/" + name + ".git",
+		LocalPath:    "/tmp/" + name,
+		PollInterval: config.Duration(time.Minute),
+		Branches:     []config.Pattern{{Raw: branch}},
+		Name:         name,
+		URL:          "https://example.com/" + name + ".git",
 	}
 }
 
