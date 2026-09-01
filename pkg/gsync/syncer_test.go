@@ -829,30 +829,47 @@ func seedBareWithHistory(t *testing.T, bareDir string) plumbing.Hash {
 	if err != nil {
 		t.Fatal(err)
 	}
-	bare.Storer.SetReference(plumbing.NewSymbolicReference(plumbing.HEAD, plumbing.NewBranchReferenceName("main")))
+	if err := bare.Storer.SetReference(plumbing.NewSymbolicReference(plumbing.HEAD, plumbing.NewBranchReferenceName(MainBranch))); err != nil {
+		t.Fatal(err)
+	}
 
 	tmp := filepath.Join(t.TempDir(), "seed")
 	work, err := git.PlainInit(tmp, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	work.CreateRemote(&gitconfig.RemoteConfig{Name: RemoteOrigin, URLs: []string{bareDir}})
-	wt, _ := work.Worktree()
+	if _, err := work.CreateRemote(&gitconfig.RemoteConfig{Name: RemoteOrigin, URLs: []string{bareDir}}); err != nil {
+		t.Fatal(err)
+	}
+	wt, err := work.Worktree()
+	if err != nil {
+		t.Fatal(err)
+	}
 	sig := func() *object.Signature {
 		return &object.Signature{Name: DefaultTestName, Email: DefaultTestEmail, When: time.Now()}
 	}
-	os.WriteFile(filepath.Join(tmp, "keep.txt"), []byte("from c1"), 0644)
-	wt.Add("keep.txt")
+	if err := os.WriteFile(filepath.Join(tmp, "keep.txt"), []byte("from c1"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := wt.Add("keep.txt"); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := wt.Commit("c1", &git.CommitOptions{Author: sig(), Committer: sig()}); err != nil {
 		t.Fatal(err)
 	}
-	os.WriteFile(filepath.Join(tmp, "b.txt"), []byte("from c2"), 0644)
-	wt.Add("b.txt")
+	if err := os.WriteFile(filepath.Join(tmp, "b.txt"), []byte("from c2"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := wt.Add("b.txt"); err != nil {
+		t.Fatal(err)
+	}
 	tip, err := wt.Commit("c2", &git.CommitOptions{Author: sig(), Committer: sig()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	work.Storer.SetReference(plumbing.NewHashReference(plumbing.NewBranchReferenceName("main"), tip))
+	if err := work.Storer.SetReference(plumbing.NewHashReference(plumbing.NewBranchReferenceName(MainBranch), tip)); err != nil {
+		t.Fatal(err)
+	}
 	if err := work.Push(&git.PushOptions{RefSpecs: []gitconfig.RefSpec{"+refs/heads/main:refs/heads/main"}}); err != nil {
 		t.Fatal(err)
 	}
@@ -887,12 +904,18 @@ func TestSyncRepo_RepairsIncompleteObjectStore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r.CreateRemote(&gitconfig.RemoteConfig{Name: RemoteOrigin, URLs: []string{bareDir}})
+	if _, err := r.CreateRemote(&gitconfig.RemoteConfig{Name: RemoteOrigin, URLs: []string{bareDir}}); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := r.Storer.SetEncodedObject(commitObj); err != nil {
 		t.Fatal(err)
 	}
-	r.Storer.SetReference(plumbing.NewHashReference(plumbing.NewRemoteReferenceName(RemoteOrigin, "main"), tip))
-	r.Storer.SetReference(plumbing.NewHashReference(plumbing.NewBranchReferenceName("main"), tip))
+	if err := r.Storer.SetReference(plumbing.NewHashReference(plumbing.NewRemoteReferenceName(RemoteOrigin, MainBranch), tip)); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Storer.SetReference(plumbing.NewHashReference(plumbing.NewBranchReferenceName(MainBranch), tip)); err != nil {
+		t.Fatal(err)
+	}
 
 	bp := []config.Pattern{{Raw: "*"}}
 	if err := bp[0].Compile(); err != nil {
@@ -902,14 +925,14 @@ func TestSyncRepo_RepairsIncompleteObjectStore(t *testing.T) {
 		RepoDefaults: config.RepoDefaults{LocalPath: localDir, Branches: bp},
 		Name:         DefaultTestName,
 		URL:          bareDir,
-		Checkout:     "main",
+		Checkout:     MainBranch,
 	}
 
 	res := New().SyncRepo(context.Background(), repo, SyncOptions{})
 	if res.Err != nil {
 		t.Fatalf("expected repair-and-retry to succeed, got: %v", res.Err)
 	}
-	if res.Checkout != "main" {
+	if res.Checkout != MainBranch {
 		t.Fatalf("expected checkout=main, got %q", res.Checkout)
 	}
 	// The working tree must be materialised after repair.

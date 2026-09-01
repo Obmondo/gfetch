@@ -750,7 +750,7 @@ func initBareRemoteWithDefaultBranch(t *testing.T, bareDir, defaultBranch string
 // unless getRepoWithSharedCache falls back to init+alternates.
 func TestSyncRepo_OpenVoxFirstCloneNonMasterDefault(t *testing.T) {
 	bareDir := filepath.Join(t.TempDir(), "bare.git")
-	initBareRemoteWithDefaultBranch(t, bareDir, "main", []string{DevelopBranch, FeatureAuth})
+	initBareRemoteWithDefaultBranch(t, bareDir, MainBranch, []string{DevelopBranch, FeatureAuth})
 
 	localDir := filepath.Join(t.TempDir(), "openvox-local") // does not exist yet -> first clone
 
@@ -774,7 +774,7 @@ func TestSyncRepo_OpenVoxFirstCloneNonMasterDefault(t *testing.T) {
 	}
 
 	// Every branch dir must exist with the checked-out working tree.
-	for _, b := range []string{"main", DevelopBranch, FeatureAuth} {
+	for _, b := range []string{MainBranch, DevelopBranch, FeatureAuth} {
 		f := filepath.Join(localDir, SanitizeName(b), "README.md")
 		if _, err := os.Stat(f); err != nil {
 			t.Errorf("missing checked-out file for branch %q at %s: %v", b, f, err)

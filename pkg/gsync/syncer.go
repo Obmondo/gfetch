@@ -207,7 +207,7 @@ func (s *Syncer) runStandardSync(ctx context.Context, repo *config.RepoConfig, a
 // recordSyncSuccess marks a repo sync as successful, emitting the same success
 // logs and metrics as the normal completion path. Used for benign no-op syncs
 // such as an upstream that has no commits yet.
-func (s *Syncer) recordSyncSuccess(ctx context.Context, result *Result, duration time.Duration) {
+func (*Syncer) recordSyncSuccess(ctx context.Context, result *Result, duration time.Duration) {
 	telemetry.SyncDurationSeconds.WithLabelValues(result.RepoName, "total").Observe(duration.Seconds())
 	logSyncSuccess(ctx, *result, duration)
 	telemetry.SyncSuccessTotal.WithLabelValues(result.RepoName).Inc()
