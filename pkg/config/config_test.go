@@ -14,6 +14,7 @@ import (
 
 const (
 	branchMain    = "main"
+	tagSemverGlob = `/^v[0-9]+\./`
 	testRepoName  = "test"
 	testLocalPath = "/tmp/test"
 	testRepoURL   = "git@github.com:test/repo.git"
@@ -739,7 +740,7 @@ func TestValidate_DefaultBranchOnlyRejectsOpenVox(t *testing.T) {
 // Tags stay allowed: syncing the default branch plus a set of tags is coherent.
 func TestValidate_DefaultBranchOnlyAllowsTags(t *testing.T) {
 	repo := defaultBranchOnlyRepo(t)
-	repo.Tags = []Pattern{{Raw: `/^v[0-9]+\./`}}
+	repo.Tags = []Pattern{{Raw: tagSemverGlob}}
 	cfg := &Config{Repos: map[string]RepoConfig{testRepoName: repo}}
 
 	if err := cfg.Validate(); err != nil {
@@ -749,17 +750,98 @@ func TestValidate_DefaultBranchOnlyAllowsTags(t *testing.T) {
 
 // Inherited branch patterns must not trip the guard: the operator did not set
 // branches on this repo, the defaults block did.
-func TestValidate_DefaultBranchOnlySkipsInheritedBranches(t *testing.T) {
-	repo := defaultBranchOnlyRepo(t)
-	cfg := &Config{
-		Defaults: &RepoDefaults{Branches: []Pattern{{Raw: branchMain}}},
-		Repos:    map[string]RepoConfig{testRepoName: repo},
+//
+// This goes through Load rather than Validate on purpose. applyDefaults runs
+// only in loadFile/loadDir, so a Validate-only test passes with the guard
+// deleted and proves nothing.
+func TestLoadDir_DefaultBranchOnlySkipsInheritedBranches(t *testing.T) {
+	dir := t.TempDir()
+	keyFile := filepath.Join(dir, "key")
+	if err := os.WriteFile(keyFile, []byte("fake"), 0600); err != nil {
+		t.Fatal(err)
 	}
 
-	if err := cfg.Validate(); err != nil {
-		t.Fatalf("inherited branches should not fail a default_branch_only repo, got %v", err)
+	if err := os.WriteFile(filepath.Join(dir, "global.yaml"), []byte(`branches:
+  - main
+poll_interval: 1m
+`), 0644); err != nil {
+		t.Fatal(err)
 	}
-	if got := cfg.Repos[testRepoName].Branches; len(got) != 0 {
-		t.Fatalf("branches = %v, want none inherited", got)
+
+	repoDir := filepath.Join(dir, "repo1")
+	if err := os.MkdirAll(repoDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, "config.yaml"), []byte(`repos:
+  repo1:
+    url: git@github.com:test/repo1.git
+    ssh_key_path: `+keyFile+`
+    local_path: `+dir+`/repo1-clone
+    poll_interval: 1m
+    default_branch_only: true
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	repo, ok := cfg.Repos["repo1"]
+	if !ok {
+		t.Fatal("repo1 missing after load")
+	}
+	if len(repo.Branches) != 0 {
+		t.Fatalf("branches = %v, want none inherited", repo.Branches)
+	}
+	if !repo.IsDefaultBranchOnly() {
+		t.Fatal("default_branch_only was lost")
+	}
+
+	// Validate drops repos it rejects, so surviving it is the real assertion.
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("validate after load: %v", err)
+	}
+	if _, ok := cfg.Repos["repo1"]; !ok {
+		t.Fatal("repo1 was dropped: inherited branches must not fail a default_branch_only repo")
+	}
+}
+
+// The guard must still reject branches the operator set on the repo itself,
+// as opposed to ones inherited from defaults.
+func TestLoadDir_DefaultBranchOnlyRejectsExplicitBranches(t *testing.T) {
+	dir := t.TempDir()
+	keyFile := filepath.Join(dir, "key")
+	if err := os.WriteFile(keyFile, []byte("fake"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	repoDir := filepath.Join(dir, "repo1")
+	if err := os.MkdirAll(repoDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, "config.yaml"), []byte(`repos:
+  repo1:
+    url: git@github.com:test/repo1.git
+    ssh_key_path: `+keyFile+`
+    local_path: `+dir+`/repo1-clone
+    poll_interval: 1m
+    default_branch_only: true
+    branches:
+      - main
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Load does not validate; Validate is what drops an invalid repo.
+	_ = cfg.Validate()
+	if _, ok := cfg.Repos["repo1"]; ok {
+		t.Fatal("expected repo1 to be dropped for setting branches alongside default_branch_only")
 	}
 }

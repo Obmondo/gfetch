@@ -292,7 +292,20 @@ func (s *Syncer) syncBranches(ctx context.Context, r *git.Repository, repo *conf
 		s.addBranchSynced(result, branch)
 	}
 
-	obsolete, err := findObsoleteBranches(r, repo.Branches)
+	// default_branch_only leaves repo.Branches empty by design, so matching
+	// against it would mark every local branch obsolete — including the one
+	// just synced — and prune would then delete it while the sync still
+	// reported success. The configured set in that mode is the branches
+	// actually selected, which is the remote's default branch.
+	obsoletePatterns := repo.Branches
+	if repo.IsDefaultBranchOnly() {
+		obsoletePatterns = make([]config.Pattern, 0, len(branches))
+		for _, ref := range branches {
+			obsoletePatterns = append(obsoletePatterns, config.Pattern{Raw: ref.Name().Short()})
+		}
+	}
+
+	obsolete, err := findObsoleteBranches(r, obsoletePatterns)
 	if err != nil {
 		slog.Error("failed to find obsolete branches", "error", err)
 	}
@@ -447,6 +460,21 @@ func (s *Syncer) syncTagsWrapper(ctx context.Context, r *git.Repository, repo *c
 	s.mu.Unlock()
 }
 
+// handleImplicitCheckoutErr decides whether a failed default-branch checkout is
+// benign. It is only benign when the branch genuinely isn't mirrored locally
+// (e.g. excluded by the branch patterns). If the ref IS present, the checkout
+// failed for a real reason — typically a partial object store — and swallowing
+// it would both hide the failure and leave result.Err nil, which is what
+// SyncRepo's object-repair retry keys on.
+func (s *Syncer) handleImplicitCheckoutErr(r *git.Repository, target string, err error, result *Result) {
+	if _, refErr := r.Reference(plumbing.NewBranchReferenceName(target), true); refErr != nil {
+		slog.Warn("skipping default-branch checkout: ref not mirrored locally", "ref", target, "error", err)
+		return
+	}
+	slog.Error("failed to checkout default branch", "ref", target, "error", err)
+	s.setErr(result, fmt.Errorf("checkout %s: %w", target, err))
+}
+
 func (s *Syncer) handleCheckout(r *git.Repository, repo *config.RepoConfig, defaultBranch string, result *Result) {
 	// When no checkout is configured, default to the remote's HEAD (default) branch.
 	implicit := repo.Checkout == ""
@@ -463,11 +491,8 @@ func (s *Syncer) handleCheckout(r *git.Repository, repo *config.RepoConfig, defa
 	err := checkoutRef(r, target)
 	if err != nil {
 		if defaultBranch == "" || target == defaultBranch {
-			// An implicit default-branch checkout is best-effort: the head branch may
-			// simply not be mirrored locally (e.g. excluded by the branches patterns).
-			// Don't fail the whole sync over it.
 			if implicit {
-				slog.Warn("skipping default-branch checkout: ref not available locally", "ref", target, "error", err)
+				s.handleImplicitCheckoutErr(r, target, err, result)
 				return
 			}
 			slog.Error("failed to checkout", "ref", target, "error", err)

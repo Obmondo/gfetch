@@ -15,7 +15,10 @@ import (
 	"github.com/obmondo/gfetch/pkg/config"
 )
 
-const testDefaultBranch = "main"
+const (
+	testDefaultBranch = "main"
+	branchMaster      = "master"
+)
 
 func TestEnsureClonedOpenVox_RecreatesNonRepoDir(t *testing.T) {
 	basePath := t.TempDir()
@@ -815,7 +818,7 @@ func TestExtractRemoteRefStateDefaultBranchOnly(t *testing.T) {
 	}
 
 	// Patterns deliberately do not cover the default branch.
-	branchPatterns := []config.Pattern{{Raw: "main"}, {Raw: "master"}}
+	branchPatterns := []config.Pattern{{Raw: "main"}, {Raw: branchMaster}}
 
 	defaultBranch, _, matchedBranches, _ := extractRemoteRefState(refs, branchPatterns, nil, true)
 

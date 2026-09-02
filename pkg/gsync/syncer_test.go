@@ -561,7 +561,7 @@ func TestPruneFalseOverridesDefault(t *testing.T) {
 		RepoDefaults: config.RepoDefaults{
 			LocalPath:  localDir,
 			SSHKeyPath: sshKey,
-			Branches:   []config.Pattern{{Raw: "master"}}, // extra-branch does not match
+			Branches:   []config.Pattern{{Raw: branchMaster}}, // extra-branch does not match
 			Prune:      &pruneFalse,
 		},
 		Name: DefaultTestName,
@@ -606,7 +606,7 @@ func TestPruneTrueFromConfigIsApplied(t *testing.T) {
 		RepoDefaults: config.RepoDefaults{
 			LocalPath:  localDir,
 			SSHKeyPath: sshKey,
-			Branches:   []config.Pattern{{Raw: "master"}}, // extra-branch does not match
+			Branches:   []config.Pattern{{Raw: branchMaster}}, // extra-branch does not match
 			Prune:      &pruneTrue,
 		},
 		Name: DefaultTestName,
@@ -938,5 +938,52 @@ func TestSyncRepo_RepairsIncompleteObjectStore(t *testing.T) {
 	// The working tree must be materialised after repair.
 	if _, err := os.Stat(filepath.Join(localDir, "keep.txt")); err != nil {
 		t.Errorf("expected checked-out file keep.txt after repair: %v", err)
+	}
+}
+
+// TestFindObsoleteBranches_DefaultBranchOnlyKeepsSyncedBranch pins the fix for
+// the prune interaction: default_branch_only leaves repo.Branches empty, so
+// matching obsolete branches against it marked every branch obsolete —
+// including the one just synced. prune then deleted it while the sync still
+// reported success, and the guard in pruneBranches could not help because it
+// keys on repo.Checkout, which this mode forbids.
+func TestFindObsoleteBranches_DefaultBranchOnlyKeepsSyncedBranch(t *testing.T) {
+	dir := t.TempDir()
+	r, err := git.PlainInit(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A local branch standing in for the synced default branch.
+	head := plumbing.NewHashReference(plumbing.NewBranchReferenceName(branchMaster), plumbing.ZeroHash)
+	if err := r.Storer.SetReference(head); err != nil {
+		t.Fatal(err)
+	}
+
+	// Empty patterns are what default_branch_only produces: everything obsolete.
+	obsolete, err := findObsoleteBranches(r, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, b := range obsolete {
+		if b == branchMaster {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("precondition failed: empty patterns should mark the branch obsolete")
+	}
+
+	// The selected branch used as the pattern set is what syncBranches now
+	// passes, and it must keep that branch out of the obsolete list.
+	obsolete, err = findObsoleteBranches(r, []config.Pattern{{Raw: branchMaster}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, b := range obsolete {
+		if b == branchMaster {
+			t.Fatalf("synced default branch %q must not be marked obsolete", branchMaster)
+		}
 	}
 }
