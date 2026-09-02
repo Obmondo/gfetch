@@ -191,7 +191,7 @@ func (s *Syncer) runStandardSync(ctx context.Context, repo *config.RepoConfig, a
 		return result, false
 	}
 
-	defaultBranch, _, matchedBranches, matchedTagRefs := extractRemoteRefState(refs, repo.Branches, repo.Tags)
+	defaultBranch, _, matchedBranches, matchedTagRefs := extractRemoteRefState(refs, repo.Branches, repo.Tags, repo.IsDefaultBranchOnly())
 	matchedTags := make([]string, 0, len(matchedTagRefs))
 	for _, tagRef := range matchedTagRefs {
 		matchedTags = append(matchedTags, tagRef.Name().Short())

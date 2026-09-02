@@ -275,7 +275,7 @@ func (s *Syncer) syncRepoOpenVox(ctx context.Context, repo *config.RepoConfig, o
 		return result
 	}
 
-	defaultBranch, remoteBranches, matchedBranches, matchedTags := extractRemoteRefState(refs, repo.Branches, repo.Tags)
+	defaultBranch, remoteBranches, matchedBranches, matchedTags := extractRemoteRefState(refs, repo.Branches, repo.Tags, repo.IsDefaultBranchOnly())
 	workers := openVoxWorkerCount(repo)
 
 	telemetry.RemoteRefsCount.WithLabelValues(repo.Name).Set(float64(len(matchedBranches) + len(matchedTags)))
@@ -392,7 +392,7 @@ func (s *Syncer) syncCache(ctx context.Context, cachePath string, repo *config.R
 		return result.Err
 	}
 
-	_, _, matchedBranches, matchedTags := extractRemoteRefState(refs, repo.Branches, repo.Tags)
+	_, _, matchedBranches, matchedTags := extractRemoteRefState(refs, repo.Branches, repo.Tags, repo.IsDefaultBranchOnly())
 	refSpecs = s.prepareRefSpecs(repo, refs, matchedBranches, matchedTags)
 
 	if err := SyncCentralCache(ctx, cachePath, repo.URL, auth, refSpecs); err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) {
@@ -532,7 +532,14 @@ func listRemoteRefs(ctx context.Context, repo *git.Repository, auth transport.Au
 	return refs, nil
 }
 
-func extractRemoteRefState(refs []*plumbing.Reference, branchPatterns, tagPatterns []config.Pattern) (string, map[string]struct{}, []*plumbing.Reference, []*plumbing.Reference) {
+// extractRemoteRefState splits the remote's advertised refs into the default
+// branch, every branch name seen, and the branch/tag refs selected for syncing.
+//
+// When defaultBranchOnly is set, the branch patterns are ignored and the only
+// branch selected is the one HEAD points at. HEAD is resolved in its own pass
+// first, because servers are free to advertise it after the branch refs and
+// the selection depends on knowing it.
+func extractRemoteRefState(refs []*plumbing.Reference, branchPatterns, tagPatterns []config.Pattern, defaultBranchOnly bool) (string, map[string]struct{}, []*plumbing.Reference, []*plumbing.Reference) {
 	branches := make(map[string]struct{})
 	defaultBranch := ""
 	matchedBranches := make([]*plumbing.Reference, 0)
@@ -541,16 +548,26 @@ func extractRemoteRefState(refs []*plumbing.Reference, branchPatterns, tagPatter
 	seenTags := make(map[string]bool)
 
 	for _, ref := range refs {
+		if ref.Name() == plumbing.HEAD {
+			defaultBranch = ref.Target().Short()
+			break
+		}
+	}
+
+	for _, ref := range refs {
 		name := ref.Name()
 		if name == plumbing.HEAD {
-			defaultBranch = ref.Target().Short()
 			continue
 		}
 
 		if name.IsBranch() {
 			branch := name.Short()
 			branches[branch] = struct{}{}
-			if !seenBranches[branch] && config.MatchesAny(branch, branchPatterns) {
+			selected := config.MatchesAny(branch, branchPatterns)
+			if defaultBranchOnly {
+				selected = defaultBranch != "" && branch == defaultBranch
+			}
+			if !seenBranches[branch] && selected {
 				matchedBranches = append(matchedBranches, ref)
 				seenBranches[branch] = true
 			}

@@ -77,6 +77,7 @@ type RepoDefaults struct {
 	PollInterval      Duration  `yaml:"poll_interval"`
 	Branches          []Pattern `yaml:"branches"`
 	Tags              []Pattern `yaml:"tags"`
+	DefaultBranchOnly *bool     `yaml:"default_branch_only"`
 	OpenVox           *bool     `yaml:"openvox"`
 	OpenVoxMaxWorkers *int      `yaml:"openvox_max_workers"`
 	ProductionAlias   *bool     `yaml:"production_alias"`
@@ -166,6 +167,14 @@ func (r *RepoConfig) IsHTTPS() bool {
 // IsOpenVox returns true if the repo is in OpenVox mode.
 func (r *RepoConfig) IsOpenVox() bool {
 	return r.OpenVox != nil && *r.OpenVox
+}
+
+// IsDefaultBranchOnly returns true if the repo should mirror only the remote's
+// default branch — whatever HEAD points at — instead of matching against the
+// branch patterns. Useful when the caller does not know the branch name up
+// front and only wants the one branch, rather than widening patterns to "*".
+func (r *RepoConfig) IsDefaultBranchOnly() bool {
+	return r.DefaultBranchOnly != nil && *r.DefaultBranchOnly
 }
 
 // HasProductionAlias returns true if the repo should have a production alias.
@@ -359,6 +368,9 @@ func applyDefaults(repo *RepoConfig, defaults *RepoDefaults) {
 	if len(repo.Tags) == 0 && len(defaults.Tags) > 0 {
 		repo.Tags = defaults.Tags
 	}
+	if defaults.DefaultBranchOnly != nil && repo.DefaultBranchOnly == nil {
+		repo.DefaultBranchOnly = defaults.DefaultBranchOnly
+	}
 	if defaults.OpenVox != nil && repo.OpenVox == nil {
 		repo.OpenVox = defaults.OpenVox
 	}
@@ -457,7 +469,8 @@ func (c *Config) validateRepo(r *RepoConfig) error {
 		r.StaleAge = Duration(180 * 24 * time.Hour)
 	}
 
-	if len(r.Branches) == 0 && len(r.Tags) == 0 {
+	// default_branch_only selects the branch by itself, so patterns are optional.
+	if len(r.Branches) == 0 && len(r.Tags) == 0 && !r.IsDefaultBranchOnly() {
 		return fmt.Errorf("repo %s: at least one branch or tag pattern is required", r.Name)
 	}
 
@@ -479,7 +492,9 @@ func (c *Config) validateRepo(r *RepoConfig) error {
 		return err
 	}
 
-	if r.Checkout != "" && !r.IsOpenVox() {
+	// In default_branch_only mode the branch patterns are not consulted, so a
+	// checkout cannot be validated against them.
+	if r.Checkout != "" && !r.IsOpenVox() && !r.IsDefaultBranchOnly() {
 		if !MatchesAny(r.Checkout, r.Branches) && !MatchesAny(r.Checkout, r.Tags) {
 			return fmt.Errorf("repo %s: checkout %q does not match any configured branch or tag pattern", r.Name, r.Checkout)
 		}
@@ -488,6 +503,9 @@ func (c *Config) validateRepo(r *RepoConfig) error {
 }
 
 func validateOpenVoxOptions(r *RepoConfig) error {
+	if r.IsDefaultBranchOnly() && r.IsOpenVox() {
+		return fmt.Errorf("repo %s: default_branch_only cannot be combined with openvox, which syncs every matched branch", r.Name)
+	}
 	if r.HasProductionAlias() && !r.IsOpenVox() {
 		return fmt.Errorf("repo %s: production_alias requires openvox=true", r.Name)
 	}

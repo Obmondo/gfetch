@@ -183,6 +183,7 @@ func TestExtractRemoteRefState(t *testing.T) {
 		refs,
 		[]config.Pattern{{Raw: "*"}},
 		[]config.Pattern{{Raw: "*"}},
+		false,
 	)
 
 	if defaultBranch != testDefaultBranch {
@@ -798,5 +799,40 @@ func TestIsUnclonableCacheErr(t *testing.T) {
 		if got := isUnclonableCacheErr(tc.err); got != tc.want {
 			t.Errorf("%s: isUnclonableCacheErr=%v want %v", tc.name, got, tc.want)
 		}
+	}
+}
+
+func TestExtractRemoteRefStateDefaultBranchOnly(t *testing.T) {
+	const oddDefault = "develop"
+
+	// HEAD is advertised last on purpose: selection must not depend on the
+	// server sending it ahead of the branch refs.
+	refs := []*plumbing.Reference{
+		plumbing.NewHashReference(plumbing.NewBranchReferenceName(oddDefault), plumbing.ZeroHash),
+		plumbing.NewHashReference(plumbing.NewBranchReferenceName("feature-a"), plumbing.ZeroHash),
+		plumbing.NewHashReference(plumbing.NewTagReferenceName(DefaultTag), plumbing.ZeroHash),
+		plumbing.NewSymbolicReference(plumbing.HEAD, plumbing.NewBranchReferenceName(oddDefault)),
+	}
+
+	// Patterns deliberately do not cover the default branch.
+	branchPatterns := []config.Pattern{{Raw: "main"}, {Raw: "master"}}
+
+	defaultBranch, _, matchedBranches, _ := extractRemoteRefState(refs, branchPatterns, nil, true)
+
+	if defaultBranch != oddDefault {
+		t.Fatalf("default branch = %q, want %q", defaultBranch, oddDefault)
+	}
+	if len(matchedBranches) != 1 {
+		t.Fatalf("matched branches = %d, want 1", len(matchedBranches))
+	}
+	if got := matchedBranches[0].Name().Short(); got != oddDefault {
+		t.Fatalf("matched branch = %q, want %q", got, oddDefault)
+	}
+
+	// The same input without the flag selects nothing. That is the failure
+	// default_branch_only exists to avoid.
+	_, _, unmatched, _ := extractRemoteRefState(refs, branchPatterns, nil, false)
+	if len(unmatched) != 0 {
+		t.Fatalf("matched branches without default_branch_only = %d, want 0", len(unmatched))
 	}
 }
