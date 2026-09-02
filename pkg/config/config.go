@@ -362,14 +362,19 @@ func applyDefaults(repo *RepoConfig, defaults *RepoDefaults) {
 	if repo.LocalPath == "" && defaults.LocalPath != "" {
 		repo.LocalPath = defaults.LocalPath
 	}
-	if len(repo.Branches) == 0 && len(defaults.Branches) > 0 {
+	// Resolved before the patterns below, which depend on knowing it.
+	if defaults.DefaultBranchOnly != nil && repo.DefaultBranchOnly == nil {
+		repo.DefaultBranchOnly = defaults.DefaultBranchOnly
+	}
+	// A repo that syncs only its default branch has no use for inherited branch
+	// patterns, and inheriting them would trip the validation that rejects
+	// branches alongside default_branch_only — failing a config the operator
+	// never wrote that way.
+	if len(repo.Branches) == 0 && len(defaults.Branches) > 0 && !repo.IsDefaultBranchOnly() {
 		repo.Branches = defaults.Branches
 	}
 	if len(repo.Tags) == 0 && len(defaults.Tags) > 0 {
 		repo.Tags = defaults.Tags
-	}
-	if defaults.DefaultBranchOnly != nil && repo.DefaultBranchOnly == nil {
-		repo.DefaultBranchOnly = defaults.DefaultBranchOnly
 	}
 	if defaults.OpenVox != nil && repo.OpenVox == nil {
 		repo.OpenVox = defaults.OpenVox
@@ -469,6 +474,10 @@ func (c *Config) validateRepo(r *RepoConfig) error {
 		r.StaleAge = Duration(180 * 24 * time.Hour)
 	}
 
+	if err := validateDefaultBranchOnly(r); err != nil {
+		return err
+	}
+
 	// default_branch_only selects the branch by itself, so patterns are optional.
 	if len(r.Branches) == 0 && len(r.Tags) == 0 && !r.IsDefaultBranchOnly() {
 		return fmt.Errorf("repo %s: at least one branch or tag pattern is required", r.Name)
@@ -492,9 +501,9 @@ func (c *Config) validateRepo(r *RepoConfig) error {
 		return err
 	}
 
-	// In default_branch_only mode the branch patterns are not consulted, so a
-	// checkout cannot be validated against them.
-	if r.Checkout != "" && !r.IsOpenVox() && !r.IsDefaultBranchOnly() {
+	// validateDefaultBranchOnly has already rejected a checkout set alongside
+	// default_branch_only, so reaching here means the patterns are meaningful.
+	if r.Checkout != "" && !r.IsOpenVox() {
 		if !MatchesAny(r.Checkout, r.Branches) && !MatchesAny(r.Checkout, r.Tags) {
 			return fmt.Errorf("repo %s: checkout %q does not match any configured branch or tag pattern", r.Name, r.Checkout)
 		}
@@ -502,10 +511,31 @@ func (c *Config) validateRepo(r *RepoConfig) error {
 	return nil
 }
 
-func validateOpenVoxOptions(r *RepoConfig) error {
-	if r.IsDefaultBranchOnly() && r.IsOpenVox() {
-		return fmt.Errorf("repo %s: default_branch_only cannot be combined with openvox, which syncs every matched branch", r.Name)
+// validateDefaultBranchOnly rejects the settings default_branch_only would
+// otherwise silently override. The option takes the branch from the remote's
+// advertised HEAD, so anything else naming a branch contradicts it rather than
+// merely duplicating it — better to fail the config than to ignore what the
+// operator wrote and leave them guessing why it had no effect.
+//
+// Tags are deliberately still allowed: they are a separate axis, and syncing
+// the default branch plus a set of tags is a coherent thing to ask for.
+func validateDefaultBranchOnly(r *RepoConfig) error {
+	if !r.IsDefaultBranchOnly() {
+		return nil
 	}
+	if r.IsOpenVox() {
+		return fmt.Errorf("repo %s: default_branch_only is for standard mode and cannot be combined with openvox, which syncs every matched branch", r.Name)
+	}
+	if len(r.Branches) > 0 {
+		return fmt.Errorf("repo %s: default_branch_only takes the branch from the remote HEAD; remove branches", r.Name)
+	}
+	if r.Checkout != "" {
+		return fmt.Errorf("repo %s: default_branch_only checks out the remote default branch; remove checkout", r.Name)
+	}
+	return nil
+}
+
+func validateOpenVoxOptions(r *RepoConfig) error {
 	if r.HasProductionAlias() && !r.IsOpenVox() {
 		return fmt.Errorf("repo %s: production_alias requires openvox=true", r.Name)
 	}

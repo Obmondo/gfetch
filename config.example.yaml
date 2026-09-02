@@ -7,7 +7,7 @@ defaults:
     - main
   tags:
     - /^v[0-9]+\./
-  default_branch_only: false    # sync only the branch HEAD points at, ignoring the branch patterns; for callers that don't know the branch name up front. Makes branches/tags optional. Not valid with openvox
+  default_branch_only: false    # standard mode only: sync just the branch HEAD points at, for callers that don't know its name up front. Makes branches/tags optional; rejected alongside branches, checkout or openvox. Tags are still allowed
   openvox: false
   openvox_max_workers: 5        # OpenVox-only worker concurrency per repo (1-64)
   production_alias: false        # when openvox=true and no upstream production branch exists, create production -> <default-branch-dir> symlink

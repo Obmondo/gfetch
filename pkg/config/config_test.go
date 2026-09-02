@@ -675,3 +675,91 @@ func TestApplyDefaults_PruneBoolOverride(t *testing.T) {
 		})
 	}
 }
+
+// defaultBranchOnlyRepo builds a repo config that is valid apart from whatever
+// the caller adds, so each guard below is tested in isolation.
+func defaultBranchOnlyRepo(t *testing.T) RepoConfig {
+	t.Helper()
+	keyFile := filepath.Join(t.TempDir(), "key")
+	if err := os.WriteFile(keyFile, []byte("fake"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	defaultBranchOnly := true
+	return RepoConfig{
+		RepoDefaults: RepoDefaults{
+			SSHKeyPath:        keyFile,
+			LocalPath:         testLocalPath,
+			PollInterval:      Duration(30 * time.Second),
+			DefaultBranchOnly: &defaultBranchOnly,
+		},
+		Name: testRepoName,
+		URL:  testRepoURL,
+	}
+}
+
+func TestValidate_DefaultBranchOnlyAlone(t *testing.T) {
+	cfg := &Config{Repos: map[string]RepoConfig{testRepoName: defaultBranchOnlyRepo(t)}}
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("default_branch_only on its own should be valid, got %v", err)
+	}
+}
+
+func TestValidate_DefaultBranchOnlyRejectsBranches(t *testing.T) {
+	repo := defaultBranchOnlyRepo(t)
+	repo.Branches = []Pattern{{Raw: branchMain}}
+	cfg := &Config{Repos: map[string]RepoConfig{testRepoName: repo}}
+
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error when branches is set alongside default_branch_only")
+	}
+}
+
+func TestValidate_DefaultBranchOnlyRejectsCheckout(t *testing.T) {
+	repo := defaultBranchOnlyRepo(t)
+	repo.Checkout = branchMain
+	cfg := &Config{Repos: map[string]RepoConfig{testRepoName: repo}}
+
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error when checkout is set alongside default_branch_only")
+	}
+}
+
+func TestValidate_DefaultBranchOnlyRejectsOpenVox(t *testing.T) {
+	repo := defaultBranchOnlyRepo(t)
+	openVox := true
+	repo.OpenVox = &openVox
+	cfg := &Config{Repos: map[string]RepoConfig{testRepoName: repo}}
+
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error when default_branch_only is combined with openvox")
+	}
+}
+
+// Tags stay allowed: syncing the default branch plus a set of tags is coherent.
+func TestValidate_DefaultBranchOnlyAllowsTags(t *testing.T) {
+	repo := defaultBranchOnlyRepo(t)
+	repo.Tags = []Pattern{{Raw: `/^v[0-9]+\./`}}
+	cfg := &Config{Repos: map[string]RepoConfig{testRepoName: repo}}
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("tags should remain valid with default_branch_only, got %v", err)
+	}
+}
+
+// Inherited branch patterns must not trip the guard: the operator did not set
+// branches on this repo, the defaults block did.
+func TestValidate_DefaultBranchOnlySkipsInheritedBranches(t *testing.T) {
+	repo := defaultBranchOnlyRepo(t)
+	cfg := &Config{
+		Defaults: &RepoDefaults{Branches: []Pattern{{Raw: branchMain}}},
+		Repos:    map[string]RepoConfig{testRepoName: repo},
+	}
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("inherited branches should not fail a default_branch_only repo, got %v", err)
+	}
+	if got := cfg.Repos[testRepoName].Branches; len(got) != 0 {
+		t.Fatalf("branches = %v, want none inherited", got)
+	}
+}
