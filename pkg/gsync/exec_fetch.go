@@ -17,6 +17,12 @@ import (
 // gfetch can work around by asking differently. Shell out to the git binary
 // for these remotes instead, which negotiates a protocol Azure DevOps serves
 // correctly and returns a complete pack.
+// git fetch flags, hoisted so the repeated literals stay in one place.
+const (
+	flagNoTags = "--no-tags"
+	flagForce  = "--force"
+)
+
 var execFetchHostSuffixes = []string{
 	"ssh.dev.azure.com",
 	"vs-ssh.visualstudio.com",
@@ -75,19 +81,25 @@ func gitSSHCommand(repo *config.RepoConfig) (cmd string, cleanup func(), err err
 	return strings.Join(parts, " "), cleanup, nil
 }
 
-// execFetchBranch runs the same fetch syncBranch would have run, via the git
-// binary. The refspec, --no-tags and --force all mirror the go-git options so
-// the resulting refs are identical and the rest of the sync is unchanged.
-func execFetchBranch(ctx context.Context, repo *config.RepoConfig, branch string) error {
+// execFetch runs a fetch through the git binary, in the same repo go-git would
+// have used. flags and refSpecs mirror whatever the go-git call passed, so the
+// refs that land are identical and the rest of the sync is unchanged.
+//
+// workDir is the repo to run in - usually repo.LocalPath, but the openvox
+// resolver and staleness checks operate on other directories.
+func execFetch(ctx context.Context, repo *config.RepoConfig, workDir string, flags, refSpecs []string) error {
 	sshCmd, cleanup, err := gitSSHCommand(repo)
 	defer cleanup()
 	if err != nil {
 		return fmt.Errorf("building ssh command: %w", err)
 	}
 
-	refSpec := fmt.Sprintf("+refs/heads/%s:refs/remotes/%s/%s", branch, RemoteOrigin, branch)
-	cmd := exec.CommandContext(ctx, "git", "fetch", "--no-tags", "--force", RemoteOrigin, refSpec)
-	cmd.Dir = repo.LocalPath
+	args := append([]string{"fetch"}, flags...)
+	args = append(args, RemoteOrigin)
+	args = append(args, refSpecs...)
+
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = workDir
 	cmd.Env = append(os.Environ(),
 		"GIT_SSH_COMMAND="+sshCmd,
 		// Never block on a credential or passphrase prompt in a daemon.
@@ -96,7 +108,23 @@ func execFetchBranch(ctx context.Context, repo *config.RepoConfig, branch string
 
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("git fetch %s: %w: %s", branch, err, strings.TrimSpace(string(out)))
+		return fmt.Errorf("git fetch %v: %w: %s", refSpecs, err, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+// execFetchBranch mirrors syncBranch's fetch.
+func execFetchBranch(ctx context.Context, repo *config.RepoConfig, branch string) error {
+	refSpec := fmt.Sprintf("+refs/heads/%s:refs/remotes/%s/%s", branch, RemoteOrigin, branch)
+	return execFetch(ctx, repo, repo.LocalPath, []string{flagNoTags, flagForce}, []string{refSpec})
+}
+
+// execFetchTags mirrors fetchTags. Tags carry objects like any other ref, so
+// they hit the same wall on Azure DevOps as branches do.
+func execFetchTags(ctx context.Context, repo *config.RepoConfig, tags []string) error {
+	refSpecs := make([]string, len(tags))
+	for i, tag := range tags {
+		refSpecs[i] = fmt.Sprintf("+refs/tags/%s:refs/tags/%s", tag, tag)
+	}
+	return execFetch(ctx, repo, repo.LocalPath, []string{flagNoTags}, refSpecs)
 }

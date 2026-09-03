@@ -272,7 +272,7 @@ func (s *Syncer) syncBranches(ctx context.Context, r *git.Repository, repo *conf
 
 		branch := ref.Name().Short()
 
-		if opts.PruneStale && opts.Prune && IsStale(ctx, r, ref, opts.StaleAge, auth) {
+		if opts.PruneStale && opts.Prune && IsStale(ctx, r, repo, ref, opts.StaleAge, auth) {
 			continue
 		}
 

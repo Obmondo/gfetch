@@ -834,7 +834,10 @@ func resolveUnresolvedBranchStaleness(ctx context.Context, resolverRepo *git.Rep
 	}
 
 	releaseResolverLock := acquireResolverLock(cachePath)
-	cleanup, err := batchFetchForStaleness(ctx, resolverRepo, unresolved, auth)
+	// nil config: this fetches into the shared resolver repo at cachePath, not
+	// repo.LocalPath, so the exec path would run git in the wrong directory.
+	// openvox stays on go-git here.
+	cleanup, err := batchFetchForStaleness(ctx, resolverRepo, nil, unresolved, auth)
 	if err != nil {
 		releaseResolverLock()
 		slog.Warn("batch staleness fetch failed for unresolved branches, syncing unresolved set", "count", len(unresolved), "error", err)
