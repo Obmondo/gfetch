@@ -25,7 +25,7 @@ FROM alpine:3.24.1
 
 # uid/gid 999 is on purpose, cause puppetserver runs as 999(puppet) user
 RUN apk upgrade --no-cache \
-    && apk add --no-cache ca-certificates \
+    && apk add --no-cache ca-certificates git openssh-client \
     && mkdir -p /home/gfetch \
     && chown -R 999:999 /home/gfetch
 

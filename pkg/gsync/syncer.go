@@ -276,7 +276,7 @@ func (s *Syncer) syncBranches(ctx context.Context, r *git.Repository, repo *conf
 			continue
 		}
 
-		synced, err := syncBranch(ctx, r, branch, repo.URL, auth, repo.Name)
+		synced, err := syncBranch(ctx, r, branch, repo, auth, repo.Name)
 		if err != nil {
 			slog.Error("branch sync failed", "branch", branch, "error", err)
 			telemetry.SyncFailuresTotal.WithLabelValues(repo.Name, "branch_sync").Inc()

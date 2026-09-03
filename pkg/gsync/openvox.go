@@ -1030,7 +1030,7 @@ func syncOpenVoxBranchOnce(ctx context.Context, subCfg *config.RepoConfig, branc
 		return finishOpenVoxBranchSync(ctx, r, branch, false, filepath.Base(subCfg.LocalPath))
 	}
 
-	updated, err := syncBranch(ctx, r, branch, subCfg.URL, auth, subCfg.Name)
+	updated, err := syncBranch(ctx, r, branch, subCfg, auth, subCfg.Name)
 	if err != nil {
 		return false, err
 	}

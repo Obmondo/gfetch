@@ -5,13 +5,17 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	git "github.com/go-git/go-git/v5"
 	gitconfig "github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-git/v5/plumbing/format/index"
 	"github.com/go-git/go-git/v5/plumbing/transport"
+	"github.com/obmondo/gfetch/pkg/config"
 	"github.com/obmondo/gfetch/pkg/telemetry"
 )
 
@@ -21,18 +25,26 @@ func isContextCancellationError(err error) bool {
 
 // syncBranch fetches a single branch and hard-resets the local branch to match remote.
 // Returns true if the branch was updated, false if already up-to-date.
-func syncBranch(ctx context.Context, repo *git.Repository, branch, _ string, auth transport.AuthMethod, repoName string) (bool, error) {
+func syncBranch(ctx context.Context, repo *git.Repository, branch string, repoCfg *config.RepoConfig, auth transport.AuthMethod, repoName string) (bool, error) {
 	start := time.Now()
 	remoteName := RemoteOrigin
 	refSpec := fmt.Sprintf("+refs/heads/%s:refs/remotes/%s/%s", branch, remoteName, branch)
 
-	err := repo.FetchContext(ctx, &git.FetchOptions{
-		RemoteName: remoteName,
-		RefSpecs:   []gitconfig.RefSpec{gitconfig.RefSpec(refSpec)},
-		Auth:       auth,
-		Tags:       git.NoTags,
-		Force:      true,
-	})
+	// go-git cannot fetch objects from Azure DevOps: the fetch reports success,
+	// writes the refs, and leaves the object store empty. Shell out to the git
+	// binary for those hosts. See needsExecFetch.
+	var err error
+	if needsExecFetch(repoCfg.URL) {
+		err = execFetchBranch(ctx, repoCfg, branch)
+	} else {
+		err = repo.FetchContext(ctx, &git.FetchOptions{
+			RemoteName: remoteName,
+			RefSpecs:   []gitconfig.RefSpec{gitconfig.RefSpec(refSpec)},
+			Auth:       auth,
+			Tags:       git.NoTags,
+			Force:      true,
+		})
+	}
 	if err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) {
 		return false, fmt.Errorf("fetching branch %s: %w", branch, err)
 	}
@@ -63,8 +75,51 @@ func syncBranch(ctx context.Context, repo *git.Repository, branch, _ string, aut
 }
 
 // checkoutRef checks out the named branch or tag and hard-resets the working tree.
+//
+// A corrupt .git/index is repaired rather than reported. go-git reads the index
+// before touching the worktree, so a truncated one - a container killed
+// mid-write, which the gfetch pod is prone to since it has no memory limit -
+// makes every later checkout fail with "malformed index signature file" and the
+// repo never recovers. The index is pure cache, fully rebuildable from HEAD, so
+// deleting it and retrying is safe and far cheaper than re-cloning.
 func checkoutRef(repo *git.Repository, name string) error {
+	err := checkoutRefContext(context.Background(), repo, name)
+	if err == nil || !isMalformedIndexErr(err) {
+		return err
+	}
+
+	idxPath, pathErr := gitIndexPath(repo)
+	if pathErr != nil {
+		return err
+	}
+	slog.Warn("removing corrupt git index and retrying checkout", "ref", name, "index", idxPath, "error", err)
+	if rmErr := os.Remove(idxPath); rmErr != nil && !os.IsNotExist(rmErr) {
+		return fmt.Errorf("removing corrupt index after %w: %w", err, rmErr)
+	}
 	return checkoutRefContext(context.Background(), repo, name)
+}
+
+// isMalformedIndexErr reports whether the error is go-git refusing to decode
+// .git/index (plumbing/format/index.ErrMalformedSignature).
+func isMalformedIndexErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	return errors.Is(err, index.ErrMalformedSignature) ||
+		strings.Contains(err.Error(), "malformed index signature")
+}
+
+// gitIndexPath locates .git/index for a repo backed by the filesystem.
+func gitIndexPath(repo *git.Repository) (string, error) {
+	wt, err := repo.Worktree()
+	if err != nil {
+		return "", err
+	}
+	root := wt.Filesystem.Root()
+	if root == "" {
+		return "", fmt.Errorf("worktree has no filesystem root")
+	}
+	return filepath.Join(root, ".git", "index"), nil
 }
 
 func checkoutRefContext(ctx context.Context, repo *git.Repository, name string) error {
