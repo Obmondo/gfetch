@@ -373,7 +373,7 @@ func applyDefaults(repo *RepoConfig, defaults *RepoDefaults) {
 	if len(repo.Branches) == 0 && len(defaults.Branches) > 0 && !repo.IsDefaultBranchOnly() {
 		repo.Branches = defaults.Branches
 	}
-	if len(repo.Tags) == 0 && len(defaults.Tags) > 0 {
+	if len(repo.Tags) == 0 && len(defaults.Tags) > 0 && !repo.IsDefaultBranchOnly() {
 		repo.Tags = defaults.Tags
 	}
 	if defaults.OpenVox != nil && repo.OpenVox == nil {
@@ -517,8 +517,9 @@ func (c *Config) validateRepo(r *RepoConfig) error {
 // merely duplicating it — better to fail the config than to ignore what the
 // operator wrote and leave them guessing why it had no effect.
 //
-// Tags are deliberately still allowed: they are a separate axis, and syncing
-// the default branch plus a set of tags is a coherent thing to ask for.
+// Tags are rejected too. The option means what it says - the default branch and
+// nothing else - and a repo wanting tags as well should name its branch
+// explicitly rather than half-using this.
 func validateDefaultBranchOnly(r *RepoConfig) error {
 	if !r.IsDefaultBranchOnly() {
 		return nil
@@ -531,6 +532,9 @@ func validateDefaultBranchOnly(r *RepoConfig) error {
 	}
 	if r.Checkout != "" {
 		return fmt.Errorf("repo %s: default_branch_only checks out the remote default branch; remove checkout", r.Name)
+	}
+	if len(r.Tags) > 0 {
+		return fmt.Errorf("repo %s: default_branch_only syncs the default branch and nothing else; remove tags", r.Name)
 	}
 	return nil
 }

@@ -737,14 +737,15 @@ func TestValidate_DefaultBranchOnlyRejectsOpenVox(t *testing.T) {
 	}
 }
 
-// Tags stay allowed: syncing the default branch plus a set of tags is coherent.
-func TestValidate_DefaultBranchOnlyAllowsTags(t *testing.T) {
+// default_branch_only means the default branch and nothing else, so tags are
+// rejected alongside branches and checkout.
+func TestValidate_DefaultBranchOnlyRejectsTags(t *testing.T) {
 	repo := defaultBranchOnlyRepo(t)
 	repo.Tags = []Pattern{{Raw: tagSemverGlob}}
 	cfg := &Config{Repos: map[string]RepoConfig{testRepoName: repo}}
 
-	if err := cfg.Validate(); err != nil {
-		t.Fatalf("tags should remain valid with default_branch_only, got %v", err)
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error when tags are set alongside default_branch_only")
 	}
 }
 
@@ -805,6 +806,44 @@ poll_interval: 1m
 	}
 	if _, ok := cfg.Repos["repo1"]; !ok {
 		t.Fatal("repo1 was dropped: inherited branches must not fail a default_branch_only repo")
+	}
+}
+
+// Same for tags: a defaults block naming them must not fail a repo that never
+// asked for them.
+func TestLoadDir_DefaultBranchOnlySkipsInheritedTags(t *testing.T) {
+	dir := t.TempDir()
+	keyFile := filepath.Join(dir, "key")
+	if err := os.WriteFile(keyFile, []byte("fake"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "global.yaml"), []byte("tags:\n  - "+tagSemverGlob+"\npoll_interval: 1m\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	repoDir := filepath.Join(dir, "repo1")
+	if err := os.MkdirAll(repoDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, "config.yaml"), []byte(`repos:
+  repo1:
+    url: git@github.com:test/repo1.git
+    ssh_key_path: `+keyFile+`
+    local_path: `+dir+`/repo1-clone
+    poll_interval: 1m
+    default_branch_only: true
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("validate after load: %v", err)
+	}
+	if _, ok := cfg.Repos["repo1"]; !ok {
+		t.Fatal("repo1 was dropped: inherited tags must not fail a default_branch_only repo")
 	}
 }
 
