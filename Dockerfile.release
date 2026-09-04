@@ -1,0 +1,13 @@
+FROM alpine:3.24.1  
+
+RUN apk upgrade --no-cache \  
+    && apk add --no-cache ca-certificates \  
+    && mkdir -p /home/gfetch \  
+    && chown -R 999:999 /home/gfetch  
+
+ARG TARGETPLATFORM  
+COPY $TARGETPLATFORM/gfetch /usr/local/bin/gfetch  
+
+USER 999:999  
+
+ENTRYPOINT ["/usr/local/bin/gfetch"]
