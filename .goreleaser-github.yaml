@@ -54,7 +54,7 @@ archives:
 
 dockers_v2:
   - images:
-      - "ghcr.io/{{ tolower .Env.GITHUB_REPOSITORY }}/gfetch"
+      - "ghcr.io/{{ tolower .Env.GITHUB_REPOSITORY }}"
     dockerfile: Dockerfile.release
     tags:
       - "{{.Tag}}"
