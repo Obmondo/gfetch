@@ -20,6 +20,7 @@ test:
 
 docker-build:
 	docker build \
+		-f Dockerfile.dev \
 		--build-arg VERSION=$(VERSION) \
 		--build-arg COMMIT=$(COMMIT) \
 		--build-arg DATE=$(DATE) \
