@@ -399,7 +399,7 @@ func TestPruneStaleBranches(t *testing.T) {
 	}
 
 	// Verify master was NOT pruned (it's fresh).
-	if _, err := local.Reference(plumbing.NewBranchReferenceName("master"), true); err != nil {
+	if _, err := local.Reference(plumbing.NewBranchReferenceName(MasterBranch), true); err != nil {
 		t.Error("master branch should NOT have been pruned")
 	}
 
@@ -561,7 +561,7 @@ func TestPruneFalseOverridesDefault(t *testing.T) {
 		RepoDefaults: config.RepoDefaults{
 			LocalPath:  localDir,
 			SSHKeyPath: sshKey,
-			Branches:   []config.Pattern{{Raw: branchMaster}}, // extra-branch does not match
+			Branches:   []config.Pattern{{Raw: MasterBranch}}, // extra-branch does not match
 			Prune:      &pruneFalse,
 		},
 		Name: DefaultTestName,
@@ -606,7 +606,7 @@ func TestPruneTrueFromConfigIsApplied(t *testing.T) {
 		RepoDefaults: config.RepoDefaults{
 			LocalPath:  localDir,
 			SSHKeyPath: sshKey,
-			Branches:   []config.Pattern{{Raw: branchMaster}}, // extra-branch does not match
+			Branches:   []config.Pattern{{Raw: MasterBranch}}, // extra-branch does not match
 			Prune:      &pruneTrue,
 		},
 		Name: DefaultTestName,
@@ -825,22 +825,7 @@ func TestSyncRepo_OpenVoxEmptyUpstreamIsNoOp(t *testing.T) {
 // tip hash.
 func seedBareWithHistory(t *testing.T, bareDir string) plumbing.Hash {
 	t.Helper()
-	bare, err := git.PlainInit(bareDir, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := bare.Storer.SetReference(plumbing.NewSymbolicReference(plumbing.HEAD, plumbing.NewBranchReferenceName(MainBranch))); err != nil {
-		t.Fatal(err)
-	}
-
-	tmp := filepath.Join(t.TempDir(), "seed")
-	work, err := git.PlainInit(tmp, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := work.CreateRemote(&gitconfig.RemoteConfig{Name: RemoteOrigin, URLs: []string{bareDir}}); err != nil {
-		t.Fatal(err)
-	}
+	_, work, tmp := initBareWithSeedWorktree(t, bareDir, MainBranch)
 	wt, err := work.Worktree()
 	if err != nil {
 		t.Fatal(err)
@@ -955,7 +940,7 @@ func TestFindObsoleteBranches_DefaultBranchOnlyKeepsSyncedBranch(t *testing.T) {
 	}
 
 	// A local branch standing in for the synced default branch.
-	head := plumbing.NewHashReference(plumbing.NewBranchReferenceName(branchMaster), plumbing.ZeroHash)
+	head := plumbing.NewHashReference(plumbing.NewBranchReferenceName(MasterBranch), plumbing.ZeroHash)
 	if err := r.Storer.SetReference(head); err != nil {
 		t.Fatal(err)
 	}
@@ -967,7 +952,7 @@ func TestFindObsoleteBranches_DefaultBranchOnlyKeepsSyncedBranch(t *testing.T) {
 	}
 	found := false
 	for _, b := range obsolete {
-		if b == branchMaster {
+		if b == MasterBranch {
 			found = true
 		}
 	}
@@ -977,13 +962,13 @@ func TestFindObsoleteBranches_DefaultBranchOnlyKeepsSyncedBranch(t *testing.T) {
 
 	// The selected branch used as the pattern set is what syncBranches now
 	// passes, and it must keep that branch out of the obsolete list.
-	obsolete, err = findObsoleteBranches(r, []config.Pattern{{Raw: branchMaster}})
+	obsolete, err = findObsoleteBranches(r, []config.Pattern{{Raw: MasterBranch}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, b := range obsolete {
-		if b == branchMaster {
-			t.Fatalf("synced default branch %q must not be marked obsolete", branchMaster)
+		if b == MasterBranch {
+			t.Fatalf("synced default branch %q must not be marked obsolete", MasterBranch)
 		}
 	}
 }

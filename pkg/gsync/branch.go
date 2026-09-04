@@ -108,7 +108,7 @@ func isMalformedIndexErr(err error) bool {
 		return false
 	}
 	return errors.Is(err, index.ErrMalformedSignature) ||
-		strings.Contains(err.Error(), "malformed index signature")
+		strings.Contains(err.Error(), index.ErrMalformedSignature.Error())
 }
 
 // gitIndexPath locates .git/index for a repo backed by the filesystem.
@@ -186,7 +186,8 @@ func isObjectNotFoundErr(err error) bool {
 	if err == nil {
 		return false
 	}
-	return errors.Is(err, plumbing.ErrObjectNotFound) || strings.Contains(err.Error(), "object not found")
+	return errors.Is(err, plumbing.ErrObjectNotFound) ||
+		strings.Contains(err.Error(), plumbing.ErrObjectNotFound.Error())
 }
 
 // shouldCheckoutBranch reports whether checkoutRef should run for a branch sync.

@@ -3,6 +3,8 @@ package gsync
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -12,13 +14,12 @@ import (
 	gitconfig "github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
+	"github.com/go-git/go-git/v5/plumbing/transport"
+	"github.com/go-git/go-git/v5/storage/filesystem/dotgit"
 	"github.com/obmondo/gfetch/pkg/config"
 )
 
-const (
-	testDefaultBranch = "main"
-	branchMaster      = "master"
-)
+const testDefaultBranch = "main"
 
 func TestEnsureClonedOpenVox_RecreatesNonRepoDir(t *testing.T) {
 	basePath := t.TempDir()
@@ -157,7 +158,7 @@ func TestEnsureSymlink_UpdatesExistingTarget(t *testing.T) {
 	basePath := t.TempDir()
 	linkPath := filepath.Join(basePath, "production")
 
-	if err := os.Symlink("master", linkPath); err != nil {
+	if err := os.Symlink(MasterBranch, linkPath); err != nil {
 		t.Fatal(err)
 	}
 	if err := ensureSymlink(linkPath, testDefaultBranch); err != nil {
@@ -278,7 +279,7 @@ func TestShouldCheckoutBranch_WhenUpdated(t *testing.T) {
 func TestShouldCheckoutBranch_WhenUpToDateAndClean(t *testing.T) {
 	repo := initTestRepoWithCommit(t)
 
-	needsCheckout, dirty, err := shouldCheckoutBranch(repo, "master", false)
+	needsCheckout, dirty, err := shouldCheckoutBranch(repo, MasterBranch, false)
 	if err != nil {
 		t.Fatalf("shouldCheckoutBranch failed: %v", err)
 	}
@@ -298,7 +299,7 @@ func TestShouldCheckoutBranch_WhenUpToDateButDirty(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	needsCheckout, dirty, err := shouldCheckoutBranch(repo, "master", false)
+	needsCheckout, dirty, err := shouldCheckoutBranch(repo, MasterBranch, false)
 	if err != nil {
 		t.Fatalf("shouldCheckoutBranch failed: %v", err)
 	}
@@ -611,7 +612,17 @@ func TestPruneStaleOpenVoxDirs_MissingDir(t *testing.T) {
 	}
 }
 
-func TestIsBranchUpToDateLocal_RefMatchesButObjectMissing(t *testing.T) {
+// TestIsRefUpToDateLocal pins the fast-path contract: refs are compared by
+// hash, and nothing more.
+//
+// Object presence is deliberately NOT checked here. A tip-object lookup cannot
+// prove the graph is complete - decoding a commit succeeds while its tree is
+// missing, which is exactly what an interrupted fetch leaves behind - so it
+// passed on the case it was meant to catch while charging every healthy ref an
+// object decode per poll. The incomplete-store case is repaired where it
+// surfaces instead; see TestIsRecoverableOpenVoxRepoError and
+// TestSyncRepo_RepairsIncompleteObjectStore.
+func TestIsRefUpToDateLocal(t *testing.T) {
 	repo := initTestRepoWithCommit(t)
 
 	head, err := repo.Head()
@@ -619,88 +630,76 @@ func TestIsBranchUpToDateLocal_RefMatchesButObjectMissing(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Real branch whose object is present: up to date.
-	upToDate, err := isBranchUpToDateLocal(repo, head.Name().Short(), head.Hash())
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !upToDate {
-		t.Fatal("expected up-to-date for a branch whose objects are present")
-	}
-
-	// Ref present but points at a missing object: must NOT take the fast path,
-	// otherwise the subsequent checkout fails with "object not found".
-	missing := plumbing.NewHash("1234567890123456789012345678901234567890")
-	ghost := plumbing.NewHashReference(plumbing.NewBranchReferenceName("ghost"), missing)
-	if err := repo.Storer.SetReference(ghost); err != nil {
+	tagRef := plumbing.NewHashReference(plumbing.NewTagReferenceName("v-real"), head.Hash())
+	if err := repo.Storer.SetReference(tagRef); err != nil {
 		t.Fatal(err)
 	}
-	upToDate, err = isBranchUpToDateLocal(repo, "ghost", missing)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+
+	other := plumbing.NewHash("1234567890123456789012345678901234567890")
+
+	tests := []struct {
+		name    string
+		refName plumbing.ReferenceName
+		hash    plumbing.Hash
+		want    bool
+		wantErr bool
+	}{
+		{"branch at remote hash", head.Name(), head.Hash(), true, false},
+		{"branch behind remote hash", head.Name(), other, false, false},
+		{"tag at remote hash", plumbing.NewTagReferenceName("v-real"), head.Hash(), true, false},
+		{"tag behind remote hash", plumbing.NewTagReferenceName("v-real"), other, false, false},
+		{"missing ref errors", plumbing.NewBranchReferenceName("ghost"), other, false, true},
 	}
-	if upToDate {
-		t.Fatal("expected NOT up-to-date when the ref's objects are missing locally")
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := isRefUpToDateLocal(repo, tt.refName, tt.hash)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if got != tt.want {
+				t.Fatalf("isRefUpToDateLocal = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }
 
-func TestIsTagUpToDateLocal_RefMatchesButObjectMissing(t *testing.T) {
-	repo := initTestRepoWithCommit(t)
-
-	head, err := repo.Head()
-	if err != nil {
-		t.Fatal(err)
+// TestIsRecoverableOpenVoxRepoError covers both arms of the predicate: the
+// wrapped go-git sentinel, and the message-text fallback for the paths that
+// reformat the error instead of wrapping it. Expected text is taken from the
+// sentinels so these cases cannot drift from the library.
+func TestIsRecoverableOpenVoxRepoError(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"wrapped object-not-found", fmt.Errorf("checkout main: %w", plumbing.ErrObjectNotFound), true},
+		{"bare object-not-found", plumbing.ErrObjectNotFound, true},
+		// The shape checkoutRefContext returns when a ref exists but its objects
+		// are missing: recoverable, so the caller recreates the repo and retries
+		// instead of failing the branch/tag.
+		{"object-not-found text only", errors.New("checkout main: " + plumbing.ErrObjectNotFound.Error()), true},
+		{"wrapped empty-ref-file", fmt.Errorf("reading ref: %w", dotgit.ErrEmptyRefFile), true},
+		{"bare empty-ref-file", dotgit.ErrEmptyRefFile, true},
+		{"empty-ref-file text only", errors.New("some context: " + dotgit.ErrEmptyRefFile.Error()), true},
+		{"wrapped EOF", fmt.Errorf("reading pack: %w", io.EOF), true},
+		{"unrelated", errors.New("permission denied"), false},
 	}
-
-	// Lightweight tag at a present commit: up to date.
-	realTag := plumbing.NewHashReference(plumbing.NewTagReferenceName("v-real"), head.Hash())
-	if err := repo.Storer.SetReference(realTag); err != nil {
-		t.Fatal(err)
-	}
-	upToDate, err := isTagUpToDateLocal(repo, "v-real", head.Hash())
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !upToDate {
-		t.Fatal("expected up-to-date for a tag whose objects are present")
-	}
-
-	missing := plumbing.NewHash("1234567890123456789012345678901234567890")
-	ghost := plumbing.NewHashReference(plumbing.NewTagReferenceName("v-ghost"), missing)
-	if err := repo.Storer.SetReference(ghost); err != nil {
-		t.Fatal(err)
-	}
-	upToDate, err = isTagUpToDateLocal(repo, "v-ghost", missing)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if upToDate {
-		t.Fatal("expected NOT up-to-date when the tag's objects are missing locally")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isRecoverableOpenVoxRepoError(tc.err); got != tc.want {
+				t.Errorf("isRecoverableOpenVoxRepoError=%v want %v", got, tc.want)
+			}
+		})
 	}
 }
 
-func TestIsRecoverableOpenVoxRepoError_ObjectNotFound(t *testing.T) {
-	// The exact shape checkoutRefContext returns when a ref exists but its
-	// objects are missing. This must be recoverable so the caller recreates
-	// the repo and retries instead of failing the branch/tag.
-	if !isRecoverableOpenVoxRepoError(errors.New("checkout main: object not found")) {
-		t.Fatal("expected 'object not found' checkout error to be recoverable")
-	}
-	if !isRecoverableOpenVoxRepoError(errors.New("object not found")) {
-		t.Fatal("expected 'object not found' to be recoverable")
-	}
-	if isRecoverableOpenVoxRepoError(errors.New("permission denied")) {
-		t.Fatal("did not expect an unrelated error to be recoverable")
-	}
-	if isRecoverableOpenVoxRepoError(nil) {
-		t.Fatal("nil must not be recoverable")
-	}
-}
-
-// initBareRemoteWithDefaultBranch creates a bare remote whose default branch is
-// defaultBranch (e.g. "main", not go-git's "master"), plus extra branches, each
-// pointing at a single seeded commit. Returns the commit hash.
-func initBareRemoteWithDefaultBranch(t *testing.T, bareDir, defaultBranch string, extraBranches []string) plumbing.Hash {
+// initBareWithSeedWorktree creates a bare remote whose HEAD is the symbolic ref
+// for defaultBranch, plus a throwaway worktree repo wired to it as "origin" for
+// seeding commits. Returns the bare repo, the seed repo and the seed directory.
+func initBareWithSeedWorktree(t *testing.T, bareDir, defaultBranch string) (*git.Repository, *git.Repository, string) {
 	t.Helper()
 	bare, err := git.PlainInit(bareDir, true)
 	if err != nil {
@@ -718,6 +717,15 @@ func initBareRemoteWithDefaultBranch(t *testing.T, bareDir, defaultBranch string
 	if _, err := work.CreateRemote(&gitconfig.RemoteConfig{Name: RemoteOrigin, URLs: []string{bareDir}}); err != nil {
 		t.Fatal(err)
 	}
+	return bare, work, tmp
+}
+
+// initBareRemoteWithDefaultBranch creates a bare remote whose default branch is
+// defaultBranch (e.g. "main", not go-git's "master"), plus extra branches, each
+// pointing at a single seeded commit. Returns the commit hash.
+func initBareRemoteWithDefaultBranch(t *testing.T, bareDir, defaultBranch string, extraBranches []string) plumbing.Hash {
+	t.Helper()
+	bare, work, tmp := initBareWithSeedWorktree(t, bareDir, defaultBranch)
 	wt, err := work.Worktree()
 	if err != nil {
 		t.Fatal(err)
@@ -793,9 +801,11 @@ func TestIsUnclonableCacheErr(t *testing.T) {
 		want bool
 	}{
 		{"nil", nil, false},
-		{"empty-remote", errors.New("remote repository is empty"), true},
-		{"headless-cache", errors.New("reference not found"), true},
-		{"wrapped-headless", errors.New("some context: reference not found"), true},
+		{"wrapped empty-remote", fmt.Errorf("clone from cache: %w", transport.ErrEmptyRemoteRepository), true},
+		{"empty-remote text only", errors.New(transport.ErrEmptyRemoteRepository.Error()), true},
+		{"wrapped headless-cache", fmt.Errorf("clone from cache: %w", plumbing.ErrReferenceNotFound), true},
+		{"headless-cache text only", errors.New(plumbing.ErrReferenceNotFound.Error()), true},
+		{"headless-cache text in context", errors.New("some context: " + plumbing.ErrReferenceNotFound.Error()), true},
 		{"unrelated", errors.New("permission denied"), false},
 	}
 	for _, tc := range cases {
@@ -818,7 +828,7 @@ func TestExtractRemoteRefStateDefaultBranchOnly(t *testing.T) {
 	}
 
 	// Patterns deliberately do not cover the default branch.
-	branchPatterns := []config.Pattern{{Raw: "main"}, {Raw: branchMaster}}
+	branchPatterns := []config.Pattern{{Raw: "main"}, {Raw: MasterBranch}}
 
 	defaultBranch, _, matchedBranches, _ := extractRemoteRefState(refs, branchPatterns, nil, true)
 

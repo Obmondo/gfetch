@@ -17,6 +17,7 @@ import (
 	gitconfig "github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/transport"
+	"github.com/go-git/go-git/v5/storage/filesystem/dotgit"
 	"github.com/obmondo/gfetch/pkg/config"
 	"github.com/obmondo/gfetch/pkg/telemetry"
 )
@@ -198,19 +199,19 @@ func isRecoverableOpenVoxRepoError(err error) bool {
 		return true
 	}
 
-	msg := strings.ToLower(err.Error())
-	// "object not found" covers a ref that resolves locally while the commit/
+	// dotgit returns ErrEmptyRefFile bare, but some paths reformat it rather
+	// than wrapping it, so fall back to matching its message - taken from the
+	// sentinel so the text cannot drift from the library.
+	if errors.Is(err, dotgit.ErrEmptyRefFile) ||
+		strings.Contains(err.Error(), dotgit.ErrEmptyRefFile.Error()) {
+		return true
+	}
+
+	// isObjectNotFoundErr covers a ref that resolves locally while the commit/
 	// tree/blob objects it points at are missing (e.g. a shared-cache alternate
 	// that no longer holds them, or an interrupted prior sync). Recreating the
 	// repo from the cache and refetching from origin restores the objects.
-	return strings.Contains(msg, "ref file is empty") || strings.Contains(msg, "object not found")
-}
-
-// objectPresentLocally reports whether the object identified by hash is
-// materialised in the repo's object store (including via alternates).
-func objectPresentLocally(repo *git.Repository, hash plumbing.Hash) bool {
-	_, err := repo.Object(plumbing.AnyObject, hash)
-	return err == nil
+	return isObjectNotFoundErr(err)
 }
 
 // isUnclonableCacheErr reports whether a clone-from-cache failure is one we can
@@ -225,7 +226,8 @@ func isUnclonableCacheErr(err error) bool {
 		return true
 	}
 	msg := err.Error()
-	return strings.Contains(msg, "remote repository is empty") || strings.Contains(msg, "reference not found")
+	return strings.Contains(msg, transport.ErrEmptyRemoteRepository.Error()) ||
+		strings.Contains(msg, plumbing.ErrReferenceNotFound.Error())
 }
 
 func openVoxWorkerCount(repo *config.RepoConfig) int {
@@ -375,7 +377,7 @@ func (s *Syncer) syncCache(ctx context.Context, cachePath string, repo *config.R
 		return nil
 	}
 
-	if !strings.Contains(err.Error(), "couldn't find remote ref") {
+	if !errors.Is(err, git.NoMatchingRefSpecError{}) {
 		telemetry.SyncFailuresTotal.WithLabelValues(repo.Name, "cache_sync").Inc()
 		result.Err = fmt.Errorf("syncing central cache: %w", err)
 		return result.Err
@@ -563,9 +565,9 @@ func extractRemoteRefState(refs []*plumbing.Reference, branchPatterns, tagPatter
 		if name.IsBranch() {
 			branch := name.Short()
 			branches[branch] = struct{}{}
-			selected := config.MatchesAny(branch, branchPatterns)
-			if defaultBranchOnly {
-				selected = defaultBranch != "" && branch == defaultBranch
+			selected := branch == defaultBranch
+			if !defaultBranchOnly {
+				selected = config.MatchesAny(branch, branchPatterns)
 			}
 			if !seenBranches[branch] && selected {
 				matchedBranches = append(matchedBranches, ref)
@@ -906,30 +908,26 @@ func shouldSyncBranchLocalFirst(basePath string, ref *plumbing.Reference, staleA
 	return true, false
 }
 
-func isBranchUpToDateLocal(repo *git.Repository, branch string, remoteHash plumbing.Hash) (bool, error) {
-	localRef, err := repo.Reference(plumbing.NewBranchReferenceName(branch), true)
+// isRefUpToDateLocal reports whether refName already resolves to remoteHash
+// locally, and the fetch for it can be skipped.
+//
+// This deliberately does not verify that the objects behind the hash are
+// present. A cheap tip-object lookup cannot tell: decoding a commit succeeds
+// while its tree is missing, which is the exact shape an interrupted fetch
+// leaves behind, so the check passed on the case it was meant to catch while
+// costing every healthy ref an object decode on every poll - and via alternates
+// a miss re-reads and decodes every pack index in the shared cache.
+//
+// An incomplete object store is instead repaired where it actually surfaces:
+// the checkout fails with "object not found", isRecoverableOpenVoxRepoError
+// classifies it, and the ref dir is recreated and re-synced. That pays the cost
+// on the broken ref rather than on all the healthy ones.
+func isRefUpToDateLocal(repo *git.Repository, refName plumbing.ReferenceName, remoteHash plumbing.Hash) (bool, error) {
+	localRef, err := repo.Reference(refName, true)
 	if err != nil {
 		return false, err
 	}
-	if localRef.Hash() != remoteHash {
-		return false, nil
-	}
-	// The ref matches, but only skip the fetch if the objects are actually
-	// present locally. A ref can resolve while its objects are missing (shared
-	// cache via alternates, or a partial prior sync); taking the fast path then
-	// makes the subsequent checkout fail with "object not found".
-	return objectPresentLocally(repo, remoteHash), nil
-}
-
-func isTagUpToDateLocal(repo *git.Repository, tag string, remoteHash plumbing.Hash) (bool, error) {
-	localRef, err := repo.Reference(plumbing.NewTagReferenceName(tag), true)
-	if err != nil {
-		return false, err
-	}
-	if localRef.Hash() != remoteHash {
-		return false, nil
-	}
-	return objectPresentLocally(repo, remoteHash), nil
+	return localRef.Hash() == remoteHash, nil
 }
 
 func (s *Syncer) syncOneOpenVoxBranch(ctx context.Context, repo *config.RepoConfig, ref *plumbing.Reference, auth transport.AuthMethod, result *Result) {
@@ -1020,7 +1018,7 @@ func syncOpenVoxBranchOnce(ctx context.Context, subCfg *config.RepoConfig, branc
 		return false, fmt.Errorf("clone/open repo: %w", err)
 	}
 
-	upToDateLocal, upToDateErr := isBranchUpToDateLocal(r, branch, remoteHash)
+	upToDateLocal, upToDateErr := isRefUpToDateLocal(r, plumbing.NewBranchReferenceName(branch), remoteHash)
 	if upToDateErr != nil {
 		logHashVerifyError(upToDateErr, "branch", branch)
 	}
@@ -1203,7 +1201,7 @@ func syncOpenVoxTagOnce(ctx context.Context, subCfg *config.RepoConfig, tag stri
 		return false, fmt.Errorf("clone/open repo: %w", err)
 	}
 
-	upToDateLocal, upToDateErr := isTagUpToDateLocal(r, tag, remoteHash)
+	upToDateLocal, upToDateErr := isRefUpToDateLocal(r, plumbing.NewTagReferenceName(tag), remoteHash)
 	if upToDateErr != nil {
 		logHashVerifyError(upToDateErr, "tag", tag)
 	}

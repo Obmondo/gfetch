@@ -6,6 +6,7 @@ const (
 	DefaultTestName  = "test"
 	DevelopBranch    = "develop"
 	MainBranch       = "main"
+	MasterBranch     = "master"
 	DefaultTag       = "v1.0.0"
 	DefaultTestEmail = "test@test.com"
 	Two              = 2
