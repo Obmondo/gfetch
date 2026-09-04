@@ -52,3 +52,16 @@ archives:
       {{- .Os }}_
       {{- .Arch }}
 
+dockers_v2:
+  - images:
+      - "ghcr.io/{{.Env.GITHUB_REPOSITORY}}/gfetch"
+    tags:
+      - "{{.Tag}}"
+      - "latest"
+    build_args:
+      VERSION: "{{.Tag}}"
+      COMMIT: "{{.Commit}}"
+      DATE: "{{.Date}}"
+    platforms:
+      - linux/amd64
+      - linux/arm64
