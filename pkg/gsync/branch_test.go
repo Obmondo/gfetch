@@ -52,12 +52,14 @@ func TestCheckoutRef_RepairsCorruptIndex(t *testing.T) {
 	}
 
 	// Precondition: go-git really does refuse this index.
-	if err := checkoutRefContext(context.Background(), r, branch); !isMalformedIndexErr(err) {
+	if err := checkoutRefOnce(context.Background(), r, branch); !isMalformedIndexErr(err) {
 		t.Fatalf("expected a malformed index error from the raw checkout, got %v", err)
 	}
 
-	// checkoutRef must repair it rather than propagate the failure.
-	if err := checkoutRef(r, branch); err != nil {
-		t.Fatalf("checkoutRef should repair a corrupt index, got %v", err)
+	// checkoutRefContext must repair it rather than propagate the failure. The
+	// repair lives there, not in the checkoutRef wrapper, so the openvox path -
+	// which calls checkoutRefContext directly - is covered too.
+	if err := checkoutRefContext(context.Background(), r, branch); err != nil {
+		t.Fatalf("checkoutRefContext should repair a corrupt index, got %v", err)
 	}
 }

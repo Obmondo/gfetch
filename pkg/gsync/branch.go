@@ -65,7 +65,14 @@ func syncBranch(ctx context.Context, repo *git.Repository, branch, _ string, aut
 	return true, nil
 }
 
-// checkoutRef checks out the named branch or tag and hard-resets the working tree.
+// checkoutRef checks out the named branch or tag and hard-resets the working
+// tree, using a background context.
+func checkoutRef(repo *git.Repository, name string) error {
+	return checkoutRefContext(context.Background(), repo, name)
+}
+
+// checkoutRefContext checks out the named branch or tag and hard-resets the
+// working tree.
 //
 // A corrupt .git/index is repaired rather than reported. go-git reads the index
 // before touching the worktree, so a truncated one - a container killed
@@ -73,8 +80,12 @@ func syncBranch(ctx context.Context, repo *git.Repository, branch, _ string, aut
 // makes every later checkout fail with "malformed index signature file" and the
 // repo never recovers. The index is pure cache, fully rebuildable from HEAD, so
 // deleting it and retrying is safe and far cheaper than re-cloning.
-func checkoutRef(repo *git.Repository, name string) error {
-	err := checkoutRefContext(context.Background(), repo, name)
+//
+// The repair lives here rather than in a wrapper so every caller gets it. The
+// openvox path calls this directly, and with N worktrees and concurrent workers
+// per repo it is the mode most exposed to a container killed mid-index-write.
+func checkoutRefContext(ctx context.Context, repo *git.Repository, name string) error {
+	err := checkoutRefOnce(ctx, repo, name)
 	if err == nil || !isMalformedIndexErr(err) {
 		return err
 	}
@@ -87,7 +98,7 @@ func checkoutRef(repo *git.Repository, name string) error {
 	if rmErr := os.Remove(idxPath); rmErr != nil && !os.IsNotExist(rmErr) {
 		return fmt.Errorf("removing corrupt index after %w: %w", err, rmErr)
 	}
-	return checkoutRefContext(context.Background(), repo, name)
+	return checkoutRefOnce(ctx, repo, name)
 }
 
 // isMalformedIndexErr reports whether the error is go-git refusing to decode
@@ -113,7 +124,7 @@ func gitIndexPath(repo *git.Repository) (string, error) {
 	return filepath.Join(root, ".git", "index"), nil
 }
 
-func checkoutRefContext(ctx context.Context, repo *git.Repository, name string) error {
+func checkoutRefOnce(ctx context.Context, repo *git.Repository, name string) error {
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("checkout cancelled for %s: %w", name, err)
 	}
