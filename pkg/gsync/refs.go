@@ -16,7 +16,7 @@ import (
 
 // checkStaleness checks if a remote reference is stale (older than age) by inspecting its commit date.
 // It tries to find the commit locally first. If not found, it fetches the commit metadata (depth 1).
-func checkStaleness(ctx context.Context, repo *git.Repository, repoCfg *config.RepoConfig, ref *plumbing.Reference, age time.Duration, auth transport.AuthMethod) (bool, error) {
+func checkStaleness(ctx context.Context, repo *git.Repository, ref *plumbing.Reference, age time.Duration, auth transport.AuthMethod) (bool, error) {
 	// 1. Check if we already have the commit locally.
 	commit, err := repo.CommitObject(ref.Hash())
 	if err == nil {
@@ -30,17 +30,13 @@ func checkStaleness(ctx context.Context, repo *git.Repository, repoCfg *config.R
 	tmpRef := fmt.Sprintf("refs/gfetch-tmp/%s", ref.Name().Short())
 	refSpec := fmt.Sprintf("+%s:%s", refName, tmpRef)
 
-	if repoCfg != nil && needsExecFetch(repoCfg.URL) {
-		err = execFetch(ctx, repoCfg, repoCfg.LocalPath, []string{flagNoTags, "--depth=1"}, []string{refSpec})
-	} else {
-		err = repo.FetchContext(ctx, &git.FetchOptions{
-			RemoteName: RemoteOrigin,
-			RefSpecs:   []gitconfig.RefSpec{gitconfig.RefSpec(refSpec)},
-			Depth:      1,
-			Auth:       auth,
-			Tags:       git.NoTags,
-		})
-	}
+	err = repo.FetchContext(ctx, &git.FetchOptions{
+		RemoteName: RemoteOrigin,
+		RefSpecs:   []gitconfig.RefSpec{gitconfig.RefSpec(refSpec)},
+		Depth:      1,
+		Auth:       auth,
+		Tags:       git.NoTags,
+	})
 	if err != nil {
 		return false, fmt.Errorf("fetching depth 1 for stale check: %w", err)
 	}
@@ -60,8 +56,8 @@ func checkStaleness(ctx context.Context, repo *git.Repository, repoCfg *config.R
 // IsStale is a helper that wraps checkStaleness and handles logging.
 // Returns true if the branch is definitely stale and should be skipped.
 // Returns false if it's fresh OR if we couldn't determine (fail-safe).
-func IsStale(ctx context.Context, repo *git.Repository, repoCfg *config.RepoConfig, ref *plumbing.Reference, age time.Duration, auth transport.AuthMethod) bool {
-	stale, err := checkStaleness(ctx, repo, repoCfg, ref, age, auth)
+func IsStale(ctx context.Context, repo *git.Repository, ref *plumbing.Reference, age time.Duration, auth transport.AuthMethod) bool {
+	stale, err := checkStaleness(ctx, repo, ref, age, auth)
 	if err != nil {
 		slog.Warn("failed to check staleness, syncing anyway", "branch", ref.Name().Short(), "error", err)
 		return false
@@ -76,7 +72,7 @@ func IsStale(ctx context.Context, repo *git.Repository, repoCfg *config.RepoConf
 // batchFetchForStaleness fetches all branch tip commits into the resolver repo
 // with a single depth-1 fetch. This avoids N individual SSH connections when
 // checking staleness for N branches. Temporary refs are cleaned up after use.
-func batchFetchForStaleness(ctx context.Context, repo *git.Repository, repoCfg *config.RepoConfig, refs []*plumbing.Reference, auth transport.AuthMethod) (cleanup func(), err error) {
+func batchFetchForStaleness(ctx context.Context, repo *git.Repository, refs []*plumbing.Reference, auth transport.AuthMethod) (cleanup func(), err error) {
 	if len(refs) == 0 {
 		return func() {}, nil
 	}
@@ -90,20 +86,12 @@ func batchFetchForStaleness(ctx context.Context, repo *git.Repository, repoCfg *
 		tmpRefs[i] = tmp
 	}
 
-	if repoCfg != nil && needsExecFetch(repoCfg.URL) {
-		specs := make([]string, len(refSpecs))
-		for i, rs := range refSpecs {
-			specs[i] = string(rs)
-		}
-		err = execFetch(ctx, repoCfg, repoCfg.LocalPath, []string{flagNoTags}, specs)
-	} else {
-		err = repo.FetchContext(ctx, &git.FetchOptions{
-			RemoteName: RemoteOrigin,
-			RefSpecs:   refSpecs,
-			Auth:       auth,
-			Tags:       git.NoTags,
-		})
-	}
+	err = repo.FetchContext(ctx, &git.FetchOptions{
+		RemoteName: RemoteOrigin,
+		RefSpecs:   refSpecs,
+		Auth:       auth,
+		Tags:       git.NoTags,
+	})
 	if err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) {
 		return func() {}, fmt.Errorf("batch fetch for staleness: %w", err)
 	}

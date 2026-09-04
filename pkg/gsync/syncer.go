@@ -273,11 +273,11 @@ func (s *Syncer) syncBranches(ctx context.Context, r *git.Repository, repo *conf
 
 		branch := ref.Name().Short()
 
-		if opts.PruneStale && opts.Prune && IsStale(ctx, r, repo, ref, opts.StaleAge, auth) {
+		if opts.PruneStale && opts.Prune && IsStale(ctx, r, ref, opts.StaleAge, auth) {
 			continue
 		}
 
-		synced, err := syncBranch(ctx, r, branch, repo, auth, repo.Name)
+		synced, err := syncBranch(ctx, r, branch, repo.URL, auth, repo.Name)
 		if err != nil {
 			slog.Error("branch sync failed", "branch", branch, "error", err)
 			telemetry.SyncFailuresTotal.WithLabelValues(repo.Name, "branch_sync").Inc()

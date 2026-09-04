@@ -15,7 +15,6 @@ import (
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/format/index"
 	"github.com/go-git/go-git/v5/plumbing/transport"
-	"github.com/obmondo/gfetch/pkg/config"
 	"github.com/obmondo/gfetch/pkg/telemetry"
 )
 
@@ -25,26 +24,18 @@ func isContextCancellationError(err error) bool {
 
 // syncBranch fetches a single branch and hard-resets the local branch to match remote.
 // Returns true if the branch was updated, false if already up-to-date.
-func syncBranch(ctx context.Context, repo *git.Repository, branch string, repoCfg *config.RepoConfig, auth transport.AuthMethod, repoName string) (bool, error) {
+func syncBranch(ctx context.Context, repo *git.Repository, branch, _ string, auth transport.AuthMethod, repoName string) (bool, error) {
 	start := time.Now()
 	remoteName := RemoteOrigin
 	refSpec := fmt.Sprintf("+refs/heads/%s:refs/remotes/%s/%s", branch, remoteName, branch)
 
-	// go-git cannot fetch objects from Azure DevOps: the fetch reports success,
-	// writes the refs, and leaves the object store empty. Shell out to the git
-	// binary for those hosts. See needsExecFetch.
-	var err error
-	if needsExecFetch(repoCfg.URL) {
-		err = execFetchBranch(ctx, repoCfg, branch)
-	} else {
-		err = repo.FetchContext(ctx, &git.FetchOptions{
-			RemoteName: remoteName,
-			RefSpecs:   []gitconfig.RefSpec{gitconfig.RefSpec(refSpec)},
-			Auth:       auth,
-			Tags:       git.NoTags,
-			Force:      true,
-		})
-	}
+	err := repo.FetchContext(ctx, &git.FetchOptions{
+		RemoteName: remoteName,
+		RefSpecs:   []gitconfig.RefSpec{gitconfig.RefSpec(refSpec)},
+		Auth:       auth,
+		Tags:       git.NoTags,
+		Force:      true,
+	})
 	if err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) {
 		return false, fmt.Errorf("fetching branch %s: %w", branch, err)
 	}

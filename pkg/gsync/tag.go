@@ -23,7 +23,7 @@ func syncTagsWithResolved(ctx context.Context, repo *git.Repository, repoConfig 
 
 	fetched, upToDate = resolveAndFilterTagsFromResolved(repo, resolvedTags)
 
-	if err = fetchTags(ctx, repo, repoConfig, fetched, auth); err != nil {
+	if err = fetchTags(ctx, repo, fetched, auth); err != nil {
 		return nil, upToDate, fetched, nil, nil, err
 	}
 
@@ -53,7 +53,7 @@ func resolveAndFilterTagsFromResolved(repo *git.Repository, resolvedTags []strin
 	return fetched, upToDate
 }
 
-func fetchTags(ctx context.Context, repo *git.Repository, repoCfg *config.RepoConfig, fetched []string, auth transport.AuthMethod) error {
+func fetchTags(ctx context.Context, repo *git.Repository, fetched []string, auth transport.AuthMethod) error {
 	if len(fetched) == 0 {
 		slog.Debug("no new tags to fetch")
 		return nil
@@ -64,17 +64,12 @@ func fetchTags(ctx context.Context, repo *git.Repository, repoCfg *config.RepoCo
 		refSpecs[i] = gitconfig.RefSpec(fmt.Sprintf("+refs/tags/%s:refs/tags/%s", tag, tag))
 	}
 
-	var err error
-	if repoCfg != nil && needsExecFetch(repoCfg.URL) {
-		err = execFetchTags(ctx, repoCfg, fetched)
-	} else {
-		err = repo.FetchContext(ctx, &git.FetchOptions{
-			RemoteName: "origin",
-			RefSpecs:   refSpecs,
-			Auth:       auth,
-			Tags:       git.NoTags,
-		})
-	}
+	err := repo.FetchContext(ctx, &git.FetchOptions{
+		RemoteName: "origin",
+		RefSpecs:   refSpecs,
+		Auth:       auth,
+		Tags:       git.NoTags,
+	})
 	if err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) {
 		return fmt.Errorf("fetching tags: %w", err)
 	}
