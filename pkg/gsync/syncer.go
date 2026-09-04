@@ -14,6 +14,7 @@ import (
 	git "github.com/go-git/go-git/v5"
 	gitconfig "github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-git/v5/plumbing/protocol/packp/capability"
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	"github.com/obmondo/gfetch/pkg/config"
 	"github.com/obmondo/gfetch/pkg/telemetry"
@@ -50,8 +51,31 @@ type Syncer struct {
 	mu sync.Mutex
 }
 
-// New creates a new Syncer with the given logger.
+// New creates a new Syncer.
+//
+// It also re-enables the multi_ack capabilities. go-git ships with MultiACK,
+// MultiACKDetailed and ThinPack all declared unsupported, so it never
+// advertises them; Azure DevOps answers a client offering no multi_ack with an
+// empty pack rather than an error, leaving a fetch that returns nil, writes the
+// refs, and brings down no objects. Checkout then fails with "object not found"
+// and nothing self-heals, because the refs already point at the right commits.
+// Measured against a real Azure repo: stock capabilities fetched zero objects,
+// this list fetched the same pack the git binary sends.
+//
+// ThinPack stays unsupported - that one reflects a real gap in go-git's pack
+// handling rather than a negotiation preference.
+//
+// transport.UnsupportedCapabilities is a package-level global in go-git, so
+// this necessarily applies to every remote in the process. Advertising
+// multi_ack is what any normal git client does, so it is safe for the rest.
+//
+// That global is gone in go-git v6, so this will not compile against it.
+// Upgrading is a rewrite rather than a bump - see "Known future work" in
+// AGENTS.md before attempting it.
 func New() *Syncer {
+	transport.UnsupportedCapabilities = []capability.Capability{
+		capability.ThinPack,
+	}
 	return &Syncer{}
 }
 

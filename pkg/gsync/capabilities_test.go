@@ -13,6 +13,8 @@ import (
 // leaves no objects behind. If this list regains MultiACK, those repos silently
 // stop syncing again.
 func TestMultiACKCapabilitiesEnabled(t *testing.T) {
+	_ = New()
+
 	for _, c := range []capability.Capability{capability.MultiACK, capability.MultiACKDetailed} {
 		for _, unsupported := range transport.UnsupportedCapabilities {
 			if unsupported == c {

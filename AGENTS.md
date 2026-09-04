@@ -201,3 +201,15 @@ Patterns appear in `branches` and `tags` YAML lists:
 
 - **SSH**: any non-HTTPS URL. Uses `go-git/go-git/v5/plumbing/transport/ssh.NewPublicKeysFromFile("git", keyPath, "")`. No passphrase support.
 - **HTTPS**: URLs starting with `https://` or `http://`. Auth is `nil` (anonymous). Only public repos are supported.
+
+## Known future work
+
+- **go-git v6 needs a rewrite, not a bump.** `Syncer.New` sets
+  `transport.UnsupportedCapabilities` to re-enable the multi_ack capabilities.
+  Without them Azure DevOps replies to a fetch with an empty pack and no error:
+  the refs get written, no objects arrive, and checkout then fails with "object
+  not found" forever, since the refs already point at the right commits. v6
+  reworks the transport layer and removes that global, so the assignment will
+  not compile and the fetch, clone and capability plumbing all need reworking.
+  Re-verify the Azure DevOps behaviour against whatever replaces it before
+  upgrading. v6 was alpha as of Sep 2026.
