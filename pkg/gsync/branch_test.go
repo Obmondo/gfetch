@@ -5,10 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
-
-	git "github.com/go-git/go-git/v5"
-	"github.com/go-git/go-git/v5/plumbing/object"
 )
 
 // TestCheckoutRef_RepairsCorruptIndex pins the fix for repos stuck on
@@ -17,26 +13,7 @@ import (
 // is pure cache that can be rebuilt from HEAD.
 func TestCheckoutRef_RepairsCorruptIndex(t *testing.T) {
 	dir := t.TempDir()
-	r, err := git.PlainInit(dir, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	wt, err := r.Worktree()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("hello"), 0644); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := wt.Add("a.txt"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := wt.Commit("initial", &git.CommitOptions{
-		Author: &object.Signature{Name: "t", Email: "t@example.com", When: time.Now()},
-	}); err != nil {
-		t.Fatal(err)
-	}
+	r := initTestRepoWithCommitAtPath(t, dir)
 
 	head, err := r.Head()
 	if err != nil {
