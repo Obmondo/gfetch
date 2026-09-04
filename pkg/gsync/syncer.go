@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"sort"
 	"sync"
 	"time"
@@ -523,7 +524,12 @@ func (s *Syncer) handleCheckout(r *git.Repository, repo *config.RepoConfig, defa
 // ensureCloned opens an existing repo or inits an empty one with the remote configured.
 // Actual fetching is deferred to syncBranch/syncTags which use narrow refspecs.
 func ensureCloned(_ context.Context, repo *config.RepoConfig, _ transport.AuthMethod) (*git.Repository, error) {
-	if _, err := os.Stat(repo.LocalPath); err == nil {
+	// Stat .git, not the directory. A bare mkdir - the shared-PVC init container
+	// makes these, and a failed earlier sync can leave one behind - satisfied the
+	// old check, so PlainOpen ran against a path holding no repository and the
+	// init path below never ran. That also meant CreateRemote never ran, leaving
+	// a repo with no "origin" for the fetch to use.
+	if _, err := os.Stat(filepath.Join(repo.LocalPath, ".git")); err == nil {
 		return git.PlainOpen(repo.LocalPath)
 	}
 
