@@ -17,6 +17,7 @@ import (
 	gitconfig "github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/transport"
+	"github.com/go-git/go-git/v5/storage/filesystem/dotgit"
 	"github.com/obmondo/gfetch/pkg/config"
 	"github.com/obmondo/gfetch/pkg/telemetry"
 )
@@ -198,8 +199,35 @@ func isRecoverableOpenVoxRepoError(err error) bool {
 		return true
 	}
 
-	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "ref file is empty")
+	// dotgit returns ErrEmptyRefFile bare, but some paths reformat it rather
+	// than wrapping it, so fall back to matching its message - taken from the
+	// sentinel so the text cannot drift from the library.
+	if errors.Is(err, dotgit.ErrEmptyRefFile) ||
+		strings.Contains(err.Error(), dotgit.ErrEmptyRefFile.Error()) {
+		return true
+	}
+
+	// isObjectNotFoundErr covers a ref that resolves locally while the commit/
+	// tree/blob objects it points at are missing (e.g. a shared-cache alternate
+	// that no longer holds them, or an interrupted prior sync). Recreating the
+	// repo from the cache and refetching from origin restores the objects.
+	return isObjectNotFoundErr(err)
+}
+
+// isUnclonableCacheErr reports whether a clone-from-cache failure is one we can
+// recover from by initialising an empty repo wired to the cache via alternates:
+// an empty cache, or a cache that has refs but no resolvable HEAD (e.g. its
+// default branch isn't "master"). Any other clone error is a real failure.
+func isUnclonableCacheErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, transport.ErrEmptyRemoteRepository) || errors.Is(err, plumbing.ErrReferenceNotFound) {
+		return true
+	}
+	msg := err.Error()
+	return strings.Contains(msg, transport.ErrEmptyRemoteRepository.Error()) ||
+		strings.Contains(msg, plumbing.ErrReferenceNotFound.Error())
 }
 
 func openVoxWorkerCount(repo *config.RepoConfig) int {
@@ -240,12 +268,16 @@ func (s *Syncer) syncRepoOpenVox(ctx context.Context, repo *config.RepoConfig, o
 	resolverPath := filepath.Join(repo.LocalPath, metaDir)
 	resolverRepo, refs, err := loadResolverRepoAndRefs(ctx, repo.Name, resolverPath, cachePath, repo.URL, auth)
 	if err != nil {
+		if errors.Is(err, transport.ErrEmptyRemoteRepository) {
+			log.Info("remote repository has no commits yet, nothing to sync")
+			return result
+		}
 		telemetry.SyncFailuresTotal.WithLabelValues(repo.Name, "clone").Inc()
 		result.Err = fmt.Errorf("resolver repo: %w", err)
 		return result
 	}
 
-	defaultBranch, remoteBranches, matchedBranches, matchedTags := extractRemoteRefState(refs, repo.Branches, repo.Tags)
+	defaultBranch, remoteBranches, matchedBranches, matchedTags := extractRemoteRefState(refs, repo.Branches, repo.Tags, repo.IsDefaultBranchOnly())
 	workers := openVoxWorkerCount(repo)
 
 	telemetry.RemoteRefsCount.WithLabelValues(repo.Name).Set(float64(len(matchedBranches) + len(matchedTags)))
@@ -345,7 +377,7 @@ func (s *Syncer) syncCache(ctx context.Context, cachePath string, repo *config.R
 		return nil
 	}
 
-	if !strings.Contains(err.Error(), "couldn't find remote ref") {
+	if !errors.Is(err, git.NoMatchingRefSpecError{}) {
 		telemetry.SyncFailuresTotal.WithLabelValues(repo.Name, "cache_sync").Inc()
 		result.Err = fmt.Errorf("syncing central cache: %w", err)
 		return result.Err
@@ -362,7 +394,7 @@ func (s *Syncer) syncCache(ctx context.Context, cachePath string, repo *config.R
 		return result.Err
 	}
 
-	_, _, matchedBranches, matchedTags := extractRemoteRefState(refs, repo.Branches, repo.Tags)
+	_, _, matchedBranches, matchedTags := extractRemoteRefState(refs, repo.Branches, repo.Tags, repo.IsDefaultBranchOnly())
 	refSpecs = s.prepareRefSpecs(repo, refs, matchedBranches, matchedTags)
 
 	if err := SyncCentralCache(ctx, cachePath, repo.URL, auth, refSpecs); err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) {
@@ -418,10 +450,16 @@ func getRepoWithSharedCache(repoPath, cachePath, remoteURL string, auth transpor
 		Shared: true,
 	})
 	if err != nil {
-		if !strings.Contains(err.Error(), "remote repository is empty") {
+		if !isUnclonableCacheErr(err) {
 			return nil, fmt.Errorf("clone from cache: %w", err)
 		}
-		// If clone failed, maybe because cache is empty.
+		// The cache can't be cloned from directly: it's either empty, or it has
+		// refs but no resolvable HEAD. The latter happens on the first sync of a
+		// repo whose default branch isn't "master" (go-git's init-time HEAD for
+		// the bare cache): SyncCentralCache fetches refs/heads/<default> but the
+		// cache HEAD still dangles at refs/heads/master, so PlainClone fails with
+		// "reference not found". Fall back to an empty repo wired to the shared
+		// cache via alternates; refs are then fetched per-branch from origin.
 		// PlainClone might have left a partially created .git directory which breaks PlainInit.
 		_ = os.RemoveAll(filepath.Join(repoPath, ".git"))
 
@@ -496,7 +534,14 @@ func listRemoteRefs(ctx context.Context, repo *git.Repository, auth transport.Au
 	return refs, nil
 }
 
-func extractRemoteRefState(refs []*plumbing.Reference, branchPatterns, tagPatterns []config.Pattern) (string, map[string]struct{}, []*plumbing.Reference, []*plumbing.Reference) {
+// extractRemoteRefState splits the remote's advertised refs into the default
+// branch, every branch name seen, and the branch/tag refs selected for syncing.
+//
+// When defaultBranchOnly is set, the branch patterns are ignored and the only
+// branch selected is the one HEAD points at. HEAD is resolved in its own pass
+// first, because servers are free to advertise it after the branch refs and
+// the selection depends on knowing it.
+func extractRemoteRefState(refs []*plumbing.Reference, branchPatterns, tagPatterns []config.Pattern, defaultBranchOnly bool) (string, map[string]struct{}, []*plumbing.Reference, []*plumbing.Reference) {
 	branches := make(map[string]struct{})
 	defaultBranch := ""
 	matchedBranches := make([]*plumbing.Reference, 0)
@@ -505,16 +550,26 @@ func extractRemoteRefState(refs []*plumbing.Reference, branchPatterns, tagPatter
 	seenTags := make(map[string]bool)
 
 	for _, ref := range refs {
+		if ref.Name() == plumbing.HEAD {
+			defaultBranch = ref.Target().Short()
+			break
+		}
+	}
+
+	for _, ref := range refs {
 		name := ref.Name()
 		if name == plumbing.HEAD {
-			defaultBranch = ref.Target().Short()
 			continue
 		}
 
 		if name.IsBranch() {
 			branch := name.Short()
 			branches[branch] = struct{}{}
-			if !seenBranches[branch] && config.MatchesAny(branch, branchPatterns) {
+			selected := branch == defaultBranch
+			if !defaultBranchOnly {
+				selected = config.MatchesAny(branch, branchPatterns)
+			}
+			if !seenBranches[branch] && selected {
 				matchedBranches = append(matchedBranches, ref)
 				seenBranches[branch] = true
 			}
@@ -853,16 +908,22 @@ func shouldSyncBranchLocalFirst(basePath string, ref *plumbing.Reference, staleA
 	return true, false
 }
 
-func isBranchUpToDateLocal(repo *git.Repository, branch string, remoteHash plumbing.Hash) (bool, error) {
-	localRef, err := repo.Reference(plumbing.NewBranchReferenceName(branch), true)
-	if err != nil {
-		return false, err
-	}
-	return localRef.Hash() == remoteHash, nil
-}
-
-func isTagUpToDateLocal(repo *git.Repository, tag string, remoteHash plumbing.Hash) (bool, error) {
-	localRef, err := repo.Reference(plumbing.NewTagReferenceName(tag), true)
+// isRefUpToDateLocal reports whether refName already resolves to remoteHash
+// locally, and the fetch for it can be skipped.
+//
+// This deliberately does not verify that the objects behind the hash are
+// present. A cheap tip-object lookup cannot tell: decoding a commit succeeds
+// while its tree is missing, which is the exact shape an interrupted fetch
+// leaves behind, so the check passed on the case it was meant to catch while
+// costing every healthy ref an object decode on every poll - and via alternates
+// a miss re-reads and decodes every pack index in the shared cache.
+//
+// An incomplete object store is instead repaired where it actually surfaces:
+// the checkout fails with "object not found", isRecoverableOpenVoxRepoError
+// classifies it, and the ref dir is recreated and re-synced. That pays the cost
+// on the broken ref rather than on all the healthy ones.
+func isRefUpToDateLocal(repo *git.Repository, refName plumbing.ReferenceName, remoteHash plumbing.Hash) (bool, error) {
+	localRef, err := repo.Reference(refName, true)
 	if err != nil {
 		return false, err
 	}
@@ -957,7 +1018,7 @@ func syncOpenVoxBranchOnce(ctx context.Context, subCfg *config.RepoConfig, branc
 		return false, fmt.Errorf("clone/open repo: %w", err)
 	}
 
-	upToDateLocal, upToDateErr := isBranchUpToDateLocal(r, branch, remoteHash)
+	upToDateLocal, upToDateErr := isRefUpToDateLocal(r, plumbing.NewBranchReferenceName(branch), remoteHash)
 	if upToDateErr != nil {
 		logHashVerifyError(upToDateErr, "branch", branch)
 	}
@@ -1140,7 +1201,7 @@ func syncOpenVoxTagOnce(ctx context.Context, subCfg *config.RepoConfig, tag stri
 		return false, fmt.Errorf("clone/open repo: %w", err)
 	}
 
-	upToDateLocal, upToDateErr := isTagUpToDateLocal(r, tag, remoteHash)
+	upToDateLocal, upToDateErr := isRefUpToDateLocal(r, plumbing.NewTagReferenceName(tag), remoteHash)
 	if upToDateErr != nil {
 		logHashVerifyError(upToDateErr, "tag", tag)
 	}

@@ -14,6 +14,7 @@ import (
 
 const (
 	branchMain    = "main"
+	tagSemverGlob = `/^v[0-9]+\./`
 	testRepoName  = "test"
 	testLocalPath = "/tmp/test"
 	testRepoURL   = "git@github.com:test/repo.git"
@@ -449,8 +450,7 @@ func TestValidate_NoReposConfigured(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for empty config, got nil")
 	}
-	var partial *PartialValidateError
-	if errors.As(err, &partial) {
+	if _, ok := errors.AsType[*PartialValidateError](err); ok {
 		t.Fatalf("expected plain error, got *PartialValidateError: %v", err)
 	}
 	if err.Error() != "no repos configured" {
@@ -674,5 +674,213 @@ func TestApplyDefaults_PruneBoolOverride(t *testing.T) {
 				t.Errorf("prune_stale: want %v, got %v", *tt.wantStale, *repo.PruneStale)
 			}
 		})
+	}
+}
+
+// defaultBranchOnlyRepo builds a repo config that is valid apart from whatever
+// the caller adds, so each guard below is tested in isolation.
+func defaultBranchOnlyRepo(t *testing.T) RepoConfig {
+	t.Helper()
+	keyFile := filepath.Join(t.TempDir(), "key")
+	if err := os.WriteFile(keyFile, []byte("fake"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	defaultBranchOnly := true
+	return RepoConfig{
+		RepoDefaults: RepoDefaults{
+			SSHKeyPath:        keyFile,
+			LocalPath:         testLocalPath,
+			PollInterval:      Duration(30 * time.Second),
+			DefaultBranchOnly: &defaultBranchOnly,
+		},
+		Name: testRepoName,
+		URL:  testRepoURL,
+	}
+}
+
+func TestValidate_DefaultBranchOnlyAlone(t *testing.T) {
+	cfg := &Config{Repos: map[string]RepoConfig{testRepoName: defaultBranchOnlyRepo(t)}}
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("default_branch_only on its own should be valid, got %v", err)
+	}
+}
+
+func TestValidate_DefaultBranchOnlyRejectsBranches(t *testing.T) {
+	repo := defaultBranchOnlyRepo(t)
+	repo.Branches = []Pattern{{Raw: branchMain}}
+	cfg := &Config{Repos: map[string]RepoConfig{testRepoName: repo}}
+
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error when branches is set alongside default_branch_only")
+	}
+}
+
+func TestValidate_DefaultBranchOnlyRejectsCheckout(t *testing.T) {
+	repo := defaultBranchOnlyRepo(t)
+	repo.Checkout = branchMain
+	cfg := &Config{Repos: map[string]RepoConfig{testRepoName: repo}}
+
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error when checkout is set alongside default_branch_only")
+	}
+}
+
+func TestValidate_DefaultBranchOnlyRejectsOpenVox(t *testing.T) {
+	repo := defaultBranchOnlyRepo(t)
+	openVox := true
+	repo.OpenVox = &openVox
+	cfg := &Config{Repos: map[string]RepoConfig{testRepoName: repo}}
+
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error when default_branch_only is combined with openvox")
+	}
+}
+
+// default_branch_only means the default branch and nothing else, so tags are
+// rejected alongside branches and checkout.
+func TestValidate_DefaultBranchOnlyRejectsTags(t *testing.T) {
+	repo := defaultBranchOnlyRepo(t)
+	repo.Tags = []Pattern{{Raw: tagSemverGlob}}
+	cfg := &Config{Repos: map[string]RepoConfig{testRepoName: repo}}
+
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error when tags are set alongside default_branch_only")
+	}
+}
+
+// Inherited branch patterns must not trip the guard: the operator did not set
+// branches on this repo, the defaults block did.
+//
+// This goes through Load rather than Validate on purpose. applyDefaults runs
+// only in loadFile/loadDir, so a Validate-only test passes with the guard
+// deleted and proves nothing.
+func TestLoadDir_DefaultBranchOnlySkipsInheritedBranches(t *testing.T) {
+	dir := t.TempDir()
+	keyFile := filepath.Join(dir, "key")
+	if err := os.WriteFile(keyFile, []byte("fake"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "global.yaml"), []byte(`branches:
+  - main
+poll_interval: 1m
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	repoDir := filepath.Join(dir, "repo1")
+	if err := os.MkdirAll(repoDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, "config.yaml"), []byte(`repos:
+  repo1:
+    url: git@github.com:test/repo1.git
+    ssh_key_path: `+keyFile+`
+    local_path: `+dir+`/repo1-clone
+    poll_interval: 1m
+    default_branch_only: true
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	repo, ok := cfg.Repos["repo1"]
+	if !ok {
+		t.Fatal("repo1 missing after load")
+	}
+	if len(repo.Branches) != 0 {
+		t.Fatalf("branches = %v, want none inherited", repo.Branches)
+	}
+	if !repo.IsDefaultBranchOnly() {
+		t.Fatal("default_branch_only was lost")
+	}
+
+	// Validate drops repos it rejects, so surviving it is the real assertion.
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("validate after load: %v", err)
+	}
+	if _, ok := cfg.Repos["repo1"]; !ok {
+		t.Fatal("repo1 was dropped: inherited branches must not fail a default_branch_only repo")
+	}
+}
+
+// Same for tags: a defaults block naming them must not fail a repo that never
+// asked for them.
+func TestLoadDir_DefaultBranchOnlySkipsInheritedTags(t *testing.T) {
+	dir := t.TempDir()
+	keyFile := filepath.Join(dir, "key")
+	if err := os.WriteFile(keyFile, []byte("fake"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "global.yaml"), []byte("tags:\n  - "+tagSemverGlob+"\npoll_interval: 1m\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	repoDir := filepath.Join(dir, "repo1")
+	if err := os.MkdirAll(repoDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, "config.yaml"), []byte(`repos:
+  repo1:
+    url: git@github.com:test/repo1.git
+    ssh_key_path: `+keyFile+`
+    local_path: `+dir+`/repo1-clone
+    poll_interval: 1m
+    default_branch_only: true
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("validate after load: %v", err)
+	}
+	if _, ok := cfg.Repos["repo1"]; !ok {
+		t.Fatal("repo1 was dropped: inherited tags must not fail a default_branch_only repo")
+	}
+}
+
+// The guard must still reject branches the operator set on the repo itself,
+// as opposed to ones inherited from defaults.
+func TestLoadDir_DefaultBranchOnlyRejectsExplicitBranches(t *testing.T) {
+	dir := t.TempDir()
+	keyFile := filepath.Join(dir, "key")
+	if err := os.WriteFile(keyFile, []byte("fake"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	repoDir := filepath.Join(dir, "repo1")
+	if err := os.MkdirAll(repoDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, "config.yaml"), []byte(`repos:
+  repo1:
+    url: git@github.com:test/repo1.git
+    ssh_key_path: `+keyFile+`
+    local_path: `+dir+`/repo1-clone
+    poll_interval: 1m
+    default_branch_only: true
+    branches:
+      - main
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Load does not validate; Validate is what drops an invalid repo.
+	_ = cfg.Validate()
+	if _, ok := cfg.Repos["repo1"]; ok {
+		t.Fatal("expected repo1 to be dropped for setting branches alongside default_branch_only")
 	}
 }

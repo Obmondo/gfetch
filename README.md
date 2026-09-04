@@ -10,6 +10,7 @@ A CLI tool that selectively mirrors remote Git repositories to local paths based
 ## Features
 
 - **Selective sync** — choose exactly which branches and tags to mirror using exact names, wildcards (`*`), or regex patterns
+- **Default-branch-only sync** — `default_branch_only: true` mirrors just the branch the remote's `HEAD` points at, for callers that don't know its name up front
 - **Pruning** — detect and remove local branches/tags that no longer match any configured pattern
 - **Stale pruning** — optionally remove inactive branches that have no new commits in a specified period (e.g., last 6 months); `prune_stale` only takes effect when `prune` is also enabled — stale branches are skipped before branch sync when both are set
 - **Daemon mode** — run as a foreground polling service with per-repo poll intervals
@@ -107,6 +108,7 @@ defaults:
   prune: true                   # remove branches/tags no longer matching any pattern
   prune_stale: true             # remove branches with no commits in 6 months (requires prune: true)
   stale_age: 180d               # supports d (days)
+  default_branch_only: false    # sync only the branch the remote HEAD points at
   production_alias: false       # OpenVox-only: if true and upstream has no production branch,
                                  # create/update production -> <default-branch-dir> symlink
 
@@ -128,11 +130,17 @@ repos:
     prune_stale: false          # override default for this repo
     branches:
       - main
+
+  customer-repo:
+    url: git@github.com:org/customer-repo.git
+    default_branch_only: true   # whatever HEAD points at; no branches/tags needed
 ```
 
 See [docs/configuration.md](docs/configuration.md) for the full configuration reference, including all fields, pattern syntax, auth methods, and validation rules.
 
 **Important (OpenVox environments):** set `production_alias: true` to keep a stable `production` symlink pointing to the upstream default branch directory. gfetch skips alias creation if upstream already has a `production` branch.
+
+**`default_branch_only`** replaces `branches`/`tags` rather than supplementing them: it syncs the remote's default branch and nothing else, and is rejected alongside `branches`, `tags`, `checkout` or `openvox` so a contradictory config fails instead of silently ignoring what you wrote. The branch is re-resolved from the remote on every sync, so a change of upstream default branch is followed automatically. See [Default Branch Only](docs/configuration.md#default-branch-only).
 
 ## Usage
 

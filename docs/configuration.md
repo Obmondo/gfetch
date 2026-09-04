@@ -60,8 +60,9 @@ Validation, however, tolerates per-repo failures: a repo that fails `Validate` (
 | `ssh_known_hosts` | string | No | Extra SSH host key entries. Merged with built-in keys for GitHub, GitLab, Bitbucket, and Azure DevOps. |
 | `local_path` | string | Yes | Local directory where the repo will be cloned and synced. |
 | `poll_interval` | duration | Yes | How often the daemon polls this repo. Supports `30s`, `5m`, `1h`, `30d`. Minimum: `10s`. |
-| `branches` | list of patterns | At least one of `branches` or `tags` | Branch names or patterns to sync from the remote. |
-| `tags` | list of patterns | At least one of `branches` or `tags` | Tag names or patterns to sync from the remote. |
+| `branches` | list of patterns | At least one of `branches` or `tags`, unless `default_branch_only` is set | Branch names or patterns to sync from the remote. |
+| `tags` | list of patterns | At least one of `branches` or `tags`, unless `default_branch_only` is set | Tag names or patterns to sync from the remote. |
+| `default_branch_only` | bool | No | Sync only the branch the remote's `HEAD` points at, whatever it is called. Cannot be combined with `branches`, `tags`, `checkout` or `openvox`. Default `false`. |
 | `checkout` | string | No | A literal branch or tag name to check out in the working tree. |
 | `openvox` | bool | No | Enable OpenVox mode. Each matching branch/tag gets its own subdirectory. |
 | `openvox_max_workers` | int | No | OpenVox-only worker concurrency per repo. Default `5`, valid range `1..64`. |
@@ -69,6 +70,51 @@ Validation, however, tolerates per-repo failures: a repo that fails `Validate` (
 | `prune` | bool | No | Remove local branches/tags no longer matching any configured pattern. Required for `prune_stale` to take effect. Default `false`. |
 | `prune_stale` | bool | No | If true, local branches matching patterns but with no commits in `stale_age` will be pruned during sync (requires `prune: true`). When both are enabled, stale branches are also skipped before branch sync. Default `false`. |
 | `stale_age` | duration | No | The period of inactivity (based on committer date) after which a branch is considered stale. Default `180d`. |
+
+## Default Branch Only
+
+Set `default_branch_only: true` to mirror just the branch the remote's `HEAD`
+points at, without naming it:
+
+```yaml
+repos:
+  customer-repo:
+    url: git@github.com:org/repo.git
+    local_path: /var/repos/customer-repo
+    poll_interval: 5m
+    default_branch_only: true
+```
+
+This is for callers that do not know the branch name up front — it may be
+`main`, `master`, `trunk` or anything else — and want that one branch rather
+than widening `branches` to `"*"` and mirroring everything.
+
+The branch is resolved per sync from the remote's advertised `HEAD`, so if
+upstream changes its default branch, the next sync follows it. The working tree
+is checked out on that branch, which is the standard behaviour when no
+`checkout` is configured.
+
+It syncs the default branch and **nothing else**, so it cannot be combined with
+the fields that name refs:
+
+| Combined with | Result |
+|---------------|--------|
+| `branches` | Config error — the branch comes from the remote `HEAD`. |
+| `tags` | Config error — the option means the default branch and nothing else. |
+| `checkout` | Config error — the default branch is already checked out. |
+| `openvox` | Config error — OpenVox syncs every matched branch into its own directory. |
+
+A repo with `default_branch_only: true` also does not inherit `branches` or
+`tags` from `defaults:`. Without that, a shared default would trip the rules
+above and fail a config the operator never wrote that way.
+
+Pruning interacts with it as follows:
+
+- `prune: true` removes local branches other than the default branch, as usual.
+  The branch just synced is never treated as obsolete.
+- `prune_stale` has no effect in this mode. The only configured branch is the
+  one just synced, and pruning it for being old would delete the sole branch
+  the repo exists to mirror.
 
 ## Stale Pruning
 
@@ -221,7 +267,8 @@ The config is validated when loaded. The following rules are enforced:
 - Repository names (map keys) must be ≤ 64 characters and contain only alphanumeric characters, dots, underscores, or hyphens.
 - Each repo must have `url`, `local_path`, and `poll_interval` set.
 - `poll_interval` must be at least `10s`.
-- At least one of `branches` or `tags` must be non-empty.
+- At least one of `branches` or `tags` must be non-empty, unless `default_branch_only: true` is set.
+- `default_branch_only: true` is rejected alongside `branches`, `tags`, `checkout` or `openvox`. Each of those names the refs to sync, so they contradict the option rather than refine it — the config fails instead of silently ignoring what you wrote.
 - All regex patterns must be valid Go regular expressions.
 - If `url` is an SSH URL, `ssh_key_path` must be set and the file must exist.
 - If `url` is an HTTPS URL, the repo must be publicly accessible (HTTP 200 on HEAD request).

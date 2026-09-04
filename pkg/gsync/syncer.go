@@ -2,9 +2,11 @@ package gsync
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"sort"
 	"sync"
 	"time"
@@ -12,6 +14,7 @@ import (
 	git "github.com/go-git/go-git/v5"
 	gitconfig "github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-git/v5/plumbing/protocol/packp/capability"
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	"github.com/obmondo/gfetch/pkg/config"
 	"github.com/obmondo/gfetch/pkg/telemetry"
@@ -48,8 +51,31 @@ type Syncer struct {
 	mu sync.Mutex
 }
 
-// New creates a new Syncer with the given logger.
+// New creates a new Syncer.
+//
+// It also re-enables the multi_ack capabilities. go-git ships with MultiACK,
+// MultiACKDetailed and ThinPack all declared unsupported, so it never
+// advertises them; Azure DevOps answers a client offering no multi_ack with an
+// empty pack rather than an error, leaving a fetch that returns nil, writes the
+// refs, and brings down no objects. Checkout then fails with "object not found"
+// and nothing self-heals, because the refs already point at the right commits.
+// Measured against a real Azure repo: stock capabilities fetched zero objects,
+// this list fetched the same pack the git binary sends.
+//
+// ThinPack stays unsupported - that one reflects a real gap in go-git's pack
+// handling rather than a negotiation preference.
+//
+// transport.UnsupportedCapabilities is a package-level global in go-git, so
+// this necessarily applies to every remote in the process. Advertising
+// multi_ack is what any normal git client does, so it is safe for the rest.
+//
+// That global is gone in go-git v6, so this will not compile against it.
+// Upgrading is a rewrite rather than a bump - see "Known future work" in
+// AGENTS.md before attempting it.
 func New() *Syncer {
+	transport.UnsupportedCapabilities = []capability.Capability{
+		capability.ThinPack,
+	}
 	return &Syncer{}
 }
 
@@ -114,30 +140,15 @@ func (s *Syncer) SyncRepo(ctx context.Context, repo *config.RepoConfig, opts Syn
 		return result
 	}
 
-	r, err := ensureCloned(ctx, repo, auth)
-	if err != nil {
-		telemetry.SyncFailuresTotal.WithLabelValues(repo.Name, "clone").Inc()
-		result.Err = err
-		return result
+	result, emptyRepo := s.runStandardSync(ctx, repo, auth, opts)
+	if isObjectNotFoundErr(result.Err) {
+		result, emptyRepo = s.repairIncompleteObjectStore(ctx, repo, auth, opts, log, result)
 	}
-
-	refs, err := listRemoteRefs(ctx, r, auth, repo.Name, "standard")
-	if err != nil {
-		log.Error("failed to list remote refs", "error", err)
-		telemetry.SyncFailuresTotal.WithLabelValues(repo.Name, "clone").Inc()
-		result.Err = fmt.Errorf("listing remote refs: %w", err)
-		return result
+	if emptyRepo {
+		// result.Err is nil here, so the shared success tail below records it
+		// as the benign no-op it is.
+		log.Info("remote repository has no commits yet, nothing to sync")
 	}
-
-	defaultBranch, _, matchedBranches, matchedTagRefs := extractRemoteRefState(refs, repo.Branches, repo.Tags)
-	matchedTags := make([]string, 0, len(matchedTagRefs))
-	for _, tagRef := range matchedTagRefs {
-		matchedTags = append(matchedTags, tagRef.Name().Short())
-	}
-
-	s.syncBranches(ctx, r, repo, auth, opts, matchedBranches, &result)
-	s.syncTagsWrapper(ctx, r, repo, auth, opts, matchedTags, &result)
-	s.handleCheckout(r, repo, defaultBranch, &result)
 
 	duration := time.Since(start)
 	telemetry.SyncDurationSeconds.WithLabelValues(repo.Name, "total").Observe(duration.Seconds())
@@ -166,6 +177,65 @@ func (s *Syncer) SyncRepo(ctx context.Context, repo *config.RepoConfig, opts Syn
 		"duration", duration,
 	)
 	return result
+}
+
+// repairIncompleteObjectStore wipes the local mirror and syncs it again from
+// scratch, for when the local object store is incomplete (a ref resolves but
+// its object graph is missing) — typically an interrupted prior fetch on a
+// persistent volume. go-git won't repair it in place because it treats the
+// present-but-partial commit as a "have".
+//
+// Returns the result of the retried sync, or the original failure when the
+// wipe itself fails and no retry was possible.
+func (s *Syncer) repairIncompleteObjectStore(ctx context.Context, repo *config.RepoConfig, auth transport.AuthMethod, opts SyncOptions, log *slog.Logger, failed Result) (Result, bool) {
+	log.Warn("local repository has incomplete objects, recreating and retrying", "path", repo.LocalPath, "error", failed.Err)
+	telemetry.SyncFailuresTotal.WithLabelValues(repo.Name, "object_repair").Inc()
+
+	if err := os.RemoveAll(repo.LocalPath); err != nil {
+		log.Error("failed to remove local repo for repair", "error", err)
+		return failed, false
+	}
+
+	return s.runStandardSync(ctx, repo, auth, opts)
+}
+
+// runStandardSync performs the clone/list/branch/tag/checkout flow for a single
+// non-openvox repo. It returns the Result and whether the remote is empty (has
+// no commits yet), which the caller records as a benign no-op success. It is
+// safe to call twice (the caller wipes the local path and retries once on an
+// incomplete local object store).
+func (s *Syncer) runStandardSync(ctx context.Context, repo *config.RepoConfig, auth transport.AuthMethod, opts SyncOptions) (Result, bool) {
+	result := Result{RepoName: repo.Name}
+
+	r, err := ensureCloned(ctx, repo, auth)
+	if err != nil {
+		telemetry.SyncFailuresTotal.WithLabelValues(repo.Name, "clone").Inc()
+		result.Err = err
+		return result, false
+	}
+
+	refs, err := listRemoteRefs(ctx, r, auth, repo.Name, "standard")
+	if err != nil {
+		if errors.Is(err, transport.ErrEmptyRemoteRepository) {
+			return result, true
+		}
+		slog.Error("failed to list remote refs", "repo", repo.Name, "error", err)
+		telemetry.SyncFailuresTotal.WithLabelValues(repo.Name, "clone").Inc()
+		result.Err = fmt.Errorf("listing remote refs: %w", err)
+		return result, false
+	}
+
+	defaultBranch, _, matchedBranches, matchedTagRefs := extractRemoteRefState(refs, repo.Branches, repo.Tags, repo.IsDefaultBranchOnly())
+	matchedTags := make([]string, 0, len(matchedTagRefs))
+	for _, tagRef := range matchedTagRefs {
+		matchedTags = append(matchedTags, tagRef.Name().Short())
+	}
+
+	s.syncBranches(ctx, r, repo, auth, opts, matchedBranches, &result)
+	s.syncTagsWrapper(ctx, r, repo, auth, opts, matchedTags, &result)
+	s.handleCheckout(r, repo, defaultBranch, &result)
+
+	return result, false
 }
 
 func (s *Syncer) addBranchSynced(result *Result, branch string) {
@@ -246,7 +316,20 @@ func (s *Syncer) syncBranches(ctx context.Context, r *git.Repository, repo *conf
 		s.addBranchSynced(result, branch)
 	}
 
-	obsolete, err := findObsoleteBranches(r, repo.Branches)
+	// default_branch_only leaves repo.Branches empty by design, so matching
+	// against it would mark every local branch obsolete — including the one
+	// just synced — and prune would then delete it while the sync still
+	// reported success. The configured set in that mode is the branches
+	// actually selected, which is the remote's default branch.
+	obsoletePatterns := repo.Branches
+	if repo.IsDefaultBranchOnly() {
+		obsoletePatterns = make([]config.Pattern, 0, len(branches))
+		for _, ref := range branches {
+			obsoletePatterns = append(obsoletePatterns, config.Pattern{Raw: ref.Name().Short()})
+		}
+	}
+
+	obsolete, err := findObsoleteBranches(r, obsoletePatterns)
 	if err != nil {
 		slog.Error("failed to find obsolete branches", "error", err)
 	}
@@ -262,6 +345,11 @@ func (s *Syncer) syncBranches(ctx context.Context, r *git.Repository, repo *conf
 		return
 	}
 
+	// Deliberately repo.Branches, not obsoletePatterns: under
+	// default_branch_only the synthesized set is the branch we just synced, and
+	// stale pruning would delete it for being old - the same deletion the
+	// obsolete path above exists to prevent. Empty patterns match nothing, so
+	// stale pruning is simply inert in that mode.
 	stale, err := findStaleBranches(r, repo.Branches, opts.StaleAge)
 	if err != nil {
 		slog.Error("failed to find stale branches", "error", err)
@@ -401,43 +489,81 @@ func (s *Syncer) syncTagsWrapper(ctx context.Context, r *git.Repository, repo *c
 	s.mu.Unlock()
 }
 
+func (s *Syncer) setCheckout(result *Result, name string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	result.Checkout = name
+}
+
+// checkoutDefaultBranch checks out the remote's default branch, used when no
+// checkout is configured.
+//
+// A default branch the branch patterns don't mirror is a benign no-op, so it is
+// detected up front rather than by attempting a checkout that cannot succeed
+// and then classifying the failure. Once the ref is known to be present, any
+// checkout failure is real - typically a partial object store - and must
+// surface, both to report it and because SyncRepo's object-repair retry keys on
+// result.Err.
+func (s *Syncer) checkoutDefaultBranch(r *git.Repository, repo *config.RepoConfig, defaultBranch string, result *Result) {
+	if defaultBranch == "" {
+		// Empty upstream (no commits) or unknown default branch: nothing to check out.
+		slog.Debug("no checkout configured and no default branch available, skipping checkout", "repo", repo.Name)
+		return
+	}
+
+	if _, err := r.Reference(plumbing.NewBranchReferenceName(defaultBranch), true); err != nil {
+		slog.Warn("skipping default-branch checkout: ref not mirrored locally", "ref", defaultBranch, "error", err)
+		return
+	}
+
+	if err := checkoutRef(r, defaultBranch); err != nil {
+		slog.Error("failed to checkout default branch", "ref", defaultBranch, "error", err)
+		s.setErr(result, fmt.Errorf("checkout %s: %w", defaultBranch, err))
+		return
+	}
+
+	s.setCheckout(result, defaultBranch)
+}
+
 func (s *Syncer) handleCheckout(r *git.Repository, repo *config.RepoConfig, defaultBranch string, result *Result) {
 	if repo.Checkout == "" {
+		s.checkoutDefaultBranch(r, repo, defaultBranch, result)
 		return
 	}
 
-	err := checkoutRef(r, repo.Checkout)
-	if err != nil {
-		if defaultBranch == "" || repo.Checkout == defaultBranch {
-			slog.Error("failed to checkout", "ref", repo.Checkout, "error", err)
-			s.setErr(result, fmt.Errorf("checkout %s: %w", repo.Checkout, err))
-			return
-		}
-
-		slog.Warn("failed to checkout configured ref, falling back to default branch", "ref", repo.Checkout, "fallback", defaultBranch, "error", err)
-
-		fallbackErr := checkoutRef(r, defaultBranch)
-		if fallbackErr != nil {
-			slog.Error("fallback checkout also failed", "ref", defaultBranch, "error", fallbackErr)
-			s.setErr(result, fmt.Errorf("checkout %s: %w", repo.Checkout, err))
-			return
-		}
-
-		s.mu.Lock()
-		result.Checkout = defaultBranch
-		s.mu.Unlock()
+	target := repo.Checkout
+	err := checkoutRef(r, target)
+	if err == nil {
+		s.setCheckout(result, target)
 		return
 	}
 
-	s.mu.Lock()
-	result.Checkout = repo.Checkout
-	s.mu.Unlock()
+	if defaultBranch == "" || target == defaultBranch {
+		slog.Error("failed to checkout", "ref", target, "error", err)
+		s.setErr(result, fmt.Errorf("checkout %s: %w", target, err))
+		return
+	}
+
+	slog.Warn("failed to checkout configured ref, falling back to default branch", "ref", target, "fallback", defaultBranch, "error", err)
+
+	if fallbackErr := checkoutRef(r, defaultBranch); fallbackErr != nil {
+		slog.Error("fallback checkout also failed", "ref", defaultBranch, "error", fallbackErr)
+		s.setErr(result, fmt.Errorf("checkout %s: %w", target, err))
+		return
+	}
+
+	s.setCheckout(result, defaultBranch)
 }
 
 // ensureCloned opens an existing repo or inits an empty one with the remote configured.
 // Actual fetching is deferred to syncBranch/syncTags which use narrow refspecs.
 func ensureCloned(_ context.Context, repo *config.RepoConfig, _ transport.AuthMethod) (*git.Repository, error) {
-	if _, err := os.Stat(repo.LocalPath); err == nil {
+	// Stat .git, not the directory. A bare mkdir - the shared-PVC init container
+	// makes these, and a failed earlier sync can leave one behind - satisfied the
+	// old check, so PlainOpen ran against a path holding no repository and the
+	// init path below never ran. That also meant CreateRemote never ran, leaving
+	// a repo with no "origin" for the fetch to use.
+	if _, err := os.Stat(filepath.Join(repo.LocalPath, ".git")); err == nil {
 		return git.PlainOpen(repo.LocalPath)
 	}
 

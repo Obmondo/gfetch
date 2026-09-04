@@ -399,7 +399,7 @@ func TestPruneStaleBranches(t *testing.T) {
 	}
 
 	// Verify master was NOT pruned (it's fresh).
-	if _, err := local.Reference(plumbing.NewBranchReferenceName("master"), true); err != nil {
+	if _, err := local.Reference(plumbing.NewBranchReferenceName(MasterBranch), true); err != nil {
 		t.Error("master branch should NOT have been pruned")
 	}
 
@@ -561,7 +561,7 @@ func TestPruneFalseOverridesDefault(t *testing.T) {
 		RepoDefaults: config.RepoDefaults{
 			LocalPath:  localDir,
 			SSHKeyPath: sshKey,
-			Branches:   []config.Pattern{{Raw: "master"}}, // extra-branch does not match
+			Branches:   []config.Pattern{{Raw: MasterBranch}}, // extra-branch does not match
 			Prune:      &pruneFalse,
 		},
 		Name: DefaultTestName,
@@ -606,7 +606,7 @@ func TestPruneTrueFromConfigIsApplied(t *testing.T) {
 		RepoDefaults: config.RepoDefaults{
 			LocalPath:  localDir,
 			SSHKeyPath: sshKey,
-			Branches:   []config.Pattern{{Raw: "master"}}, // extra-branch does not match
+			Branches:   []config.Pattern{{Raw: MasterBranch}}, // extra-branch does not match
 			Prune:      &pruneTrue,
 		},
 		Name: DefaultTestName,
@@ -712,4 +712,263 @@ func TestHandleCheckout_FallbackToDefault(t *testing.T) {
 			t.Fatalf("expected result.Checkout to be %s, got %s", defaultBranch, result.Checkout)
 		}
 	})
+
+	t.Run("No checkout configured defaults to head branch", func(t *testing.T) {
+		repoCfg := &config.RepoConfig{} // Checkout unset
+		result := &Result{}
+
+		// Implicit checkout should target the remote's default (HEAD) branch.
+		s.handleCheckout(r, repoCfg, defaultBranch, result)
+
+		if result.Err != nil {
+			t.Fatalf("expected success, got error: %v", result.Err)
+		}
+		if result.Checkout != defaultBranch {
+			t.Fatalf("expected implicit checkout of %s, got %q", defaultBranch, result.Checkout)
+		}
+	})
+
+	t.Run("No checkout configured and default branch missing locally is a no-op", func(t *testing.T) {
+		repoCfg := &config.RepoConfig{} // Checkout unset
+		result := &Result{}
+
+		// Default branch is advertised but not mirrored locally: skip, don't fail.
+		s.handleCheckout(r, repoCfg, "branch-not-mirrored", result)
+
+		if result.Err != nil {
+			t.Fatalf("implicit checkout of an unavailable head branch should not fail, got: %v", result.Err)
+		}
+		if result.Checkout != "" {
+			t.Fatalf("expected no checkout recorded, got %q", result.Checkout)
+		}
+	})
+
+	t.Run("No checkout configured and no default branch is a no-op", func(t *testing.T) {
+		repoCfg := &config.RepoConfig{} // Checkout unset
+		result := &Result{}
+
+		// Empty upstream: no default branch at all.
+		s.handleCheckout(r, repoCfg, "", result)
+
+		if result.Err != nil {
+			t.Fatalf("implicit checkout with no default branch should not fail, got: %v", result.Err)
+		}
+		if result.Checkout != "" {
+			t.Fatalf("expected no checkout recorded, got %q", result.Checkout)
+		}
+	})
+}
+
+// TestSyncRepo_EmptyUpstreamIsNoOp verifies that an upstream with no commits is
+// treated as a benign no-op success (standard mode), not a hard sync failure.
+func TestSyncRepo_EmptyUpstreamIsNoOp(t *testing.T) {
+	bareDir := filepath.Join(t.TempDir(), "bare.git")
+	if _, err := git.PlainInit(bareDir, true); err != nil {
+		t.Fatal(err)
+	}
+	localDir := filepath.Join(t.TempDir(), "local")
+
+	patterns := []config.Pattern{{Raw: "*"}}
+	if err := patterns[0].Compile(); err != nil {
+		t.Fatal(err)
+	}
+	repo := &config.RepoConfig{
+		RepoDefaults: config.RepoDefaults{
+			LocalPath: localDir,
+			Branches:  patterns,
+		},
+		Name: DefaultTestName,
+		URL:  bareDir,
+	}
+
+	result := New().SyncRepo(context.Background(), repo, SyncOptions{})
+	if result.Err != nil {
+		t.Fatalf("empty upstream should be a benign no-op, got error: %v", result.Err)
+	}
+	if len(result.BranchesFailed) != 0 || len(result.TagsFailed) != 0 {
+		t.Fatalf("expected no failed refs, got branches=%v tags=%v", result.BranchesFailed, result.TagsFailed)
+	}
+}
+
+// TestSyncRepo_OpenVoxEmptyUpstreamIsNoOp verifies the same benign no-op for the
+// OpenVox path.
+func TestSyncRepo_OpenVoxEmptyUpstreamIsNoOp(t *testing.T) {
+	bareDir := filepath.Join(t.TempDir(), "bare.git")
+	if _, err := git.PlainInit(bareDir, true); err != nil {
+		t.Fatal(err)
+	}
+	localDir := filepath.Join(t.TempDir(), "local")
+
+	patterns := []config.Pattern{{Raw: "*"}}
+	if err := patterns[0].Compile(); err != nil {
+		t.Fatal(err)
+	}
+	openvox := true
+	repo := &config.RepoConfig{
+		RepoDefaults: config.RepoDefaults{
+			LocalPath: localDir,
+			Branches:  patterns,
+			OpenVox:   &openvox,
+		},
+		Name: DefaultTestName,
+		URL:  bareDir,
+	}
+
+	result := New().SyncRepo(context.Background(), repo, SyncOptions{})
+	if result.Err != nil {
+		t.Fatalf("empty openvox upstream should be a benign no-op, got error: %v", result.Err)
+	}
+}
+
+// seedBareWithHistory creates a bare remote (default branch "main") with two
+// commits, the tip carrying a file introduced in the first commit. Returns the
+// tip hash.
+func seedBareWithHistory(t *testing.T, bareDir string) plumbing.Hash {
+	t.Helper()
+	_, work, tmp := initBareWithSeedWorktree(t, bareDir, MainBranch)
+	wt, err := work.Worktree()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sig := func() *object.Signature {
+		return &object.Signature{Name: DefaultTestName, Email: DefaultTestEmail, When: time.Now()}
+	}
+	if err := os.WriteFile(filepath.Join(tmp, "keep.txt"), []byte("from c1"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := wt.Add("keep.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := wt.Commit("c1", &git.CommitOptions{Author: sig(), Committer: sig()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmp, "b.txt"), []byte("from c2"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := wt.Add("b.txt"); err != nil {
+		t.Fatal(err)
+	}
+	tip, err := wt.Commit("c2", &git.CommitOptions{Author: sig(), Committer: sig()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := work.Storer.SetReference(plumbing.NewHashReference(plumbing.NewBranchReferenceName(MainBranch), tip)); err != nil {
+		t.Fatal(err)
+	}
+	if err := work.Push(&git.PushOptions{RefSpecs: []gitconfig.RefSpec{"+refs/heads/main:refs/heads/main"}}); err != nil {
+		t.Fatal(err)
+	}
+	return tip
+}
+
+// TestSyncRepo_RepairsIncompleteObjectStore guards the standard-mode first-sync
+// failure where the local repo already exists with a ref that resolves but an
+// incomplete object graph (commit present, tree/blobs missing) — e.g. an
+// interrupted prior fetch on a persistent volume. go-git treats the partial
+// commit as a "have" and won't repair it in place, so checkout fails with
+// "object not found"; SyncRepo must wipe and rebuild, then succeed.
+func TestSyncRepo_RepairsIncompleteObjectStore(t *testing.T) {
+	bareDir := filepath.Join(t.TempDir(), "bare.git")
+	tip := seedBareWithHistory(t, bareDir)
+
+	// A full clone to source the tip commit's encoded object.
+	full := filepath.Join(t.TempDir(), "full")
+	fr, err := git.PlainClone(full, false, &git.CloneOptions{URL: bareDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	commitObj, err := fr.Storer.EncodedObject(plumbing.CommitObject, tip)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Pre-create the local repo in the broken state: refs at tip, only the
+	// commit object present (no tree/blobs).
+	localDir := filepath.Join(t.TempDir(), "local")
+	r, err := git.PlainInit(localDir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.CreateRemote(&gitconfig.RemoteConfig{Name: RemoteOrigin, URLs: []string{bareDir}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Storer.SetEncodedObject(commitObj); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Storer.SetReference(plumbing.NewHashReference(plumbing.NewRemoteReferenceName(RemoteOrigin, MainBranch), tip)); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Storer.SetReference(plumbing.NewHashReference(plumbing.NewBranchReferenceName(MainBranch), tip)); err != nil {
+		t.Fatal(err)
+	}
+
+	bp := []config.Pattern{{Raw: "*"}}
+	if err := bp[0].Compile(); err != nil {
+		t.Fatal(err)
+	}
+	repo := &config.RepoConfig{
+		RepoDefaults: config.RepoDefaults{LocalPath: localDir, Branches: bp},
+		Name:         DefaultTestName,
+		URL:          bareDir,
+		Checkout:     MainBranch,
+	}
+
+	res := New().SyncRepo(context.Background(), repo, SyncOptions{})
+	if res.Err != nil {
+		t.Fatalf("expected repair-and-retry to succeed, got: %v", res.Err)
+	}
+	if res.Checkout != MainBranch {
+		t.Fatalf("expected checkout=main, got %q", res.Checkout)
+	}
+	// The working tree must be materialised after repair.
+	if _, err := os.Stat(filepath.Join(localDir, "keep.txt")); err != nil {
+		t.Errorf("expected checked-out file keep.txt after repair: %v", err)
+	}
+}
+
+// TestFindObsoleteBranches_DefaultBranchOnlyKeepsSyncedBranch pins the fix for
+// the prune interaction: default_branch_only leaves repo.Branches empty, so
+// matching obsolete branches against it marked every branch obsolete —
+// including the one just synced. prune then deleted it while the sync still
+// reported success, and the guard in pruneBranches could not help because it
+// keys on repo.Checkout, which this mode forbids.
+func TestFindObsoleteBranches_DefaultBranchOnlyKeepsSyncedBranch(t *testing.T) {
+	dir := t.TempDir()
+	r, err := git.PlainInit(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A local branch standing in for the synced default branch.
+	head := plumbing.NewHashReference(plumbing.NewBranchReferenceName(MasterBranch), plumbing.ZeroHash)
+	if err := r.Storer.SetReference(head); err != nil {
+		t.Fatal(err)
+	}
+
+	// Empty patterns are what default_branch_only produces: everything obsolete.
+	obsolete, err := findObsoleteBranches(r, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, b := range obsolete {
+		if b == MasterBranch {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("precondition failed: empty patterns should mark the branch obsolete")
+	}
+
+	// The selected branch used as the pattern set is what syncBranches now
+	// passes, and it must keep that branch out of the obsolete list.
+	obsolete, err = findObsoleteBranches(r, []config.Pattern{{Raw: MasterBranch}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, b := range obsolete {
+		if b == MasterBranch {
+			t.Fatalf("synced default branch %q must not be marked obsolete", MasterBranch)
+		}
+	}
 }

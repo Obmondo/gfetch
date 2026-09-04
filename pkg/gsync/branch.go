@@ -5,11 +5,15 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	git "github.com/go-git/go-git/v5"
 	gitconfig "github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-git/v5/plumbing/format/index"
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	"github.com/obmondo/gfetch/pkg/telemetry"
 )
@@ -61,12 +65,66 @@ func syncBranch(ctx context.Context, repo *git.Repository, branch, _ string, aut
 	return true, nil
 }
 
-// checkoutRef checks out the named branch or tag and hard-resets the working tree.
+// checkoutRef checks out the named branch or tag and hard-resets the working
+// tree, using a background context.
 func checkoutRef(repo *git.Repository, name string) error {
 	return checkoutRefContext(context.Background(), repo, name)
 }
 
+// checkoutRefContext checks out the named branch or tag and hard-resets the
+// working tree.
+//
+// A corrupt .git/index is repaired rather than reported. go-git reads the index
+// before touching the worktree, so a truncated one - a container killed
+// mid-write, which the gfetch pod is prone to since it has no memory limit -
+// makes every later checkout fail with "malformed index signature file" and the
+// repo never recovers. The index is pure cache, fully rebuildable from HEAD, so
+// deleting it and retrying is safe and far cheaper than re-cloning.
+//
+// The repair lives here rather than in a wrapper so every caller gets it. The
+// openvox path calls this directly, and with N worktrees and concurrent workers
+// per repo it is the mode most exposed to a container killed mid-index-write.
 func checkoutRefContext(ctx context.Context, repo *git.Repository, name string) error {
+	err := checkoutRefOnce(ctx, repo, name)
+	if err == nil || !isMalformedIndexErr(err) {
+		return err
+	}
+
+	idxPath, pathErr := gitIndexPath(repo)
+	if pathErr != nil {
+		return err
+	}
+	slog.Warn("removing corrupt git index and retrying checkout", "ref", name, "index", idxPath, "error", err)
+	if rmErr := os.Remove(idxPath); rmErr != nil && !os.IsNotExist(rmErr) {
+		return fmt.Errorf("removing corrupt index after %w: %w", err, rmErr)
+	}
+	return checkoutRefOnce(ctx, repo, name)
+}
+
+// isMalformedIndexErr reports whether the error is go-git refusing to decode
+// .git/index (plumbing/format/index.ErrMalformedSignature).
+func isMalformedIndexErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	return errors.Is(err, index.ErrMalformedSignature) ||
+		strings.Contains(err.Error(), index.ErrMalformedSignature.Error())
+}
+
+// gitIndexPath locates .git/index for a repo backed by the filesystem.
+func gitIndexPath(repo *git.Repository) (string, error) {
+	wt, err := repo.Worktree()
+	if err != nil {
+		return "", err
+	}
+	root := wt.Filesystem.Root()
+	if root == "" {
+		return "", fmt.Errorf("worktree has no filesystem root")
+	}
+	return filepath.Join(root, ".git", "index"), nil
+}
+
+func checkoutRefOnce(ctx context.Context, repo *git.Repository, name string) error {
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("checkout cancelled for %s: %w", name, err)
 	}
@@ -117,6 +175,19 @@ func checkoutRefContext(ctx context.Context, repo *git.Repository, name string) 
 
 	slog.Debug("checked out ref", "ref", name, "hash", hash.String()[:12])
 	return nil
+}
+
+// isObjectNotFoundErr reports whether err is a missing-object failure. This
+// happens when a ref resolves but its object graph is incomplete locally — e.g.
+// an interrupted prior fetch on a persistent volume left the commit but not its
+// tree/blobs. go-git then advertises the commit as a "have", so an ordinary
+// fetch never repairs it and the checkout fails reading the missing tree.
+func isObjectNotFoundErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	return errors.Is(err, plumbing.ErrObjectNotFound) ||
+		strings.Contains(err.Error(), plumbing.ErrObjectNotFound.Error())
 }
 
 // shouldCheckoutBranch reports whether checkoutRef should run for a branch sync.
