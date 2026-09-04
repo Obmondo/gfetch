@@ -34,11 +34,7 @@ vs-ssh.visualstudio.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC7Hr1oTWqNqOlzGJOf
 // Callers combine the per-host algorithms with a static fallback order (see
 // mergeAlgorithms) to produce a HostKeyAlgorithms preference that mimics
 // OpenSSH's dynamic per-host promotion.
-// writeKnownHostsFile writes the built-in bundle plus any extra entries to a
-// temp file and returns its path with a cleanup func. Shared by the go-git
-// path, which parses it into a callback, and the exec path, which hands the
-// path to ssh as UserKnownHostsFile so both verify against the same entries.
-func writeKnownHostsFile(extraEntries string) (path string, cleanup func(), err error) {
+func buildKnownHostsAuth(extraEntries, hostPort string) (ssh.HostKeyCallback, []string, error) {
 	merged := defaultKnownHosts
 	if extra := strings.TrimSpace(extraEntries); extra != "" {
 		merged = merged + extra + "\n"
@@ -46,30 +42,19 @@ func writeKnownHostsFile(extraEntries string) (path string, cleanup func(), err 
 
 	tmpFile, err := os.CreateTemp("", "gfetch-known-hosts-*")
 	if err != nil {
-		return "", func() {}, fmt.Errorf("creating temp known_hosts file: %w", err)
+		return nil, nil, fmt.Errorf("creating temp known_hosts file: %w", err)
 	}
-	remove := func() { _ = os.Remove(tmpFile.Name()) }
+	defer func() { _ = os.Remove(tmpFile.Name()) }()
 
 	if _, err := tmpFile.WriteString(merged); err != nil {
 		_ = tmpFile.Close()
-		remove()
-		return "", func() {}, fmt.Errorf("writing temp known_hosts file: %w", err)
+		return nil, nil, fmt.Errorf("writing temp known_hosts file: %w", err)
 	}
 	if err := tmpFile.Close(); err != nil {
-		remove()
-		return "", func() {}, fmt.Errorf("closing temp known_hosts file: %w", err)
+		return nil, nil, fmt.Errorf("closing temp known_hosts file: %w", err)
 	}
-	return tmpFile.Name(), remove, nil
-}
 
-func buildKnownHostsAuth(extraEntries, hostPort string) (ssh.HostKeyCallback, []string, error) {
-	knownHostsPath, cleanup, err := writeKnownHostsFile(extraEntries)
-	if err != nil {
-		return nil, nil, err
-	}
-	defer cleanup()
-
-	db, err := gitssh.NewKnownHostsDb(knownHostsPath)
+	db, err := gitssh.NewKnownHostsDb(tmpFile.Name())
 	if err != nil {
 		return nil, nil, fmt.Errorf("parsing known_hosts: %w", err)
 	}
