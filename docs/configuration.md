@@ -53,7 +53,7 @@ Validation, however, tolerates per-repo failures: a repo that fails `Validate` (
 ## Fields
 
 | Field | Type | Required | Description |
-|-------|------|----------|-------------|
+| ------- | ------ | ---------- | ------------- |
 | (key) | string | Yes | The repository name. Max 64 characters. Allowed characters: `a-z`, `A-Z`, `0-9`, `.`, `_`, `-`. |
 | `url` | string | Yes | Remote repository URL. Prefix `https://` for HTTPS; anything else for SSH. |
 | `ssh_key_path` | string | Only for SSH | Absolute path to a private SSH key file. |
@@ -61,7 +61,9 @@ Validation, however, tolerates per-repo failures: a repo that fails `Validate` (
 | `local_path` | string | Yes | Local directory where the repo will be cloned and synced. |
 | `poll_interval` | duration | Yes | How often the daemon polls this repo. Supports `30s`, `5m`, `1h`, `30d`. Minimum: `10s`. |
 | `branches` | list of patterns | At least one of `branches` or `tags`, unless `default_branch_only` is set | Branch names or patterns to sync from the remote. |
+| `exclude_branches` | list of patterns | No | Branch names or patterns to exclude from syncing. Excluded branches are also exempt from pruning. |
 | `tags` | list of patterns | At least one of `branches` or `tags`, unless `default_branch_only` is set | Tag names or patterns to sync from the remote. |
+| `exclude_tags` | list of patterns | No | Tag names or patterns to exclude from syncing. Excluded tags are also exempt from pruning. |
 | `default_branch_only` | bool | No | Sync only the branch the remote's `HEAD` points at, whatever it is called. Cannot be combined with `branches`, `tags`, `checkout` or `openvox`. Default `false`. |
 | `checkout` | string | No | A literal branch or tag name to check out in the working tree. |
 | `openvox` | bool | No | Enable OpenVox mode. Each matching branch/tag gets its own subdirectory. |
@@ -98,7 +100,7 @@ It syncs the default branch and **nothing else**, so it cannot be combined with
 the fields that name refs:
 
 | Combined with | Result |
-|---------------|--------|
+| --------------- | -------- |
 | `branches` | Config error — the branch comes from the remote `HEAD`. |
 | `tags` | Config error — the option means the default branch and nothing else. |
 | `checkout` | Config error — the default branch is already checked out. |
@@ -174,7 +176,7 @@ repos:
 
 This produces a layout like:
 
-```
+```tree
 /etc/puppetlabs/code/environments/
 ├── .gfetch-meta/          # internal resolver repo
 ├── main/                  # checked out from branch main
@@ -294,7 +296,7 @@ gfetch cat -c config.d/         # directory mode
 The daemon serves HTTP on its `--listen-addr` (default `:8080`):
 
 | Method | Path | Description |
-|--------|------|-------------|
+| -------- | ------ | ------------- |
 | `GET` | `/health` | Returns `200` with `{"status":"ok"}` when running. Suitable as a Kubernetes readiness/liveness probe. |
 | `GET` | `/metrics` | Prometheus metrics endpoint. |
 | `POST` | `/reload` | Re-read the config from disk, validate it, and replace every running job. Response body is `{"repos": [...]}` listing the repos now managed. |
@@ -329,7 +331,7 @@ To pick up a config change and sync immediately, call `POST /reload` then `POST 
 In addition to the per-sync metrics, the daemon exposes the following config-reload metrics:
 
 | Metric | Type | Labels | Description |
-|--------|------|--------|-------------|
+| -------- | ------ | -------- | ------------- |
 | `gfetch_config_reloads_total` | counter | — | Successful config reloads. |
 | `gfetch_config_reload_failures_total` | counter | `reason` (`load`, `validate`, `apply`) | Config reload failures by stage. |
 | `gfetch_config_repo_validate_failures_total` | counter | `repo` | Per-repo validation failures (the repo is dropped from the running config). |

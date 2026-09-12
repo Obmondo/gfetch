@@ -1,11 +1,25 @@
+<!-- markdownlint-disable-file MD041 -->
+<!-- markdownlint-disable MD033 -->
+<div align="center">
+
 # gfetch
 
-[![GitHub Tests](https://github.com/obmondo/gfetch/actions/workflows/test.yml/badge.svg)](https://github.com/obmondo/gfetch/actions/workflows/test.yml)
-[![GitHub Docker](https://github.com/obmondo/gfetch/actions/workflows/docker.yml/badge.svg)](https://github.com/obmondo/gfetch/actions/workflows/docker.yml)
-[![Go Report Card](https://goreportcard.com/badge/github.com/obmondo/gfetch)](https://goreportcard.com/report/github.com/obmondo/gfetch)
-[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/Obmondo/gfetch)
+*A CLI tool that selectively mirrors remote Git repositories to local paths based on YAML configuration*
 
-A CLI tool that selectively mirrors remote Git repositories to local paths based on YAML configuration.
+[![Latest Release](https://img.shields.io/github/v/release/obmondo/gfetch?sort=semver&label=Release)](https://github.com/obmondo/gfetch/releases)
+[![GitHub Last Commit](https://img.shields.io/github/last-commit/obmondo/gfetch?label=Last%20Commit)](https://github.com/obmondo/gfetch/commits/main)
+[![GitHub Tests](https://github.com/obmondo/gfetch/actions/workflows/test.yml/badge.svg)](https://github.com/obmondo/gfetch/actions/workflows/test.yml)
+
+[![GitHub License](https://img.shields.io/github/license/obmondo/gfetch?label=License)](LICENSE)
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/obmondo/gfetch)
+[![Stars](https://img.shields.io/github/stars/obmondo/gfetch?label=Stars)](https://github.com/obmondo/gfetch/stargazers)
+
+*Maintained by [Obmondo](https://obmondo.com)*
+
+</div>
+<!-- markdownlint-enable MD033 -->
+
+---
 
 ## Features
 
@@ -20,6 +34,7 @@ A CLI tool that selectively mirrors remote Git repositories to local paths based
 - **Working tree checkout** — optionally keep a working tree checked out on a specific branch or tag
 - **OpenVox mode** — create per-branch/tag directories with sanitized names, ideal for Puppet environments
 - **Production alias (OpenVox)** — optional `production_alias: true` creates/updates a `production` symlink to the upstream default-branch directory when upstream does not have a real `production` branch
+- **Ref exclusion** — exclude specific branches or tags (`exclude_branches`, `exclude_tags`) from syncing and pruning (e.g., during temporary local experiments)
 - **Lightweight clones** — repos are initialized empty and only configured refs are fetched
 
 ## Quick Start
@@ -147,7 +162,7 @@ See [docs/configuration.md](docs/configuration.md) for the full configuration re
 ### Global Flags
 
 | Flag | Default | Description |
-|------|---------|-------------|
+| :--- | :--- | :--- |
 | `--config`, `-c` | `config.yaml` | Path to config file |
 | `--log-level` | `info` | Log level: `debug`, `info`, `warn`, `error` |
 
@@ -166,7 +181,7 @@ gfetch sync --prune --prune-stale  # also skips stale branches before branch syn
 ```
 
 | Flag | Default | Description |
-|------|---------|-------------|
+| :--- | :--- | :--- |
 | `--repo` | *(empty)* | Sync only the named repo |
 | `--prune` | `false` | Delete local branches/tags that no longer match any pattern |
 | `--prune-stale` | `false` | Delete local branches with no commits in the last 6 months; with `--prune`, stale branches are skipped before branch sync |
@@ -189,7 +204,7 @@ The daemon reloads `--config` (file or directory) explicitly on `SIGHUP` or `POS
 The daemon exposes the following HTTP endpoints on the listen address (default `:8080`):
 
 | Method | Path | Description |
-|--------|------|-------------|
+| :--- | :--- | :--- |
 | `GET` | `/health` | Liveness/readiness probe — returns `200` with `{"status":"ok"}`. |
 | `GET` | `/metrics` | Prometheus metrics. |
 | `POST` | `/reload` | Re-read the config from disk, validate it, and replace every running job. Returns `{"repos": [...]}` listing the repos now managed. |
@@ -229,8 +244,8 @@ Version, commit, and build date are injected at build time via ldflags when usin
 
 ## Documentation
 
-- [Configuration Reference](docs/configuration.md)
+[Configuration Reference](docs/configuration.md)
 
 ## License
 
-TBD
+[MIT License](LICENSE)

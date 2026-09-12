@@ -23,6 +23,8 @@ repos:
     branches:
       - main
       - /^release-.*/
+    exclude_branches:
+      - experimental-feature       # skip syncing and protect from pruning during experiments
 
   # Public repo via HTTPS (overrides some defaults)
   git-mirror:
