@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -102,13 +103,21 @@ func checkoutRefContext(ctx context.Context, repo *git.Repository, name string) 
 }
 
 // isMalformedIndexErr reports whether the error is go-git refusing to decode
-// .git/index (plumbing/format/index.ErrMalformedSignature).
+// or reading a corrupt/truncated .git/index (plumbing/format/index.ErrMalformedSignature,
+// unexpected EOF, or unknown index format/entries).
 func isMalformedIndexErr(err error) bool {
 	if err == nil {
 		return false
 	}
+	errStr := err.Error()
 	return errors.Is(err, index.ErrMalformedSignature) ||
-		strings.Contains(err.Error(), index.ErrMalformedSignature.Error())
+		errors.Is(err, io.ErrUnexpectedEOF) ||
+		errors.Is(err, io.EOF) ||
+		strings.Contains(errStr, index.ErrMalformedSignature.Error()) ||
+		strings.Contains(errStr, "unexpected EOF") ||
+		strings.Contains(errStr, "EOF") ||
+		strings.Contains(errStr, "unknown index") ||
+		strings.Contains(errStr, "malformed index")
 }
 
 // gitIndexPath locates .git/index for a repo backed by the filesystem.

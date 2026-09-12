@@ -40,3 +40,26 @@ func TestCheckoutRef_RepairsCorruptIndex(t *testing.T) {
 		t.Fatalf("checkoutRefContext should repair a corrupt index, got %v", err)
 	}
 }
+
+// TestCheckoutRef_RepairsUnexpectedEOFIndex tests that truncated index files
+// causing unexpected EOF or EOF errors are also repaired successfully.
+func TestCheckoutRef_RepairsUnexpectedEOFIndex(t *testing.T) {
+	dir := t.TempDir()
+	r := initTestRepoWithCommitAtPath(t, dir)
+
+	head, err := r.Head()
+	if err != nil {
+		t.Fatal(err)
+	}
+	branch := head.Name().Short()
+
+	// Truncated/partial index file causing EOF or unexpected EOF during read.
+	idx := filepath.Join(dir, ".git", "index")
+	if err := os.WriteFile(idx, []byte("DIRC\x00\x00\x00"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := checkoutRefContext(context.Background(), r, branch); err != nil {
+		t.Fatalf("checkoutRefContext should repair truncated index causing unexpected EOF, got %v", err)
+	}
+}
