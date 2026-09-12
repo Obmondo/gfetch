@@ -246,6 +246,63 @@ func SanitizeName(name string) string {
 	}, name)
 }
 
+func prepareOpenVoxActiveNames(
+	repo *config.RepoConfig,
+	remoteBranches map[string]struct{},
+	matchedBranches, matchedTags []*plumbing.Reference,
+	refs []*plumbing.Reference,
+	sanitizedToOriginal, activeBranchNames, activeTagNames map[string]string,
+) error {
+	branchNames := make([]string, 0, len(matchedBranches))
+	for _, b := range matchedBranches {
+		branchNames = append(branchNames, b.Name().Short())
+	}
+	if collision := detectCollisions(branchNames, sanitizedToOriginal); collision != "" {
+		return fmt.Errorf("name collision after sanitization: %s", collision)
+	}
+	for _, branch := range branchNames {
+		sanitized := SanitizeName(branch)
+		activeBranchNames[sanitized] = branch
+		sanitizedToOriginal[sanitized] = branch
+	}
+
+	tagNames := make([]string, 0, len(matchedTags))
+	for _, t := range matchedTags {
+		tagNames = append(tagNames, t.Name().Short())
+	}
+	if collision := detectCollisions(tagNames, sanitizedToOriginal); collision != "" {
+		return fmt.Errorf("name collision after sanitization: %s", collision)
+	}
+	for _, tag := range tagNames {
+		sanitized := SanitizeName(tag)
+		activeTagNames[sanitized] = tag
+		sanitizedToOriginal[sanitized] = tag
+	}
+
+	for branch := range remoteBranches {
+		if config.MatchesAny(branch, repo.ExcludeBranches) {
+			sanitized := SanitizeName(branch)
+			if _, ok := sanitizedToOriginal[sanitized]; !ok {
+				activeBranchNames[sanitized] = branch
+				sanitizedToOriginal[sanitized] = branch
+			}
+		}
+	}
+	for _, ref := range refs {
+		if ref.Name().IsTag() {
+			tag := ref.Name().Short()
+			if config.MatchesAny(tag, repo.ExcludeTags) {
+				sanitized := SanitizeName(tag)
+				if _, ok := sanitizedToOriginal[sanitized]; !ok {
+					activeTagNames[sanitized] = tag
+					sanitizedToOriginal[sanitized] = tag
+				}
+			}
+		}
+	}
+	return nil
+}
+
 func (s *Syncer) syncRepoOpenVox(ctx context.Context, repo *config.RepoConfig, opts SyncOptions) Result {
 	start := time.Now()
 	result := Result{RepoName: repo.Name}
@@ -277,7 +334,7 @@ func (s *Syncer) syncRepoOpenVox(ctx context.Context, repo *config.RepoConfig, o
 		return result
 	}
 
-	defaultBranch, remoteBranches, matchedBranches, matchedTags := extractRemoteRefState(refs, repo.Branches, repo.Tags, repo.IsDefaultBranchOnly())
+	defaultBranch, remoteBranches, matchedBranches, matchedTags := extractRemoteRefState(refs, repo.Branches, repo.Tags, repo.ExcludeBranches, repo.ExcludeTags, repo.IsDefaultBranchOnly())
 	workers := openVoxWorkerCount(repo)
 
 	telemetry.RemoteRefsCount.WithLabelValues(repo.Name).Set(float64(len(matchedBranches) + len(matchedTags)))
@@ -286,28 +343,9 @@ func (s *Syncer) syncRepoOpenVox(ctx context.Context, repo *config.RepoConfig, o
 	activeTagNames := make(map[string]string)
 	sanitizedToOriginal := make(map[string]string)
 
-	var branchNames []string
-	for _, b := range matchedBranches {
-		branchNames = append(branchNames, b.Name().Short())
-	}
-	if collision := detectCollisions(branchNames, sanitizedToOriginal); collision != "" {
-		result.Err = fmt.Errorf("name collision after sanitization: %s", collision)
+	if err := prepareOpenVoxActiveNames(repo, remoteBranches, matchedBranches, matchedTags, refs, sanitizedToOriginal, activeBranchNames, activeTagNames); err != nil {
+		result.Err = err
 		return result
-	}
-	for _, branch := range branchNames {
-		activeBranchNames[SanitizeName(branch)] = branch
-	}
-
-	var tagNames []string
-	for _, t := range matchedTags {
-		tagNames = append(tagNames, t.Name().Short())
-	}
-	if collision := detectCollisions(tagNames, sanitizedToOriginal); collision != "" {
-		result.Err = fmt.Errorf("name collision after sanitization: %s", collision)
-		return result
-	}
-	for _, tag := range tagNames {
-		activeTagNames[SanitizeName(tag)] = tag
 	}
 
 	// Apply staleness filter *before* requesting fetch from central cache
@@ -394,7 +432,7 @@ func (s *Syncer) syncCache(ctx context.Context, cachePath string, repo *config.R
 		return result.Err
 	}
 
-	_, _, matchedBranches, matchedTags := extractRemoteRefState(refs, repo.Branches, repo.Tags, repo.IsDefaultBranchOnly())
+	_, _, matchedBranches, matchedTags := extractRemoteRefState(refs, repo.Branches, repo.Tags, repo.ExcludeBranches, repo.ExcludeTags, repo.IsDefaultBranchOnly())
 	refSpecs = s.prepareRefSpecs(repo, refs, matchedBranches, matchedTags)
 
 	if err := SyncCentralCache(ctx, cachePath, repo.URL, auth, refSpecs); err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) {
@@ -506,11 +544,24 @@ func SyncCentralCache(ctx context.Context, cachePath, remoteURL string, auth tra
 		return fmt.Errorf("creating remote: %w", err)
 	}
 
+	hasTags := false
+	for _, spec := range refSpecs {
+		if strings.Contains(string(spec), "refs/tags/") {
+			hasTags = true
+			break
+		}
+	}
+
+	tagsOpt := git.NoTags
+	if hasTags {
+		tagsOpt = git.AllTags
+	}
+
 	err = r.FetchContext(ctx, &git.FetchOptions{
 		RemoteName: RemoteOrigin,
 		RefSpecs:   refSpecs,
 		Auth:       auth,
-		Tags:       git.NoTags,
+		Tags:       tagsOpt,
 		Force:      true,
 	})
 	if err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) {
@@ -541,7 +592,7 @@ func listRemoteRefs(ctx context.Context, repo *git.Repository, auth transport.Au
 // branch selected is the one HEAD points at. HEAD is resolved in its own pass
 // first, because servers are free to advertise it after the branch refs and
 // the selection depends on knowing it.
-func extractRemoteRefState(refs []*plumbing.Reference, branchPatterns, tagPatterns []config.Pattern, defaultBranchOnly bool) (string, map[string]struct{}, []*plumbing.Reference, []*plumbing.Reference) {
+func extractRemoteRefState(refs []*plumbing.Reference, branchPatterns, tagPatterns, excludeBranchPatterns, excludeTagPatterns []config.Pattern, defaultBranchOnly bool) (string, map[string]struct{}, []*plumbing.Reference, []*plumbing.Reference) {
 	branches := make(map[string]struct{})
 	defaultBranch := ""
 	matchedBranches := make([]*plumbing.Reference, 0)
@@ -569,6 +620,10 @@ func extractRemoteRefState(refs []*plumbing.Reference, branchPatterns, tagPatter
 			if !defaultBranchOnly {
 				selected = config.MatchesAny(branch, branchPatterns)
 			}
+			if selected && config.MatchesAny(branch, excludeBranchPatterns) {
+				slog.Info("skipping branch sync (excluded)", "branch", branch)
+				selected = false
+			}
 			if !seenBranches[branch] && selected {
 				matchedBranches = append(matchedBranches, ref)
 				seenBranches[branch] = true
@@ -581,7 +636,12 @@ func extractRemoteRefState(refs []*plumbing.Reference, branchPatterns, tagPatter
 		}
 
 		tag := name.Short()
-		if !seenTags[tag] && config.MatchesAny(tag, tagPatterns) {
+		selected := config.MatchesAny(tag, tagPatterns)
+		if selected && config.MatchesAny(tag, excludeTagPatterns) {
+			slog.Info("skipping tag sync (excluded)", "tag", tag)
+			selected = false
+		}
+		if !seenTags[tag] && selected {
 			matchedTags = append(matchedTags, ref)
 			seenTags[tag] = true
 		}
@@ -1206,17 +1266,76 @@ func syncOpenVoxTagOnce(ctx context.Context, subCfg *config.RepoConfig, tag stri
 		logHashVerifyError(upToDateErr, "tag", tag)
 	}
 
-	if upToDateLocal {
-		slog.Debug("tag already up-to-date via local hash check", "tag", tag)
-		return false, nil
+	updated := false
+	if !upToDateLocal {
+		fetched, err := syncOpenVoxTag(ctx, r, tag, auth)
+		if err != nil {
+			return false, err
+		}
+		updated = fetched
+		if updated {
+			slog.Info("tag fetched", "tag", tag)
+		}
 	}
 
-	updated, err := syncOpenVoxTag(ctx, r, tag, auth)
-	if err != nil {
-		return false, err
-	}
+	return finishOpenVoxTagSync(ctx, r, tag, updated, filepath.Base(subCfg.LocalPath))
+}
+
+func shouldCheckoutTag(repo *git.Repository, tag string, updated bool) (needsCheckout bool, dirty bool, err error) {
 	if updated {
-		slog.Info("tag fetched", "tag", tag)
+		return true, false, nil
+	}
+
+	tagRef, err := repo.Reference(plumbing.NewTagReferenceName(tag), true)
+	if err != nil {
+		return true, false, fmt.Errorf("resolving tag ref %s: %w", tag, err)
+	}
+
+	headRef, err := repo.Head()
+	if err != nil {
+		return true, false, fmt.Errorf("resolving HEAD: %w", err)
+	}
+
+	if headRef.Hash() != tagRef.Hash() {
+		return true, false, nil
+	}
+
+	wt, err := repo.Worktree()
+	if err != nil {
+		return true, false, fmt.Errorf("getting worktree: %w", err)
+	}
+
+	status, err := wt.Status()
+	if err != nil {
+		return true, false, fmt.Errorf("getting worktree status: %w", err)
+	}
+
+	if !status.IsClean() {
+		slog.Debug("tag state is not unmodified", slog.String("tag", tag), slog.String("git_status", status.String()))
+		return true, true, nil
+	}
+
+	return false, false, nil
+}
+
+func finishOpenVoxTagSync(ctx context.Context, r *git.Repository, tag string, updated bool, dir string) (bool, error) {
+	needsCheckout, dirtyTag, stateErr := shouldCheckoutTag(r, tag, updated)
+	if stateErr != nil {
+		if isRecoverableOpenVoxRepoError(stateErr) {
+			return false, fmt.Errorf("tag state check %s: %w", tag, stateErr)
+		}
+		slog.Warn("openvox tag state check failed; forcing checkout", "tag", tag, "dir", dir, "error", stateErr)
+		needsCheckout = true
+	}
+
+	if dirtyTag {
+		slog.Warn("dirty tag detected, likely manual local changes", "tag", tag, "dir", dir)
+	}
+
+	if needsCheckout {
+		if err := checkoutRefContext(ctx, r, tag); err != nil {
+			return false, err
+		}
 	}
 
 	return updated, nil
@@ -1270,7 +1389,7 @@ func syncOpenVoxTag(ctx context.Context, r *git.Repository, tag string, auth tra
 		RemoteName: RemoteOrigin,
 		RefSpecs:   []gitconfig.RefSpec{refSpec},
 		Auth:       auth,
-		Tags:       git.NoTags,
+		Tags:       git.AllTags,
 		Force:      true,
 	})
 
