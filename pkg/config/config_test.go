@@ -647,12 +647,10 @@ func TestApplyDefaults_PruneBoolOverride(t *testing.T) {
 				PruneStale:   tt.defaultStale,
 			}
 			repo := &RepoConfig{
-				Name: testRepoName,
-				URL:  testRepoURL,
-				RepoDefaults: RepoDefaults{
-					Prune:      tt.repoPrune,
-					PruneStale: tt.repoStale,
-				},
+				Name:       testRepoName,
+				URL:        testRepoURL,
+				Prune:      tt.repoPrune,
+				PruneStale: tt.repoStale,
 			}
 			applyDefaults(repo, defaults)
 
@@ -687,14 +685,12 @@ func defaultBranchOnlyRepo(t *testing.T) RepoConfig {
 	}
 	defaultBranchOnly := true
 	return RepoConfig{
-		RepoDefaults: RepoDefaults{
-			SSHKeyPath:        keyFile,
-			LocalPath:         testLocalPath,
-			PollInterval:      Duration(30 * time.Second),
-			DefaultBranchOnly: &defaultBranchOnly,
-		},
-		Name: testRepoName,
-		URL:  testRepoURL,
+		SSHKeyPath:        keyFile,
+		LocalPath:         testLocalPath,
+		PollInterval:      Duration(30 * time.Second),
+		DefaultBranchOnly: &defaultBranchOnly,
+		Name:              testRepoName,
+		URL:               testRepoURL,
 	}
 }
 
