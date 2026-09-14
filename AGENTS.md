@@ -8,7 +8,7 @@ gfetch is a Go CLI tool that selectively mirrors remote Git repositories to loca
 
 ## Project Structure
 
-```
+```tree
 cmd/gfetch/main.go          # Entry point — calls cli.NewRootCmd().Execute()
 internal/cli/
   root.go                     # Root cobra command, persistent flags (--config, --log-level)
@@ -66,6 +66,8 @@ renovate.json                 # Renovate config (gomod, dockerfile, github-actio
 - **SSH HostKeyAlgorithms**: `gitssh.NewKnownHostsDb` produces both the host-key callback and the list of algorithms our known_hosts has entries for at the dialed `host:port`. `mergeAlgorithms` puts those first, then appends the OpenSSH 9.x default order (Ed25519/ECDSA/RSA-SHA2 plus their cert variants) — mimicking OpenSSH's dynamic per-host HostKeyAlgorithms promotion so negotiation lands on a key type we can verify. Plain `ssh-rsa` (SHA-1) and `ssh-dss` are intentionally omitted.
 - **Package Naming**: `pkg/gsync` is used for git sync logic to avoid conflict with the standard `sync` package. `pkg/telemetry` is used for metrics.
 - **Concurrent OpenVox Sync**: When `openvox: true` is set, branches and tags are synced in parallel using a worker pool (default 5 workers). A mutex protects the shared resolver repo (`.gfetch-meta`) from concurrent access conflicts.
+- **Index auto-repair**: `checkoutRefContext` automatically detects corrupted, truncated, or unknown `.git/index` files (including `unexpected EOF`, `EOF`, and `index.ErrMalformedSignature`) and deletes/rebuilds them on the fly.
+- **Ref exclusion**: `exclude_branches` and `exclude_tags` allow operators to skip syncing specific branches or tags (e.g., during local experiments); excluded refs are automatically exempt from pruning.
 
 ## Build & Test
 
@@ -120,7 +122,7 @@ For AI coding agents: after making code changes, run `go fix ./...` before tests
 - **Pre-commit checks**: Before every commit, run `gofmt -w .` and `golangci-lint run ./...`. Both must be clean — no formatting diffs, no lint issues.
 - Follow [Conventional Commits](https://www.conventionalcommits.org/):
 
-```
+```git
 <type>(<scope>): <subject>
 
 [optional body]
@@ -129,7 +131,7 @@ For AI coding agents: after making code changes, run `go fix ./...` before tests
 ### Types
 
 | Type | When to use |
-|------|-------------|
+| ------ | ------------- |
 | `feat` | New user-facing feature |
 | `fix` | Bug fix |
 | `docs` | Documentation only (README, configuration.md, code comments) |
@@ -145,7 +147,7 @@ For AI coding agents: after making code changes, run `go fix ./...` before tests
 
 Append `!` after the type/scope for breaking changes:
 
-```
+```git
 chore!: rename module path to github.com/obmondo/gfetch
 feat(api)!: remove deprecated endpoint
 ```
@@ -154,7 +156,7 @@ feat(api)!: remove deprecated endpoint
 
 Use the package or subsystem name — keep it short:
 
-```
+```git
 fix(config): ...
 feat(sync): ...
 docs(readme): ...
@@ -184,6 +186,7 @@ Commits should be logically atomic — one concern per commit. When a session to
 - `name` must be unique across repos
 - `poll_interval` minimum is `10s`
 - At least one of `branches` or `tags` must be non-empty
+- `exclude_branches` and `exclude_tags` (if set) are compiled and validated as patterns, and rejected alongside `default_branch_only`
 - `prune` (bool) enables obsolete-ref pruning (branches/tags no longer matching any pattern); defaults to false
 - `prune_stale` (bool) and `stale_age` (duration) enable inactivity-based pruning; `prune_stale` only has effect when `prune: true` is also set (a warning is logged otherwise)
 - Regex patterns (wrapped in `/`) are compiled and validated
@@ -194,6 +197,7 @@ Commits should be logically atomic — one concern per commit. When a session to
 ## Pattern System
 
 Patterns appear in `branches` and `tags` YAML lists:
+
 - **Exact**: plain string, matched with `==`
 - **Wildcard**: `*` matches everything
 - **Regex**: wrapped in `/` delimiters (e.g., `/^release-.*/`), compiled with `regexp.Compile`, matched with `MatchString`

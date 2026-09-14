@@ -58,6 +58,8 @@ dockers_v2:
     dockerfile: Dockerfile.release
     tags:
       - "{{.Tag}}"
+      - "v{{.Major}}.{{.Minor}}"
+      - "v{{.Major}}"
       - "latest"
     platforms:
       - linux/amd64

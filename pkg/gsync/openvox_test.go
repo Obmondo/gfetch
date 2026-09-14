@@ -33,9 +33,9 @@ func TestEnsureClonedOpenVox_RecreatesNonRepoDir(t *testing.T) {
 	}
 
 	repoCfg := &config.RepoConfig{
-		RepoDefaults: config.RepoDefaults{LocalPath: localPath},
-		Name:         DefaultTestName,
-		URL:          "https://example.com/repo.git",
+		LocalPath: localPath,
+		Name:      DefaultTestName,
+		URL:       "https://example.com/repo.git",
 	}
 
 	r, err := getRepoWithSharedCache(localPath, filepath.Join(basePath, ".git", "cache.git"), "https://example.com/repo.git", nil)
@@ -103,12 +103,10 @@ func TestEnsureProductionAlias(t *testing.T) {
 	openVox := true
 	productionAlias := true
 	repo := &config.RepoConfig{
-		RepoDefaults: config.RepoDefaults{
-			LocalPath:       basePath,
-			OpenVox:         &openVox,
-			ProductionAlias: &productionAlias,
-		},
-		Name: DefaultTestName,
+		LocalPath:       basePath,
+		OpenVox:         &openVox,
+		ProductionAlias: &productionAlias,
+		Name:            DefaultTestName,
 	}
 
 	ensureProductionAlias(context.Background(), repo, testDefaultBranch, map[string]struct{}{testDefaultBranch: {}})
@@ -139,12 +137,10 @@ func TestEnsureProductionAlias_SkipsWhenProductionBranchExists(t *testing.T) {
 	openVox := true
 	productionAlias := true
 	repo := &config.RepoConfig{
-		RepoDefaults: config.RepoDefaults{
-			LocalPath:       basePath,
-			OpenVox:         &openVox,
-			ProductionAlias: &productionAlias,
-		},
-		Name: DefaultTestName,
+		LocalPath:       basePath,
+		OpenVox:         &openVox,
+		ProductionAlias: &productionAlias,
+		Name:            DefaultTestName,
 	}
 
 	ensureProductionAlias(context.Background(), repo, testDefaultBranch, map[string]struct{}{testDefaultBranch: {}, productionAliasName: {}})
@@ -187,6 +183,8 @@ func TestExtractRemoteRefState(t *testing.T) {
 		refs,
 		[]config.Pattern{{Raw: "*"}},
 		[]config.Pattern{{Raw: "*"}},
+		nil,
+		nil,
 		false,
 	)
 
@@ -308,6 +306,70 @@ func TestShouldCheckoutBranch_WhenUpToDateButDirty(t *testing.T) {
 	}
 	if !dirty {
 		t.Fatal("expected dirty flag for manual local changes")
+	}
+}
+
+func TestShouldCheckoutTag_WhenUpdated(t *testing.T) {
+	needsCheckout, dirty, err := shouldCheckoutTag(nil, "v1.0.0", true)
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if !needsCheckout {
+		t.Fatal("expected checkout when tag was updated")
+	}
+	if dirty {
+		t.Fatal("did not expect dirty flag when tag was updated")
+	}
+}
+
+func TestShouldCheckoutTag_WhenUpToDateAndClean(t *testing.T) {
+	repo := initTestRepoWithCommit(t)
+	head, err := repo.Head()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tagRef := plumbing.NewHashReference(plumbing.NewTagReferenceName("v1.0.0"), head.Hash())
+	if err := repo.Storer.SetReference(tagRef); err != nil {
+		t.Fatal(err)
+	}
+
+	needsCheckout, dirty, err := shouldCheckoutTag(repo, "v1.0.0", false)
+	if err != nil {
+		t.Fatalf("shouldCheckoutTag failed: %v", err)
+	}
+	if needsCheckout {
+		t.Fatal("expected checkout to be skipped for clean up-to-date tag")
+	}
+	if dirty {
+		t.Fatal("did not expect dirty flag for clean up-to-date tag")
+	}
+}
+
+func TestShouldCheckoutTag_WhenUpToDateButDirty(t *testing.T) {
+	basePath := t.TempDir()
+	repo := initTestRepoWithCommitAtPath(t, basePath)
+	head, err := repo.Head()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tagRef := plumbing.NewHashReference(plumbing.NewTagReferenceName("v1.0.0"), head.Hash())
+	if err := repo.Storer.SetReference(tagRef); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(filepath.Join(basePath, "README.md"), []byte("dirty tag"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	needsCheckout, dirty, err := shouldCheckoutTag(repo, "v1.0.0", false)
+	if err != nil {
+		t.Fatalf("shouldCheckoutTag failed: %v", err)
+	}
+	if !needsCheckout {
+		t.Fatal("expected checkout when tag working tree is dirty")
+	}
+	if !dirty {
+		t.Fatal("expected dirty flag for manual local changes in tag")
 	}
 }
 
@@ -482,8 +544,8 @@ func TestPruneStaleOpenVoxDirs(t *testing.T) {
 	}
 
 	repo := &config.RepoConfig{
-		RepoDefaults: config.RepoDefaults{LocalPath: basePath},
-		Name:         DefaultTestName,
+		LocalPath: basePath,
+		Name:      DefaultTestName,
 	}
 
 	result := &Result{RepoName: DefaultTestName}
@@ -533,8 +595,8 @@ func TestPruneStaleOpenVoxDirs_DryRun(t *testing.T) {
 	}
 
 	repo := &config.RepoConfig{
-		RepoDefaults: config.RepoDefaults{LocalPath: basePath},
-		Name:         DefaultTestName,
+		LocalPath: basePath,
+		Name:      DefaultTestName,
 	}
 
 	result := &Result{RepoName: DefaultTestName}
@@ -571,8 +633,8 @@ func TestPruneStaleOpenVoxDirs_LeavesLockFileForOrphanCleanup(t *testing.T) {
 	}
 
 	repo := &config.RepoConfig{
-		RepoDefaults: config.RepoDefaults{LocalPath: basePath},
-		Name:         DefaultTestName,
+		LocalPath: basePath,
+		Name:      DefaultTestName,
 	}
 
 	result := &Result{RepoName: DefaultTestName}
@@ -597,8 +659,8 @@ func TestPruneStaleOpenVoxDirs_MissingDir(t *testing.T) {
 	}
 
 	repo := &config.RepoConfig{
-		RepoDefaults: config.RepoDefaults{LocalPath: basePath},
-		Name:         DefaultTestName,
+		LocalPath: basePath,
+		Name:      DefaultTestName,
 	}
 
 	result := &Result{RepoName: DefaultTestName}
@@ -772,9 +834,9 @@ func TestSyncRepo_OpenVoxFirstCloneNonMasterDefault(t *testing.T) {
 	}
 	openvox := true
 	repo := &config.RepoConfig{
-		RepoDefaults: config.RepoDefaults{LocalPath: localDir, Branches: patterns, OpenVox: &openvox},
-		Name:         DefaultTestName,
-		URL:          bareDir,
+		LocalPath: localDir, Branches: patterns, OpenVox: &openvox,
+		Name: DefaultTestName,
+		URL:  bareDir,
 	}
 
 	res := New().SyncRepo(context.Background(), repo, SyncOptions{})
@@ -830,7 +892,7 @@ func TestExtractRemoteRefStateDefaultBranchOnly(t *testing.T) {
 	// Patterns deliberately do not cover the default branch.
 	branchPatterns := []config.Pattern{{Raw: "main"}, {Raw: MasterBranch}}
 
-	defaultBranch, _, matchedBranches, _ := extractRemoteRefState(refs, branchPatterns, nil, true)
+	defaultBranch, _, matchedBranches, _ := extractRemoteRefState(refs, branchPatterns, nil, nil, nil, true)
 
 	if defaultBranch != oddDefault {
 		t.Fatalf("default branch = %q, want %q", defaultBranch, oddDefault)
@@ -844,8 +906,63 @@ func TestExtractRemoteRefStateDefaultBranchOnly(t *testing.T) {
 
 	// The same input without the flag selects nothing. That is the failure
 	// default_branch_only exists to avoid.
-	_, _, unmatched, _ := extractRemoteRefState(refs, branchPatterns, nil, false)
+	_, _, unmatched, _ := extractRemoteRefState(refs, branchPatterns, nil, nil, nil, false)
 	if len(unmatched) != 0 {
 		t.Fatalf("matched branches without default_branch_only = %d, want 0", len(unmatched))
+	}
+}
+
+func TestExtractRemoteRefState_Exclusions(t *testing.T) {
+	refs := []*plumbing.Reference{
+		plumbing.NewSymbolicReference(plumbing.HEAD, plumbing.NewBranchReferenceName(testDefaultBranch)),
+		plumbing.NewHashReference(plumbing.NewBranchReferenceName("main"), plumbing.ZeroHash),
+		plumbing.NewHashReference(plumbing.NewBranchReferenceName("experimental-branch"), plumbing.ZeroHash),
+		plumbing.NewHashReference(plumbing.NewTagReferenceName("v1.0.0"), plumbing.ZeroHash),
+		plumbing.NewHashReference(plumbing.NewTagReferenceName("v1.0.0-rc1"), plumbing.ZeroHash),
+	}
+
+	_, _, matchedBranches, matchedTags := extractRemoteRefState(
+		refs,
+		[]config.Pattern{{Raw: "*"}},
+		[]config.Pattern{{Raw: "*"}},
+		[]config.Pattern{{Raw: "experimental-branch"}},
+		[]config.Pattern{{Raw: "v1.0.0-rc1"}},
+		false,
+	)
+
+	for _, b := range matchedBranches {
+		if b.Name().Short() == "experimental-branch" {
+			t.Fatalf("expected experimental-branch to be excluded")
+		}
+	}
+	for _, tag := range matchedTags {
+		if tag.Name().Short() == "v1.0.0-rc1" {
+			t.Fatalf("expected v1.0.0-rc1 tag to be excluded")
+		}
+	}
+}
+
+func TestPruneOpenVoxDirs_ProtectsTagsAndExcludedRefs(t *testing.T) {
+	basePath := t.TempDir()
+
+	initOpenVoxBranchRepo(t, basePath, "v1.8.0", time.Now())
+	initOpenVoxBranchRepo(t, basePath, "excluded-branch", time.Now())
+
+	sanitizedToOriginal := map[string]string{
+		"v1_8_0":          "v1.8.0",
+		"excluded_branch": "excluded-branch",
+	}
+
+	result := &Result{RepoName: DefaultTestName}
+	pruneOpenVoxDirs(context.Background(), DefaultTestName, basePath, sanitizedToOriginal, false, result)
+
+	if _, err := os.Stat(filepath.Join(basePath, "v1_8_0")); err != nil {
+		t.Error("v1.8.0 tag directory should NOT have been pruned")
+	}
+	if _, err := os.Stat(filepath.Join(basePath, "excluded_branch")); err != nil {
+		t.Error("excluded-branch directory should NOT have been pruned")
+	}
+	if len(result.BranchesPruned) > 0 {
+		t.Errorf("expected no pruned items, got %v", result.BranchesPruned)
 	}
 }

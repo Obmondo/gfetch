@@ -76,7 +76,9 @@ type RepoDefaults struct {
 	LocalPath         string    `yaml:"local_path"`
 	PollInterval      Duration  `yaml:"poll_interval"`
 	Branches          []Pattern `yaml:"branches"`
+	ExcludeBranches   []Pattern `yaml:"exclude_branches"`
 	Tags              []Pattern `yaml:"tags"`
+	ExcludeTags       []Pattern `yaml:"exclude_tags"`
 	DefaultBranchOnly *bool     `yaml:"default_branch_only"`
 	OpenVox           *bool     `yaml:"openvox"`
 	OpenVoxMaxWorkers *int      `yaml:"openvox_max_workers"`
@@ -366,16 +368,7 @@ func applyDefaults(repo *RepoConfig, defaults *RepoDefaults) {
 	if defaults.DefaultBranchOnly != nil && repo.DefaultBranchOnly == nil {
 		repo.DefaultBranchOnly = defaults.DefaultBranchOnly
 	}
-	// A repo that syncs only its default branch has no use for inherited branch
-	// patterns, and inheriting them would trip the validation that rejects
-	// branches alongside default_branch_only — failing a config the operator
-	// never wrote that way.
-	if len(repo.Branches) == 0 && len(defaults.Branches) > 0 && !repo.IsDefaultBranchOnly() {
-		repo.Branches = defaults.Branches
-	}
-	if len(repo.Tags) == 0 && len(defaults.Tags) > 0 && !repo.IsDefaultBranchOnly() {
-		repo.Tags = defaults.Tags
-	}
+	applyPatternDefaults(repo, defaults)
 	if defaults.OpenVox != nil && repo.OpenVox == nil {
 		repo.OpenVox = defaults.OpenVox
 	}
@@ -393,6 +386,21 @@ func applyDefaults(repo *RepoConfig, defaults *RepoDefaults) {
 	}
 	if repo.StaleAge == 0 && defaults.StaleAge != 0 {
 		repo.StaleAge = defaults.StaleAge
+	}
+}
+
+func applyPatternDefaults(repo *RepoConfig, defaults *RepoDefaults) {
+	if len(repo.Branches) == 0 && len(defaults.Branches) > 0 && !repo.IsDefaultBranchOnly() {
+		repo.Branches = defaults.Branches
+	}
+	if len(repo.ExcludeBranches) == 0 && len(defaults.ExcludeBranches) > 0 && !repo.IsDefaultBranchOnly() {
+		repo.ExcludeBranches = defaults.ExcludeBranches
+	}
+	if len(repo.Tags) == 0 && len(defaults.Tags) > 0 && !repo.IsDefaultBranchOnly() {
+		repo.Tags = defaults.Tags
+	}
+	if len(repo.ExcludeTags) == 0 && len(defaults.ExcludeTags) > 0 && !repo.IsDefaultBranchOnly() {
+		repo.ExcludeTags = defaults.ExcludeTags
 	}
 }
 
@@ -483,15 +491,8 @@ func (c *Config) validateRepo(r *RepoConfig) error {
 		return fmt.Errorf("repo %s: at least one branch or tag pattern is required", r.Name)
 	}
 
-	for j := range r.Branches {
-		if err := r.Branches[j].Compile(); err != nil {
-			return fmt.Errorf("repo %s: %w", r.Name, err)
-		}
-	}
-	for j := range r.Tags {
-		if err := r.Tags[j].Compile(); err != nil {
-			return fmt.Errorf("repo %s: %w", r.Name, err)
-		}
+	if err := compilePatterns(r); err != nil {
+		return err
 	}
 
 	if r.IsOpenVox() && r.Checkout != "" {
@@ -530,11 +531,17 @@ func validateDefaultBranchOnly(r *RepoConfig) error {
 	if len(r.Branches) > 0 {
 		return fmt.Errorf("repo %s: default_branch_only takes the branch from the remote HEAD; remove branches", r.Name)
 	}
+	if len(r.ExcludeBranches) > 0 {
+		return fmt.Errorf("repo %s: default_branch_only takes the branch from the remote HEAD; remove exclude_branches", r.Name)
+	}
 	if r.Checkout != "" {
 		return fmt.Errorf("repo %s: default_branch_only checks out the remote default branch; remove checkout", r.Name)
 	}
 	if len(r.Tags) > 0 {
 		return fmt.Errorf("repo %s: default_branch_only syncs the default branch and nothing else; remove tags", r.Name)
+	}
+	if len(r.ExcludeTags) > 0 {
+		return fmt.Errorf("repo %s: default_branch_only syncs the default branch and nothing else; remove exclude_tags", r.Name)
 	}
 	return nil
 }
@@ -552,6 +559,30 @@ func validateOpenVoxOptions(r *RepoConfig) error {
 		}
 	}
 
+	return nil
+}
+
+func compilePatterns(r *RepoConfig) error {
+	for i := range r.Branches {
+		if err := r.Branches[i].Compile(); err != nil {
+			return fmt.Errorf("repo %s: %w", r.Name, err)
+		}
+	}
+	for i := range r.ExcludeBranches {
+		if err := r.ExcludeBranches[i].Compile(); err != nil {
+			return fmt.Errorf("repo %s: %w", r.Name, err)
+		}
+	}
+	for i := range r.Tags {
+		if err := r.Tags[i].Compile(); err != nil {
+			return fmt.Errorf("repo %s: %w", r.Name, err)
+		}
+	}
+	for i := range r.ExcludeTags {
+		if err := r.ExcludeTags[i].Compile(); err != nil {
+			return fmt.Errorf("repo %s: %w", r.Name, err)
+		}
+	}
 	return nil
 }
 

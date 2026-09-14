@@ -225,7 +225,7 @@ func (s *Syncer) runStandardSync(ctx context.Context, repo *config.RepoConfig, a
 		return result, false
 	}
 
-	defaultBranch, _, matchedBranches, matchedTagRefs := extractRemoteRefState(refs, repo.Branches, repo.Tags, repo.IsDefaultBranchOnly())
+	defaultBranch, _, matchedBranches, matchedTagRefs := extractRemoteRefState(refs, repo.Branches, repo.Tags, repo.ExcludeBranches, repo.ExcludeTags, repo.IsDefaultBranchOnly())
 	matchedTags := make([]string, 0, len(matchedTagRefs))
 	for _, tagRef := range matchedTagRefs {
 		matchedTags = append(matchedTags, tagRef.Name().Short())
@@ -418,6 +418,10 @@ func (s *Syncer) pruneStaleBranches(r *git.Repository, repo *config.RepoConfig, 
 			slog.Info("skipping prune of checkout branch", "branch", branch)
 			continue
 		}
+		if config.MatchesAny(branch, repo.ExcludeBranches) {
+			slog.Info("skipping prune of excluded branch", "branch", branch)
+			continue
+		}
 		if opts.DryRun {
 			slog.Info("stale branch would be pruned (dry-run)", "branch", branch)
 			s.mu.Lock()
@@ -440,6 +444,10 @@ func (s *Syncer) pruneBranches(r *git.Repository, repo *config.RepoConfig, obsol
 	for _, branch := range obsolete {
 		if repo.Checkout != "" && branch == repo.Checkout {
 			slog.Info("skipping prune of checkout branch", "branch", branch)
+			continue
+		}
+		if config.MatchesAny(branch, repo.ExcludeBranches) {
+			slog.Info("skipping prune of excluded branch", "branch", branch)
 			continue
 		}
 		switch {

@@ -87,6 +87,9 @@ func handleObsoleteTags(repo *git.Repository, repoConfig *config.RepoConfig, pru
 	}
 	err = tagRefs.ForEach(func(ref *plumbing.Reference) error {
 		tagName := ref.Name().Short()
+		if config.MatchesAny(tagName, repoConfig.ExcludeTags) {
+			return nil
+		}
 		if !config.MatchesAny(tagName, repoConfig.Tags) {
 			obsolete = append(obsolete, tagName)
 		}
@@ -98,6 +101,10 @@ func handleObsoleteTags(repo *git.Repository, repoConfig *config.RepoConfig, pru
 
 	if pruneTags && len(obsolete) > 0 {
 		for _, tag := range obsolete {
+			if config.MatchesAny(tag, repoConfig.ExcludeTags) {
+				slog.Info("skipping prune of excluded tag", "tag", tag)
+				continue
+			}
 			if dryRun {
 				slog.Info("tag would be pruned (dry-run)", "tag", tag)
 				pruned = append(pruned, tag)

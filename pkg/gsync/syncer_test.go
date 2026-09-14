@@ -262,12 +262,10 @@ func TestSyncHTTPS_Example(t *testing.T) {
 	syncer := New()
 	localDir := t.TempDir()
 	repoConfig := &config.RepoConfig{
-		RepoDefaults: config.RepoDefaults{
-			LocalPath: localDir,
-			Branches:  []config.Pattern{{Raw: testDefaultBranch}},
-		},
-		Name: "linuxaid-config-template",
-		URL:  "https://github.com/Obmondo/linuxaid-config-template.git",
+		LocalPath: localDir,
+		Branches:  []config.Pattern{{Raw: testDefaultBranch}},
+		Name:      "linuxaid-config-template",
+		URL:       "https://github.com/Obmondo/linuxaid-config-template.git",
 	}
 
 	result := syncer.SyncRepo(context.Background(), repoConfig, SyncOptions{})
@@ -370,15 +368,13 @@ func TestPruneStaleBranches(t *testing.T) {
 	syncer := New()
 	pruneStaleTrue := true
 	repoConfig := &config.RepoConfig{
-		RepoDefaults: config.RepoDefaults{
-			LocalPath:  localDir,
-			SSHKeyPath: sshKey,
-			Branches:   []config.Pattern{{Raw: "*"}},
-			PruneStale: &pruneStaleTrue,
-			StaleAge:   config.Duration(180 * 24 * time.Hour),
-		},
-		Name: DefaultTestName,
-		URL:  bareDir,
+		LocalPath:  localDir,
+		SSHKeyPath: sshKey,
+		Branches:   []config.Pattern{{Raw: "*"}},
+		PruneStale: &pruneStaleTrue,
+		StaleAge:   config.Duration(180 * 24 * time.Hour),
+		Name:       DefaultTestName,
+		URL:        bareDir,
 	}
 
 	// First verify it's there.
@@ -558,14 +554,12 @@ func TestPruneFalseOverridesDefault(t *testing.T) {
 
 	pruneFalse := false
 	repoConfig := &config.RepoConfig{
-		RepoDefaults: config.RepoDefaults{
-			LocalPath:  localDir,
-			SSHKeyPath: sshKey,
-			Branches:   []config.Pattern{{Raw: MasterBranch}}, // extra-branch does not match
-			Prune:      &pruneFalse,
-		},
-		Name: DefaultTestName,
-		URL:  bareDir,
+		LocalPath:  localDir,
+		SSHKeyPath: sshKey,
+		Branches:   []config.Pattern{{Raw: MasterBranch}}, // extra-branch does not match
+		Prune:      &pruneFalse,
+		Name:       DefaultTestName,
+		URL:        bareDir,
 	}
 
 	// Verify extra-branch exists before sync.
@@ -603,14 +597,12 @@ func TestPruneTrueFromConfigIsApplied(t *testing.T) {
 
 	pruneTrue := true
 	repoConfig := &config.RepoConfig{
-		RepoDefaults: config.RepoDefaults{
-			LocalPath:  localDir,
-			SSHKeyPath: sshKey,
-			Branches:   []config.Pattern{{Raw: MasterBranch}}, // extra-branch does not match
-			Prune:      &pruneTrue,
-		},
-		Name: DefaultTestName,
-		URL:  bareDir,
+		LocalPath:  localDir,
+		SSHKeyPath: sshKey,
+		Branches:   []config.Pattern{{Raw: MasterBranch}}, // extra-branch does not match
+		Prune:      &pruneTrue,
+		Name:       DefaultTestName,
+		URL:        bareDir,
 	}
 
 	// Verify extra-branch exists before sync.
@@ -773,12 +765,10 @@ func TestSyncRepo_EmptyUpstreamIsNoOp(t *testing.T) {
 		t.Fatal(err)
 	}
 	repo := &config.RepoConfig{
-		RepoDefaults: config.RepoDefaults{
-			LocalPath: localDir,
-			Branches:  patterns,
-		},
-		Name: DefaultTestName,
-		URL:  bareDir,
+		LocalPath: localDir,
+		Branches:  patterns,
+		Name:      DefaultTestName,
+		URL:       bareDir,
 	}
 
 	result := New().SyncRepo(context.Background(), repo, SyncOptions{})
@@ -805,13 +795,11 @@ func TestSyncRepo_OpenVoxEmptyUpstreamIsNoOp(t *testing.T) {
 	}
 	openvox := true
 	repo := &config.RepoConfig{
-		RepoDefaults: config.RepoDefaults{
-			LocalPath: localDir,
-			Branches:  patterns,
-			OpenVox:   &openvox,
-		},
-		Name: DefaultTestName,
-		URL:  bareDir,
+		LocalPath: localDir,
+		Branches:  patterns,
+		OpenVox:   &openvox,
+		Name:      DefaultTestName,
+		URL:       bareDir,
 	}
 
 	result := New().SyncRepo(context.Background(), repo, SyncOptions{})
@@ -907,10 +895,10 @@ func TestSyncRepo_RepairsIncompleteObjectStore(t *testing.T) {
 		t.Fatal(err)
 	}
 	repo := &config.RepoConfig{
-		RepoDefaults: config.RepoDefaults{LocalPath: localDir, Branches: bp},
-		Name:         DefaultTestName,
-		URL:          bareDir,
-		Checkout:     MainBranch,
+		LocalPath: localDir, Branches: bp,
+		Name:     DefaultTestName,
+		URL:      bareDir,
+		Checkout: MainBranch,
 	}
 
 	res := New().SyncRepo(context.Background(), repo, SyncOptions{})
