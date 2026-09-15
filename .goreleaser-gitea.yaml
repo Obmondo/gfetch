@@ -1,0 +1,40 @@
+version: 2
+
+release:
+  disable: true
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: "gfetch"
+    main: ./cmd/gfetch
+    binary: gfetch
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -v
+    ldflags:
+      - -X github.com/obmondo/gfetch/internal/cli.Version={{.Tag}}
+      - -X github.com/obmondo/gfetch/internal/cli.Commit={{.ShortCommit}}
+      - -X github.com/obmondo/gfetch/internal/cli.Date={{.Date}}
+      - -s -w
+
+dockers_v2:
+  - images:
+      - "harbor.obmondo.com/obmondo/gfetch"
+    dockerfile: Dockerfile.release
+    tags:
+      - "{{.Tag}}"
+      - "v{{.Major}}.{{.Minor}}"
+      - "v{{.Major}}"
+      - "latest"
+    platforms:
+      - linux/amd64
+      - linux/arm64

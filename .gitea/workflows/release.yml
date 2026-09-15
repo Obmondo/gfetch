@@ -9,37 +9,29 @@ jobs:
   docker:
     runs-on: ubuntu-24.04-htzhel1-ax42-a
     steps:
-      - uses: actions/checkout@v6
-      - uses: docker/setup-qemu-action@v4
-      - uses: docker/setup-buildx-action@v4
+      - uses: https://gitea.obmondo.com/Obmondo/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+
+      - uses: https://gitea.obmondo.com/Obmondo/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - uses: docker/setup-qemu-action@v4.4.0
+      - uses: https://gitea.obmondo.com/Obmondo/setup-buildx-action@v4.3.0
 
       - name: Log in to Harbor
-        uses: docker/login-action@v4
+        uses: https://gitea.obmondo.com/Obmondo/login-action@v4.6.0
         with:
           registry: harbor.obmondo.com
           username: ${{ secrets.HARBOR_USERNAME }}
           password: ${{ secrets.HARBOR_PASSWORD }}
 
-      - uses: docker/metadata-action@v6
-        id: meta
+      - name: Run GoReleaser
+        uses: https://gitea.obmondo.com/Obmondo/goreleaser-action@v6.4.0
         with:
-          images: harbor.obmondo.com/obmondo/gfetch
-          tags: |
-            type=semver,pattern=v{{version}}
-            type=semver,pattern=v{{major}}.{{minor}}
-            type=semver,pattern=v{{major}}
-            type=raw,value=latest
-
-      - uses: docker/build-push-action@v7
-        with:
-          context: .
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          build-args: |
-            VERSION=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.version'] }}
-            COMMIT=${{ github.sha }}
-            DATE=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.created'] }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          version: v2.16.0
+          args: release --clean -f .goreleaser-gitea.yaml
+        env:
+          GITHUB_TOKEN: ${{ secrets.GORELEASER_TOKEN }}
