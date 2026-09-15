@@ -42,8 +42,8 @@ pkg/daemon/
   server_test.go              # HTTP handler tests
 config.example.yaml           # Annotated example configuration
 testdata/config.yaml          # Test fixture
-.goreleaser.yaml              # Release config (linux/darwin, amd64/arm64)
 .goreleaser-github.yaml       # Release config used by the GitHub release workflow
+.goreleaser-gitea.yaml        # Release config used by the Gitea release workflow (release disabled, Harbor images only)
 Dockerfile                    # Multi-stage build (Go builder + Alpine runtime)
 .github/workflows/
   test.yml                    # CI: tests, lint, fmt on push/PR
