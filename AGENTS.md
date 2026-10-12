@@ -18,12 +18,16 @@ internal/cli/
   cat.go                      # "cat" subcommand — print resolved config as YAML
   version.go                  # "version" subcommand + Version/Commit/Date vars
 pkg/config/
-  config.go                   # Config/RepoDefaults/RepoConfig/Pattern structs; RepoConfig embeds RepoDefaults inline; Load(), Validate(), validateRepo(), validateAuth(); PartialValidateError for partial-validate tolerance; per-repo-subdir (<dir>/<repo>/config.yaml) directory discovery — strict fail-fast on load
+  config.go                   # Config/RepoDefaults/RepoConfig/OpenBaoConfig/Pattern structs; RepoConfig embeds RepoDefaults inline; OpenBaoConfig embeds secrets.OpenBaoConfig with Enabled flag; Load(), Validate(), validateRepo(), validateAuth(), validateOpenBaoConfig(), validateKVPath(); PartialValidateError for partial-validate tolerance; per-repo-subdir (<dir>/<repo>/config.yaml) directory discovery — strict fail-fast on load
   duration.go                 # ParseDuration() — support for s, m, h, d
   url.go                      # CheckHTTPSAccessible() helper
   config_test.go              # Config unit tests
+pkg/secrets/
+  store.go                    # Store — concurrent-safe secret reader with per-path last-good-key cache; sentinels ErrNotFound/ErrForbidden/ErrUnavailable/ErrInvalidSecret
+  openbao.go                  # OpenBao KV v2 client — lazy kubernetes-auth login, one re-login on 403, error mapping to sentinels
+  store_test.go               # httptest-based tests for login, read, fallback cache, concurrency, metrics
 pkg/gsync/
-  auth.go                     # resolveAuth() — SSH key or nil (HTTPS); preferredHostKeyAlgorithms + mergeAlgorithms (OpenSSH-style dynamic per-host promotion); sshHostPort()
+  auth.go                     # resolveAuth() — SSH key from file, OpenBao secret, or nil (HTTPS); sshAuth (file), sshAuthFromPEM (in-memory PEM); preferredHostKeyAlgorithms + mergeAlgorithms (OpenSSH-style dynamic per-host promotion); sshHostPort()
   auth_test.go                # SSH auth and host key algorithm tests
   known_hosts.go              # buildKnownHostsAuth() — host key callback + per-host algorithms via gitssh.NewKnownHostsDb
   syncer.go                   # Syncer, SyncAll(), SyncRepo(), syncBranches(), syncTagsWrapper(), handleCheckout(), ensureCloned()
@@ -34,7 +38,7 @@ pkg/gsync/
   openvox.go                  # OpenVox sync flow and per-ref directory sync/prune logic
   syncer_test.go              # Integration tests using in-process bare repos
 pkg/telemetry/
-  telemetry.go                # Prometheus metrics definitions and registration (sync metrics + config reload metrics)
+  telemetry.go                # Prometheus metrics definitions and registration (sync metrics + config reload metrics + secret fetch metrics)
 pkg/daemon/
   scheduler.go                # Scheduler — gocron-backed periodic syncing; atomic config pointer + Reload() (cancel all jobs / swap config / reschedule with delayed first-fire)
   scheduler_test.go           # Scheduler + Reload diff tests
@@ -64,6 +68,7 @@ renovate.json                 # Renovate config (gomod, dockerfile, github-actio
 - **Directory-mode layout**: `loadDir` discovers per-repo configs at `<dir>/<repo>/config.yaml` via `filepath.Glob`. `<dir>/global.yaml` at the root carries shared defaults.
 - **Pruning in daemon mode**: daemon passes `SyncOptions{}` to `SyncRepo`, which then promotes `repo.Prune`, `repo.PruneStale`, and `repo.StaleAge` from the repo config into the options. Set `prune: true` or `prune_stale: true` in config to enable pruning per-repo in daemon mode. `--prune` and `--dry-run` CLI flags remain exclusive to the `sync` subcommand.
 - **SSH HostKeyAlgorithms**: `gitssh.NewKnownHostsDb` produces both the host-key callback and the list of algorithms our known_hosts has entries for at the dialed `host:port`. `mergeAlgorithms` puts those first, then appends the OpenSSH 9.x default order (Ed25519/ECDSA/RSA-SHA2 plus their cert variants) — mimicking OpenSSH's dynamic per-host HostKeyAlgorithms promotion so negotiation lands on a key type we can verify. Plain `ssh-rsa` (SHA-1) and `ssh-dss` are intentionally omitted.
+- **Lazy per-sync SSH key fetch**: when `openbao.enabled: true`, the SSH private key is fetched from OpenBao KV v2 on every `resolveAuth` call rather than read from disk once at startup. This ensures key rotations in OpenBao are picked up on the next sync without a restart or reload. The key is held in memory and never written to disk. A last-known-good key per path is cached: if OpenBao is temporarily unavailable, the cached copy is returned with a metric bump (`SecretCachedKeyUsedTotal`); permanent errors (not found, forbidden, invalid) evict the cache.
 - **Package Naming**: `pkg/gsync` is used for git sync logic to avoid conflict with the standard `sync` package. `pkg/telemetry` is used for metrics.
 - **Concurrent OpenVox Sync**: When `openvox: true` is set, branches and tags are synced in parallel using a worker pool (default 5 workers). A mutex protects the shared resolver repo (`.gfetch-meta`) from concurrent access conflicts.
 - **Index auto-repair**: `checkoutRefContext` automatically detects corrupted, truncated, or unknown `.git/index` files (including `unexpected EOF`, `EOF`, and `index.ErrMalformedSignature`) and deletes/rebuilds them on the fly.
@@ -190,9 +195,10 @@ Commits should be logically atomic — one concern per commit. When a session to
 - `prune` (bool) enables obsolete-ref pruning (branches/tags no longer matching any pattern); defaults to false
 - `prune_stale` (bool) and `stale_age` (duration) enable inactivity-based pruning; `prune_stale` only has effect when `prune: true` is also set (a warning is logged otherwise)
 - Regex patterns (wrapped in `/`) are compiled and validated
-- SSH URLs require `ssh_key_path` pointing to an existing file
+- SSH URLs require `ssh_key_path`. When `openbao.enabled: true`, it is shape-checked as a KV path (charset `[A-Za-z0-9._/-]`, no leading `/`, no `..` or empty segments, no `data/` prefix); otherwise it must point to an existing file
 - HTTPS URLs must be publicly accessible (HEAD request returns 200)
 - `checkout` (if set) must match at least one branch or tag pattern
+- `openbao` block with `enabled: true` must have a valid `addr` (http/https URL with host), `role`, and `service_account_token_path`. An invalid block is a hard config error (not per-repo). Defaults: `kv_mount=kv`, `field=private_key`. The `openbao` block in a per-repo `*/config.yaml` is ignored; only honored in `global.yaml` or at the single-file top level.
 
 ## Pattern System
 
@@ -206,7 +212,7 @@ Patterns appear in `branches` and `tags` YAML lists:
 
 ## Auth System
 
-- **SSH**: any non-HTTPS URL. Uses `go-git/go-git/v5/plumbing/transport/ssh.NewPublicKeysFromFile("git", keyPath, "")`. No passphrase support.
+- **SSH**: any non-HTTPS URL. When `openbao.enabled: true`, the key is fetched from OpenBao KV v2 per sync via `sshAuthFromPEM`; otherwise uses `go-git/go-git/v5/plumbing/transport/ssh.NewPublicKeysFromFile("git", keyPath, "")`. No passphrase support. The key is fetched per sync (not cached between syncs at the auth layer; `pkg/secrets.Store` maintains a last-good-key fallback when OpenBao is temporarily unavailable).
 - **HTTPS**: URLs starting with `https://` or `http://`. Auth is `nil` (anonymous). Only public repos are supported.
 
 ## Known future work

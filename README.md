@@ -114,11 +114,11 @@ docker build --build-arg VERSION=1.0.0 \
 
 ## Configuration
 
-gfetch reads a YAML config file (default: `config.yaml` in the current directory). Use a `defaults:` key to share settings across multiple repositories.
+gfetch reads a YAML config file (default: `config.yaml` in the current directory). Use a `defaults:` key to share settings across multiple repositories. An optional `openbao:` block enables fetching SSH keys from an OpenBao KV v2 secret backend instead of the filesystem (see [OpenBao Secret Backend](docs/configuration.md#openbao-secret-backend)).
 
 ```yaml
 defaults:
-  ssh_key_path: /home/gfetch/.ssh/id_rsa
+  ssh_key_path: /home/gfetch/.ssh/id_rsa   # or a KV path when openbao.enabled
   poll_interval: 10m
   prune: true                   # remove branches/tags no longer matching any pattern
   prune_stale: true             # remove branches with no commits in 6 months (requires prune: true)

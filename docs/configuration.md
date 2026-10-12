@@ -56,7 +56,7 @@ Validation, however, tolerates per-repo failures: a repo that fails `Validate` (
 | ------- | ------ | ---------- | ------------- |
 | (key) | string | Yes | The repository name. Max 64 characters. Allowed characters: `a-z`, `A-Z`, `0-9`, `.`, `_`, `-`. |
 | `url` | string | Yes | Remote repository URL. Prefix `https://` for HTTPS; anything else for SSH. |
-| `ssh_key_path` | string | Only for SSH | Absolute path to a private SSH key file. |
+| `ssh_key_path` | string | Only for SSH | Filesystem path to a private SSH key file. When `openbao.enabled: true`, this is the KV secret path instead (e.g. `ssh-keys/acme/kubeaid`). Inheritable from `defaults`/`global.yaml`. |
 | `ssh_known_hosts` | string | No | Extra SSH host key entries. Merged with built-in keys for GitHub, GitLab, Bitbucket, and Azure DevOps. |
 | `local_path` | string | Yes | Local directory where the repo will be cloned and synced. |
 | `poll_interval` | duration | Yes | How often the daemon polls this repo. Supports `30s`, `5m`, `1h`, `30d`. Minimum: `10s`. |
@@ -226,11 +226,58 @@ The delimiters are stripped before compilation. The regex is matched against the
 
 A pattern of `//` (empty regex) is treated as a literal string, not a regex.
 
+## OpenBao Secret Backend
+
+gfetch can fetch SSH private keys from an [OpenBao](https://openbao.org/) KV v2 secret backend instead of reading them from the filesystem. This is controlled by a global `openbao` block.
+
+### Configuration
+
+```yaml
+openbao:
+  enabled: true
+  addr: http://openbao.openbao:8200
+  role: gfetch
+  service_account_token_path: /var/run/secrets/openbao/token
+  kv_mount: kv            # default: kv
+  field: private_key      # default: private_key
+```
+
+| Field | Required | Default | Description |
+| --- | --- | --- | --- |
+| `enabled` | Yes | `false` | Enable OpenBao for SSH key retrieval. |
+| `addr` | Yes (when enabled) | — | OpenBao server URL (`http://` or `https://`). |
+| `role` | Yes (when enabled) | — | Kubernetes auth role for login. |
+| `service_account_token_path` | Yes (when enabled) | — | Path to the Kubernetes service account JWT file. |
+| `kv_mount` | No | `kv` | KV v2 mount path. |
+| `field` | No | `private_key` | Field name within the KV secret that holds the PEM-encoded private key. |
+
+The `openbao` block is allowed at the top level of a single-file config and in `global.yaml` in directory mode. An `openbao` block in a per-repo `*/config.yaml` is ignored.
+
+When `enabled: true`, per-repo `ssh_key_path` values are interpreted as KV secret paths instead of filesystem paths. The key is fetched from OpenBao on every sync and held in memory only. A last-known-good key is cached per path: if OpenBao is temporarily unavailable, the cached copy is used with a warning. The key is never written to disk.
+
+When `enabled: false` or absent, `ssh_key_path` is a filesystem path as before, with no behavior change.
+
+### Validation
+
+An invalid `openbao` block (missing role, bad addr, etc.) is a **hard** config-level error. The reload is rejected and the previous config keeps running.
+
+When enabled, per-repo `ssh_key_path` is shape-checked as a KV path:
+
+- Must not be empty.
+- Allowed characters: `A-Z`, `a-z`, `0-9`, `.`, `_`, `-`, `/`.
+- Must not start with `/`.
+- Must not contain empty segments (`//`) or `..` segments.
+- Must not start with `data/` (the KV v2 API prefix is added automatically).
+
+These shape failures are per-repo (the failing repo is dropped via `PartialValidateError`, other repos survive).
+
 ## Auth Methods
 
 ### SSH (private and public repos)
 
-Use an SSH-style URL (e.g. `git@github.com:user/repo.git`) and provide `ssh_key_path` pointing to a private key file. The username is always `git`. Passphrase-protected keys are not supported.
+Use an SSH-style URL (e.g. `git@github.com:user/repo.git`) and provide `ssh_key_path`. When the `openbao` block is enabled, `ssh_key_path` is the KV secret path; otherwise it is the filesystem path to a private key file. The username is always `git`. Passphrase-protected keys are not supported.
+
+The SSH key is fetched from OpenBao (or read from disk) on every sync. When fetched from OpenBao, the key is held in memory and never written to disk. A last-known-good key is cached: if OpenBao becomes temporarily unavailable, the cached copy is used.
 
 Host key verification is always enabled using built-in keys. To add extra host keys (e.g. for a self-hosted Git server), use `ssh_known_hosts`:
 
@@ -272,11 +319,12 @@ The config is validated when loaded. The following rules are enforced:
 - At least one of `branches` or `tags` must be non-empty, unless `default_branch_only: true` is set.
 - `default_branch_only: true` is rejected alongside `branches`, `tags`, `checkout` or `openvox`. Each of those names the refs to sync, so they contradict the option rather than refine it — the config fails instead of silently ignoring what you wrote.
 - All regex patterns must be valid Go regular expressions.
-- If `url` is an SSH URL, `ssh_key_path` must be set and the file must exist.
+- If `url` is an SSH URL, `ssh_key_path` must be set. When `openbao.enabled: true`, it is shape-checked as a KV path; otherwise the file must exist on disk.
 - If `url` is an HTTPS URL, the repo must be publicly accessible (HTTP 200 on HEAD request).
 - If `checkout` is set, it must match at least one configured branch or tag pattern (not enforced when `openvox` is enabled).
 - If both `openvox` and `checkout` are set, a warning is logged and `checkout` is ignored.
 - `prune_stale: true` requires `prune: true` to take effect. If `prune_stale` is set without `prune`, a warning is logged and stale pruning is skipped.
+- An `openbao` block with `enabled: true` must have a valid `addr` (http/https URL with host), `role`, and `service_account_token_path`. An invalid block is a hard config error.
 
 Run `gfetch validate-config` to check your config file without performing any sync.
 
@@ -337,6 +385,8 @@ In addition to the per-sync metrics, the daemon exposes the following config-rel
 | `gfetch_config_repo_validate_failures_total` | counter | `repo` | Per-repo validation failures (the repo is dropped from the running config). |
 | `gfetch_config_last_reload_timestamp` | gauge | — | Unix timestamp of the last successful reload. |
 | `gfetch_config_managed_repos` | gauge | — | Number of repos currently managed by the daemon. |
+| `gfetch_secret_fetch_failures_total` | counter | `repo`, `reason` (`not_found`, `forbidden`, `unavailable`, `invalid`) | Secret fetch failures per repo and reason. |
+| `gfetch_secret_cached_key_used_total` | counter | `repo` | Times a cached secret key was used because OpenBao was unavailable. |
 
 ## Complete Example
 
