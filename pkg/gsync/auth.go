@@ -1,6 +1,7 @@
 package gsync
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"strconv"
@@ -53,8 +54,9 @@ var preferredHostKeyAlgorithms = []string{
 // resolveAuth returns the appropriate auth method for a repo.
 // HTTPS public repos use anonymous (nil) auth; SSH repos use key-based auth
 // with built-in host key verification (plus any extra entries from
-// ssh_known_hosts).
-func resolveAuth(repo *config.RepoConfig) (transport.AuthMethod, error) {
+// ssh_known_hosts). When repo.OpenBao is set the key is fetched from the
+// secret backend instead of the filesystem.
+func (s *Syncer) resolveAuth(ctx context.Context, repo *config.RepoConfig) (transport.AuthMethod, error) {
 	if repo.IsHTTPS() {
 		return nil, nil
 	}
@@ -66,6 +68,15 @@ func resolveAuth(repo *config.RepoConfig) (transport.AuthMethod, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parsing SSH endpoint %q: %w", repo.URL, err)
 	}
+
+	if repo.OpenBao != nil {
+		pemBytes, readErr := s.secrets.Read(ctx, repo.Name, repo.OpenBao, repo.SSHKeyPath)
+		if readErr != nil {
+			return nil, fmt.Errorf("fetching SSH key for %s: %w", repo.Name, readErr)
+		}
+		return sshAuthFromPEM(hostPort, pemBytes, repo.SSHKnownHosts)
+	}
+
 	return sshAuth(hostPort, repo.SSHKeyPath, repo.SSHKnownHosts)
 }
 
@@ -80,14 +91,35 @@ func sshAuth(hostPort, keyPath, extraKnownHosts string) (*gitssh.PublicKeys, err
 		return nil, fmt.Errorf("loading SSH key %s: %w", keyPath, err)
 	}
 
+	if err := applyKnownHostsAuth(auth, hostPort, extraKnownHosts); err != nil {
+		return nil, err
+	}
+	return auth, nil
+}
+
+// sshAuthFromPEM creates an SSH public key auth method from in-memory PEM
+// bytes. The PEM is parsed but never logged or included in error messages.
+func sshAuthFromPEM(hostPort string, pemBytes []byte, extraKnownHosts string) (*gitssh.PublicKeys, error) {
+	auth, err := gitssh.NewPublicKeys("git", pemBytes, "")
+	if err != nil {
+		return nil, fmt.Errorf("parsing SSH key from secret: %w", err)
+	}
+
+	if err := applyKnownHostsAuth(auth, hostPort, extraKnownHosts); err != nil {
+		return nil, err
+	}
+	return auth, nil
+}
+
+// applyKnownHostsAuth sets the host-key callback and algorithm list on auth.
+func applyKnownHostsAuth(auth *gitssh.PublicKeys, hostPort, extraKnownHosts string) error {
 	callback, hostAlgos, err := buildKnownHostsAuth(extraKnownHosts, hostPort)
 	if err != nil {
-		return nil, fmt.Errorf("building known_hosts auth: %w", err)
+		return fmt.Errorf("building known_hosts auth: %w", err)
 	}
 	auth.HostKeyCallback = callback
 	auth.HostKeyAlgorithms = mergeAlgorithms(hostAlgos, preferredHostKeyAlgorithms)
-
-	return auth, nil
+	return nil
 }
 
 // sshHostPort returns the "host:port" string for the SSH connection implied

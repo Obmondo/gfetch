@@ -17,6 +17,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/protocol/packp/capability"
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	"github.com/obmondo/gfetch/pkg/config"
+	"github.com/obmondo/gfetch/pkg/secrets"
 	"github.com/obmondo/gfetch/pkg/telemetry"
 )
 
@@ -46,9 +47,26 @@ type Result struct {
 	Err              error
 }
 
+// secretReader fetches an SSH private key from a secret backend.
+type secretReader interface {
+	Read(ctx context.Context, repoName string, obCfg *secrets.OpenBaoConfig, kvPath string) ([]byte, error)
+}
+
+// Option configures a Syncer.
+type Option func(*Syncer)
+
+// WithSecretReader sets the secret reader used for SSH keys stored in a
+// secret backend. When nil (the default), a new secrets.Store is created.
+func WithSecretReader(r secretReader) Option {
+	return func(s *Syncer) {
+		s.secrets = r
+	}
+}
+
 // Syncer performs git sync operations.
 type Syncer struct {
-	mu sync.Mutex
+	mu      sync.Mutex
+	secrets secretReader
 }
 
 // New creates a new Syncer.
@@ -72,11 +90,18 @@ type Syncer struct {
 // That global is gone in go-git v6, so this will not compile against it.
 // Upgrading is a rewrite rather than a bump - see "Known future work" in
 // AGENTS.md before attempting it.
-func New() *Syncer {
+func New(opts ...Option) *Syncer {
 	transport.UnsupportedCapabilities = []capability.Capability{
 		capability.ThinPack,
 	}
-	return &Syncer{}
+	s := &Syncer{}
+	for _, o := range opts {
+		o(s)
+	}
+	if s.secrets == nil {
+		s.secrets = secrets.NewStore()
+	}
+	return s
 }
 
 // SyncAll syncs all repositories in the config.
@@ -133,7 +158,7 @@ func (s *Syncer) SyncRepo(ctx context.Context, repo *config.RepoConfig, opts Syn
 		return s.syncRepoOpenVox(ctx, repo, opts)
 	}
 
-	auth, err := resolveAuth(repo)
+	auth, err := s.resolveAuth(ctx, repo)
 	if err != nil {
 		telemetry.SyncFailuresTotal.WithLabelValues(repo.Name, "clone").Inc()
 		result.Err = err

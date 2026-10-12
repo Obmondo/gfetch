@@ -309,7 +309,7 @@ func (s *Syncer) syncRepoOpenVox(ctx context.Context, repo *config.RepoConfig, o
 	defer s.recordOpenVoxMetrics(repo, start, &result)
 	log := slog.With("repo", repo.Name, "mode", "openvox")
 
-	auth, err := resolveAuth(repo)
+	auth, err := s.resolveAuth(ctx, repo)
 	if err != nil {
 		telemetry.SyncFailuresTotal.WithLabelValues(repo.Name, "clone").Inc()
 		result.Err = err

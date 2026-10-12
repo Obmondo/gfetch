@@ -1,16 +1,27 @@
 package gsync
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/x509"
 	"encoding/pem"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"golang.org/x/crypto/ssh"
+
+	"github.com/obmondo/gfetch/pkg/config"
+	"github.com/obmondo/gfetch/pkg/secrets"
+)
+
+const (
+	testAuthRepoName = "test-repo"
+	testAuthRepoURL  = "git@github.com:test/repo.git"
 )
 
 // TestSSHAuth_FallsBackToOpenSSHDefaultsForUnknownHost verifies the
@@ -223,4 +234,147 @@ func writeTempEd25519Key(t *testing.T) string {
 		t.Fatalf("write key file: %v", err)
 	}
 	return path
+}
+
+// generateEd25519PEM returns a freshly-generated Ed25519 private key in PKCS#8
+// PEM form as raw bytes.
+func generateEd25519PEM(t *testing.T) []byte {
+	t.Helper()
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate ed25519 key: %v", err)
+	}
+	pkcs8, err := x509.MarshalPKCS8PrivateKey(priv)
+	if err != nil {
+		t.Fatalf("marshal pkcs8: %v", err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: pkcs8})
+}
+
+// fakeSecretReader is an inline test fake for the secretReader interface.
+type fakeSecretReader struct {
+	data []byte
+	err  error
+}
+
+func (f *fakeSecretReader) Read(_ context.Context, _ string, _ *secrets.OpenBaoConfig, _ string) ([]byte, error) {
+	return f.data, f.err
+}
+
+// TestSSHAuthFromPEM_SameAlgorithmsAsFilePath verifies that a PEM-based auth
+// produces the same HostKeyAlgorithms as a file-based auth for the same key
+// and host.
+func TestSSHAuthFromPEM_SameAlgorithmsAsFilePath(t *testing.T) {
+	keyPath := writeTempEd25519Key(t)
+	pemBytes, err := os.ReadFile(keyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	hostPort := "nonexistent.example.invalid:22"
+
+	fileAuth, err := sshAuth(hostPort, keyPath, "")
+	if err != nil {
+		t.Fatalf("sshAuth: %v", err)
+	}
+
+	pemAuth, err := sshAuthFromPEM(hostPort, pemBytes, "")
+	if err != nil {
+		t.Fatalf("sshAuthFromPEM: %v", err)
+	}
+
+	if !slices.Equal(fileAuth.HostKeyAlgorithms, pemAuth.HostKeyAlgorithms) {
+		t.Errorf("HostKeyAlgorithms mismatch.\n file: %v\n  pem: %v",
+			fileAuth.HostKeyAlgorithms, pemAuth.HostKeyAlgorithms)
+	}
+}
+
+// TestSSHAuthFromPEM_InvalidPEM_NoKeyInError verifies that a parse error for
+// invalid PEM does not leak key bytes.
+func TestSSHAuthFromPEM_InvalidPEM_NoKeyInError(t *testing.T) {
+	badPEM := []byte("not-a-real-key-SUPERSECRET")
+	_, err := sshAuthFromPEM("host:22", badPEM, "")
+	if err == nil {
+		t.Fatal("expected error for invalid PEM")
+	}
+	if strings.Contains(err.Error(), "SUPERSECRET") {
+		t.Errorf("error message contains key bytes: %v", err)
+	}
+}
+
+// TestResolveAuth_SecretReader verifies that when repo.OpenBao is set, the
+// Syncer uses s.secrets.Read to get the key PEM, and that reader errors
+// propagate without leaking secret material.
+func TestResolveAuth_SecretReader(t *testing.T) {
+	pemBytes := generateEd25519PEM(t)
+
+	tests := []struct {
+		name    string
+		reader  *fakeSecretReader
+		wantErr bool
+	}{
+		{
+			name:   "success",
+			reader: &fakeSecretReader{data: pemBytes},
+		},
+		{
+			name:    "reader error propagates",
+			reader:  &fakeSecretReader{err: fmt.Errorf("backend unavailable")},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := New(WithSecretReader(tt.reader))
+
+			repo := &config.RepoConfig{
+				SSHKeyPath: "ssh-keys/acme/kubeaid",
+				Name:       testAuthRepoName,
+				URL:        testAuthRepoURL,
+				OpenBao: &secrets.OpenBaoConfig{
+					Addr:                    "http://openbao:8200",
+					Role:                    "gfetch",
+					ServiceAccountTokenPath: "/var/run/secrets/token",
+					KVMount:                 "kv",
+					Field:                   "private_key",
+				},
+			}
+
+			auth, err := s.resolveAuth(context.Background(), repo)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("resolveAuth: %v", err)
+			}
+			if auth == nil {
+				t.Fatal("expected non-nil auth")
+			}
+		})
+	}
+}
+
+// TestResolveAuth_FilePathUnchanged verifies that when repo.OpenBao is nil,
+// the file-based path is used.
+func TestResolveAuth_FilePathUnchanged(t *testing.T) {
+	keyPath := writeTempEd25519Key(t)
+	s := New()
+
+	repo := &config.RepoConfig{
+		SSHKeyPath: keyPath,
+		Name:       testAuthRepoName,
+		URL:        testAuthRepoURL,
+	}
+
+	auth, err := s.resolveAuth(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("resolveAuth: %v", err)
+	}
+	if auth == nil {
+		t.Fatal("expected non-nil auth")
+	}
 }
