@@ -253,7 +253,11 @@ openbao:
 
 The `openbao` block is allowed at the top level of a single-file config and in `global.yaml` in directory mode. An `openbao` block in a per-repo `*/config.yaml` is ignored.
 
-When `enabled: true`, per-repo `ssh_key_path` values are interpreted as KV secret paths instead of filesystem paths. The key is fetched from OpenBao on every sync and held in memory only. A last-known-good key is cached per path: if OpenBao is temporarily unavailable, the cached copy is used with a warning. The key is never written to disk.
+When `enabled: true`, per-repo `ssh_key_path` values are interpreted as KV secret paths instead of filesystem paths. The key is cached in memory per path after first fetch; the whole cache is cleared on every successful config reload (SIGHUP or POST /reload) -- the managing API reloads after deleting/regenerating since the path is the same. An SSH auth failure with an OpenBao key evicts the cached key, refetches it, and retries the network operation once (self-heals a missed reload). There is no stale-key fallback: if OpenBao is down on a cache miss, the sync fails. The key is never written to disk.
+
+Token management: proactive re-login at 2/3 of the token lease duration, with a 403 backstop re-login rate-limited to one per minute. Recommend setting a short `token_ttl` on the Kubernetes auth role.
+
+When `openbao.enabled` is set, `ssh_key_path` must be a KV path; an inherited `defaults.ssh_key_path` file path makes SSH repos fail validation (the path is validated as a KV path and dropped per repo).
 
 When `enabled: false` or absent, `ssh_key_path` is a filesystem path as before, with no behavior change.
 
@@ -266,7 +270,7 @@ When enabled, per-repo `ssh_key_path` is shape-checked as a KV path:
 - Must not be empty.
 - Allowed characters: `A-Z`, `a-z`, `0-9`, `.`, `_`, `-`, `/`.
 - Must not start with `/`.
-- Must not contain empty segments (`//`) or `..` segments.
+- Must not contain empty segments (`//`), `.` segments, or `..` segments.
 - Must not start with `data/` (the KV v2 API prefix is added automatically).
 
 These shape failures are per-repo (the failing repo is dropped via `PartialValidateError`, other repos survive).
@@ -277,7 +281,7 @@ These shape failures are per-repo (the failing repo is dropped via `PartialValid
 
 Use an SSH-style URL (e.g. `git@github.com:user/repo.git`) and provide `ssh_key_path`. When the `openbao` block is enabled, `ssh_key_path` is the KV secret path; otherwise it is the filesystem path to a private key file. The username is always `git`. Passphrase-protected keys are not supported.
 
-The SSH key is fetched from OpenBao (or read from disk) on every sync. When fetched from OpenBao, the key is held in memory and never written to disk. A last-known-good key is cached: if OpenBao becomes temporarily unavailable, the cached copy is used.
+The SSH key is fetched from OpenBao on first use and cached in memory per path. The cache is cleared on every successful config reload. An SSH auth failure with an OpenBao key evicts the cached key, refetches it, and retries once. The key is never written to disk.
 
 Host key verification is always enabled using built-in keys. To add extra host keys (e.g. for a self-hosted Git server), use `ssh_known_hosts`:
 
@@ -385,8 +389,8 @@ In addition to the per-sync metrics, the daemon exposes the following config-rel
 | `gfetch_config_repo_validate_failures_total` | counter | `repo` | Per-repo validation failures (the repo is dropped from the running config). |
 | `gfetch_config_last_reload_timestamp` | gauge | — | Unix timestamp of the last successful reload. |
 | `gfetch_config_managed_repos` | gauge | — | Number of repos currently managed by the daemon. |
-| `gfetch_secret_fetch_failures_total` | counter | `repo`, `reason` (`not_found`, `forbidden`, `unavailable`, `invalid`) | Secret fetch failures per repo and reason. |
-| `gfetch_secret_cached_key_used_total` | counter | `repo` | Times a cached secret key was used because OpenBao was unavailable. |
+| `gfetch_secret_fetch_failures_total` | counter | `repo`, `reason` (`not_found`, `forbidden`, `unavailable`, `invalid`, `rejected`) | Secret fetch failures per repo and reason. |
+| `gfetch_secret_auth_refetch_total` | counter | `repo` | Times a cached secret key was evicted and refetched after an SSH authentication failure. |
 
 ## Complete Example
 

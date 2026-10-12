@@ -1,8 +1,9 @@
 # --- OpenBao secret backend (optional) ---
 # When enabled, per-repo ssh_key_path values are KV secret paths instead of
-# filesystem paths. The SSH key is fetched from OpenBao on every sync and held
-# in memory only — never written to disk. An openbao block in a per-repo
-# config.yaml (directory mode) is ignored; use global.yaml instead.
+# filesystem paths. The SSH key is fetched from OpenBao on first use and
+# cached in memory per path. The cache is cleared on every successful config
+# reload. An openbao block in a per-repo config.yaml (directory mode) is
+# ignored; use global.yaml instead.
 #
 # openbao:
 #   enabled: true
