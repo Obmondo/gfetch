@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -12,6 +13,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/obmondo/gfetch/pkg/secrets"
 	"github.com/obmondo/gfetch/pkg/telemetry"
 )
 
@@ -25,10 +27,23 @@ const (
 	maxRepoNameLen = 64
 )
 
+// OpenBaoConfig holds the top-level OpenBao settings. When Enabled is true,
+// per-repo ssh_key_path values are interpreted as KV secret paths instead of
+// filesystem paths.
+type OpenBaoConfig struct {
+	Enabled               bool `yaml:"enabled"`
+	secrets.OpenBaoConfig `yaml:",inline"`
+}
+
+// kvPathRegex allows alphanumeric, dots, underscores, hyphens, and forward
+// slashes in KV secret paths.
+var kvPathRegex = regexp.MustCompile(`^[A-Za-z0-9._/\-]+$`)
+
 // Config is the top-level configuration.
 type Config struct {
 	Defaults *RepoDefaults         `yaml:"defaults,omitempty"`
 	Repos    map[string]RepoConfig `yaml:"repos"`
+	OpenBao  *OpenBaoConfig        `yaml:"openbao,omitempty"`
 }
 
 // PartialValidateError is returned by Config.Validate when one or more repos
@@ -92,9 +107,10 @@ type RepoDefaults struct {
 // Shared fields are inherited from RepoDefaults via embedding.
 type RepoConfig struct {
 	RepoDefaults `yaml:",inline"`
-	Name         string `yaml:"-"`
-	URL          string `yaml:"url"`
-	Checkout     string `yaml:"checkout"`
+	Name         string                 `yaml:"-"`
+	URL          string                 `yaml:"url"`
+	Checkout     string                 `yaml:"checkout"`
+	OpenBao      *secrets.OpenBaoConfig `yaml:"-"`
 }
 
 // Pattern represents a matching pattern, either literal or regex.
@@ -235,6 +251,7 @@ func (c *Config) UnmarshalYAML(value *yaml.Node) error {
 	var aux struct {
 		Defaults *RepoDefaults         `yaml:"defaults,omitempty"`
 		Repos    map[string]RepoConfig `yaml:"repos"`
+		OpenBao  *OpenBaoConfig        `yaml:"openbao,omitempty"`
 	}
 
 	if err := value.Decode(&aux); err != nil {
@@ -243,6 +260,7 @@ func (c *Config) UnmarshalYAML(value *yaml.Node) error {
 
 	c.Defaults = aux.Defaults
 	c.Repos = aux.Repos
+	c.OpenBao = aux.OpenBao
 
 	if c.Repos == nil {
 		return nil
@@ -288,7 +306,7 @@ func loadFile(path string) (*Config, error) {
 
 // loadDir loads configuration from a directory structure.
 func loadDir(dir string) (*Config, error) {
-	defaults, err := readGlobalDefaults(filepath.Join(dir, "global.yaml"))
+	defaults, obCfg, err := readGlobalDefaults(filepath.Join(dir, "global.yaml"))
 	if err != nil {
 		return nil, err
 	}
@@ -302,6 +320,7 @@ func loadDir(dir string) (*Config, error) {
 	cfg := &Config{
 		Repos:    make(map[string]RepoConfig),
 		Defaults: defaults,
+		OpenBao:  obCfg,
 	}
 
 	for _, match := range matches {
@@ -313,6 +332,9 @@ func loadDir(dir string) (*Config, error) {
 		if err := yaml.Unmarshal(data, &sub); err != nil {
 			return nil, fmt.Errorf("parsing %s: %w", match, err)
 		}
+		// An openbao block in a per-repo config.yaml is ignored; it is only
+		// honored in global.yaml (directory mode) or at the top level of a
+		// single-file config.
 		for name, repo := range sub.Repos {
 			if _, exists := cfg.Repos[name]; exists {
 				return nil, fmt.Errorf("duplicate repo name %q across config files", name)
@@ -334,20 +356,23 @@ func loadDir(dir string) (*Config, error) {
 	return cfg, nil
 }
 
-func readGlobalDefaults(path string) (*RepoDefaults, error) {
+func readGlobalDefaults(path string) (*RepoDefaults, *OpenBaoConfig, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, nil
+			return nil, nil, nil
 		}
-		return nil, fmt.Errorf("reading global.yaml: %w", err)
+		return nil, nil, fmt.Errorf("reading global.yaml: %w", err)
 	}
 
-	var defaults RepoDefaults
-	if err := yaml.Unmarshal(data, &defaults); err != nil {
-		return nil, fmt.Errorf("parsing global.yaml: %w", err)
+	var parsed struct {
+		RepoDefaults `yaml:",inline"`
+		OpenBao      *OpenBaoConfig `yaml:"openbao,omitempty"`
 	}
-	return &defaults, nil
+	if err := yaml.Unmarshal(data, &parsed); err != nil {
+		return nil, nil, fmt.Errorf("parsing global.yaml: %w", err)
+	}
+	return &parsed.RepoDefaults, parsed.OpenBao, nil
 }
 
 // applyDefaults fills empty repo fields from global defaults.
@@ -416,9 +441,20 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("no repos configured")
 	}
 
+	// Validate and default the global OpenBao block before per-repo validation.
+	// An invalid block is a hard config-level error because it is a global
+	// setting; the reload is rejected and the previous config keeps running.
+	var obSnapshot *secrets.OpenBaoConfig
+	if c.OpenBao != nil && c.OpenBao.Enabled {
+		if err := validateOpenBaoConfig(c.OpenBao); err != nil {
+			return err
+		}
+		obSnapshot = &c.OpenBao.OpenBaoConfig
+	}
+
 	failures := map[string]error{}
 	for name, r := range c.Repos {
-		if err := c.validateRepo(&r); err != nil {
+		if err := c.validateRepo(&r, obSnapshot); err != nil {
 			slog.Warn("repo failed validation, dropping", "repo", name, "error", err)
 			telemetry.ConfigRepoValidateFailuresTotal.WithLabelValues(name).Inc()
 			failures[name] = err
@@ -434,7 +470,7 @@ func (c *Config) Validate() error {
 	return &PartialValidateError{Failures: failures}
 }
 
-func (c *Config) validateRepo(r *RepoConfig) error {
+func (c *Config) validateRepo(r *RepoConfig, obSnapshot *secrets.OpenBaoConfig) error {
 	if r.Name == "" {
 		return fmt.Errorf("repo name is required")
 	}
@@ -442,7 +478,7 @@ func (c *Config) validateRepo(r *RepoConfig) error {
 	if r.URL == "" {
 		return fmt.Errorf("repo %s: url is required", r.Name)
 	}
-	if err := c.validateAuth(r); err != nil {
+	if err := c.validateAuth(r, obSnapshot); err != nil {
 		return err
 	}
 
@@ -586,15 +622,75 @@ func compilePatterns(r *RepoConfig) error {
 	return nil
 }
 
-func (*Config) validateAuth(r *RepoConfig) error {
+func (*Config) validateAuth(r *RepoConfig, obSnapshot *secrets.OpenBaoConfig) error {
 	if r.IsHTTPS() {
 		return CheckHTTPSAccessible(r.Name, r.URL)
 	}
+
 	if r.SSHKeyPath == "" {
 		return fmt.Errorf("repo %s: ssh_key_path is required", r.Name)
 	}
+
+	// When OpenBao is enabled, ssh_key_path is a KV secret path.
+	if obSnapshot != nil {
+		if err := validateKVPath(r.Name, r.SSHKeyPath); err != nil {
+			return err
+		}
+		r.OpenBao = obSnapshot
+		return nil
+	}
+
 	if _, err := os.Stat(r.SSHKeyPath); err != nil {
 		return fmt.Errorf("repo %s: ssh key not found at %s: %w", r.Name, r.SSHKeyPath, err)
+	}
+	return nil
+}
+
+// validateOpenBaoConfig validates the global OpenBao block. Defaults for
+// kv_mount and field are applied idempotently.
+func validateOpenBaoConfig(ob *OpenBaoConfig) error {
+	if ob.Addr == "" {
+		return fmt.Errorf("openbao: addr is required")
+	}
+	u, err := url.Parse(ob.Addr)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return fmt.Errorf("openbao: addr must be a valid http or https URL with a host")
+	}
+
+	if ob.Role == "" {
+		return fmt.Errorf("openbao: role is required")
+	}
+	if ob.ServiceAccountTokenPath == "" {
+		return fmt.Errorf("openbao: service_account_token_path is required")
+	}
+
+	if ob.KVMount == "" {
+		ob.KVMount = "kv"
+	}
+	if ob.Field == "" {
+		ob.Field = "private_key"
+	}
+	return nil
+}
+
+// validateKVPath checks that path is a valid KV secret path.
+func validateKVPath(repoName, path string) error {
+	if !kvPathRegex.MatchString(path) {
+		return fmt.Errorf("repo %s: ssh_key_path %q contains invalid characters for a KV path", repoName, path)
+	}
+	if strings.HasPrefix(path, "/") {
+		return fmt.Errorf("repo %s: ssh_key_path %q must not start with '/'", repoName, path)
+	}
+	if strings.HasPrefix(path, "data/") {
+		return fmt.Errorf("repo %s: ssh_key_path %q must not start with 'data/'", repoName, path)
+	}
+	for seg := range strings.SplitSeq(path, "/") {
+		if seg == "" {
+			return fmt.Errorf("repo %s: ssh_key_path %q must not contain empty segments", repoName, path)
+		}
+		if seg == ".." {
+			return fmt.Errorf("repo %s: ssh_key_path %q must not contain '..' segments", repoName, path)
+		}
 	}
 	return nil
 }

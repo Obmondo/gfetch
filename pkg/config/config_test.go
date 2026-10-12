@@ -4,10 +4,12 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
+	"gopkg.in/yaml.v3"
 
 	"github.com/obmondo/gfetch/pkg/telemetry"
 )
@@ -18,6 +20,7 @@ const (
 	testRepoName  = "test"
 	testLocalPath = "/tmp/test"
 	testRepoURL   = "git@github.com:test/repo.git"
+	goodRepoName  = "good"
 )
 
 func TestPattern_IsRegex(t *testing.T) {
@@ -362,14 +365,14 @@ func TestValidate_DropsInvalidRepoAndKeepsRest(t *testing.T) {
 	}
 
 	cfg := &Config{Repos: map[string]RepoConfig{
-		"good": {
+		goodRepoName: {
 			RepoDefaults: RepoDefaults{
 				SSHKeyPath:   keyFile,
 				LocalPath:    "/tmp/good",
 				PollInterval: Duration(30 * time.Second),
 				Branches:     []Pattern{{Raw: branchMain}},
 			},
-			Name: "good",
+			Name: goodRepoName,
 			URL:  "git@github.com:test/good.git",
 		},
 		"bad-missing-url": {
@@ -398,7 +401,7 @@ func TestValidate_DropsInvalidRepoAndKeepsRest(t *testing.T) {
 	if _, ok := cfg.Repos["bad-missing-url"]; ok {
 		t.Error("expected bad-missing-url to be dropped from cfg.Repos")
 	}
-	if _, ok := cfg.Repos["good"]; !ok {
+	if _, ok := cfg.Repos[goodRepoName]; !ok {
 		t.Error("expected good repo to remain after partial validate")
 	}
 	if got := testutil.ToFloat64(telemetry.ConfigRepoValidateFailuresTotal.WithLabelValues("bad-missing-url")); got != before+1 {
@@ -878,5 +881,426 @@ func TestLoadDir_DefaultBranchOnlyRejectsExplicitBranches(t *testing.T) {
 	_ = cfg.Validate()
 	if _, ok := cfg.Repos["repo1"]; ok {
 		t.Fatal("expected repo1 to be dropped for setting branches alongside default_branch_only")
+	}
+}
+
+// --- OpenBao config tests ---
+
+func validOpenBao() *OpenBaoConfig {
+	return &OpenBaoConfig{
+		Enabled:                 true,
+		Addr:                    "http://openbao.openbao:8200",
+		Role:                    "gfetch",
+		ServiceAccountTokenPath: "/var/run/secrets/openbao/token",
+	}
+}
+
+// openBaoTestConfig builds a Config with one SSH repo and the given OpenBao
+// block. Use it to avoid repeating the ~10-line literal in every test.
+func openBaoTestConfig(ob *OpenBaoConfig, sshKeyPath string) *Config {
+	return &Config{
+		OpenBao: ob,
+		Repos: map[string]RepoConfig{testRepoName: {
+			RepoDefaults: RepoDefaults{
+				SSHKeyPath:   sshKeyPath,
+				LocalPath:    testLocalPath,
+				PollInterval: Duration(30 * time.Second),
+				Branches:     []Pattern{{Raw: branchMain}},
+			},
+			Name: testRepoName,
+			URL:  testRepoURL,
+		}},
+	}
+}
+
+func TestValidate_OpenBaoEnabled_ValidRepoGetsOpenBaoCopy(t *testing.T) {
+	ob := validOpenBao()
+	cfg := openBaoTestConfig(ob, "ssh-keys/acme/kubeaid")
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected valid config, got: %v", err)
+	}
+
+	repo := cfg.Repos[testRepoName]
+	if repo.OpenBao == nil {
+		t.Fatal("expected repo.OpenBao to be set")
+	}
+	if repo.OpenBao.Addr != ob.Addr {
+		t.Errorf("addr = %q, want %q", repo.OpenBao.Addr, ob.Addr)
+	}
+	if repo.OpenBao.KVMount != "kv" {
+		t.Errorf("kv_mount = %q, want %q (default)", repo.OpenBao.KVMount, "kv")
+	}
+	if repo.OpenBao.Field != "private_key" {
+		t.Errorf("field = %q, want %q (default)", repo.OpenBao.Field, "private_key")
+	}
+}
+
+func TestValidate_OpenBaoOff_FilePathUnchanged(t *testing.T) {
+	keyFile := filepath.Join(t.TempDir(), "key")
+	if err := os.WriteFile(keyFile, []byte("fake"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name    string
+		openbao *OpenBaoConfig
+	}{
+		{"disabled", &OpenBaoConfig{Enabled: false}},
+		{"absent", nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := openBaoTestConfig(tt.openbao, keyFile)
+			if err := cfg.Validate(); err != nil {
+				t.Fatalf("expected valid config, got: %v", err)
+			}
+			repo := cfg.Repos[testRepoName]
+			if repo.OpenBao != nil {
+				t.Errorf("expected repo.OpenBao to be nil when openbao is %s", tt.name)
+			}
+		})
+	}
+}
+
+func TestValidate_OpenBaoInvalidBlock_HardError(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(ob *OpenBaoConfig)
+	}{
+		{"empty addr", func(ob *OpenBaoConfig) { ob.Addr = "" }},
+		{"no scheme", func(ob *OpenBaoConfig) { ob.Addr = "openbao:8200" }},
+		{"ftp scheme", func(ob *OpenBaoConfig) { ob.Addr = "ftp://openbao:8200" }},
+		{"no host", func(ob *OpenBaoConfig) { ob.Addr = "http://" }},
+		{"empty role", func(ob *OpenBaoConfig) { ob.Role = "" }},
+		{"empty service_account_token_path", func(ob *OpenBaoConfig) { ob.ServiceAccountTokenPath = "" }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ob := validOpenBao()
+			tt.mutate(ob)
+			cfg := openBaoTestConfig(ob, "ssh-keys/acme")
+			err := cfg.Validate()
+			if err == nil {
+				t.Fatal("expected hard error")
+			}
+			if _, ok := errors.AsType[*PartialValidateError](err); ok {
+				t.Fatal("expected hard error, got PartialValidateError")
+			}
+		})
+	}
+}
+
+func TestValidate_OpenBaoBadKVPath_PerRepoFailure(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+	}{
+		{"leading slash", "/ssh-keys/acme"},
+		{"double dot", "ssh-keys/../acme"},
+		{"empty segment", "ssh-keys//acme"},
+		{"bad charset", "ssh-keys/acme@host"},
+		{"data prefix", "data/ssh-keys/acme"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ob := validOpenBao()
+			cfg := &Config{
+				OpenBao: ob,
+				Repos: map[string]RepoConfig{
+					"bad": {
+						RepoDefaults: RepoDefaults{
+							SSHKeyPath:   tt.path,
+							LocalPath:    testLocalPath,
+							PollInterval: Duration(30 * time.Second),
+							Branches:     []Pattern{{Raw: branchMain}},
+						},
+						Name: "bad",
+						URL:  testRepoURL,
+					},
+					goodRepoName: {
+						RepoDefaults: RepoDefaults{
+							SSHKeyPath:   "ssh-keys/valid",
+							LocalPath:    "/tmp/good",
+							PollInterval: Duration(30 * time.Second),
+							Branches:     []Pattern{{Raw: branchMain}},
+						},
+						Name: goodRepoName,
+						URL:  testRepoURL,
+					},
+				},
+			}
+
+			before := testutil.ToFloat64(telemetry.ConfigRepoValidateFailuresTotal.WithLabelValues("bad"))
+
+			err := cfg.Validate()
+			var partial *PartialValidateError
+			if !errors.As(err, &partial) {
+				t.Fatalf("expected PartialValidateError, got %T: %v", err, err)
+			}
+			if _, ok := partial.Failures["bad"]; !ok {
+				t.Error("expected failure for 'bad' repo")
+			}
+			if _, ok := cfg.Repos[goodRepoName]; !ok {
+				t.Error("expected 'good' repo to survive")
+			}
+
+			after := testutil.ToFloat64(telemetry.ConfigRepoValidateFailuresTotal.WithLabelValues("bad"))
+			if after != before+1 {
+				t.Errorf("metric: got %v, want %v", after, before+1)
+			}
+		})
+	}
+}
+
+func TestValidate_OpenBaoEnabled_SSHRepoMissingKeyPath_PerRepoFailure(t *testing.T) {
+	cfg := openBaoTestConfig(validOpenBao(), "")
+	// Empty ssh_key_path to trigger the "is required" error.
+	r := cfg.Repos[testRepoName]
+	r.SSHKeyPath = ""
+	cfg.Repos[testRepoName] = r
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for missing ssh_key_path")
+	}
+}
+
+func TestValidate_OpenBaoEnabled_HTTPSRepoUnaffected(t *testing.T) {
+	ob := validOpenBao()
+	cfg := &Config{
+		OpenBao: ob,
+		Repos: map[string]RepoConfig{"public": {
+			RepoDefaults: RepoDefaults{
+				LocalPath:    testLocalPath,
+				PollInterval: Duration(30 * time.Second),
+				Branches:     []Pattern{{Raw: branchMain}},
+			},
+			Name: "public",
+			URL:  "https://github.com/git/git.git",
+		}},
+	}
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected HTTPS repo to pass with openbao enabled, got: %v", err)
+	}
+	repo := cfg.Repos["public"]
+	if repo.OpenBao != nil {
+		t.Error("HTTPS repo should not get OpenBao config")
+	}
+}
+
+func TestLoad_SingleFile_OpenBaoFlowsToRepo(t *testing.T) {
+	content := `openbao:
+  enabled: true
+  addr: http://openbao:8200
+  role: gfetch
+  service_account_token_path: /var/run/secrets/token
+repos:
+  test-repo:
+    url: git@github.com:test/repo.git
+    ssh_key_path: ssh-keys/test
+    local_path: /tmp/test
+    poll_interval: 1m
+    branches:
+      - main
+`
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(cfgPath, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.OpenBao == nil {
+		t.Fatal("expected OpenBao to be loaded")
+	}
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+
+	repo := cfg.Repos["test-repo"]
+	if repo.OpenBao == nil {
+		t.Fatal("expected repo.OpenBao to be set after validate")
+	}
+	if repo.OpenBao.KVMount != "kv" {
+		t.Errorf("kv_mount default = %q, want %q", repo.OpenBao.KVMount, "kv")
+	}
+	if repo.OpenBao.Field != "private_key" {
+		t.Errorf("field default = %q, want %q", repo.OpenBao.Field, "private_key")
+	}
+}
+
+func TestLoadDir_GlobalYAMLOpenBaoHonored(t *testing.T) {
+	dir := t.TempDir()
+
+	if err := os.WriteFile(filepath.Join(dir, "global.yaml"), []byte(`ssh_key_path: ssh-keys/default
+local_path: /tmp/repos
+poll_interval: 5m
+branches:
+  - "*"
+openbao:
+  enabled: true
+  addr: http://openbao:8200
+  role: gfetch
+  service_account_token_path: /var/run/secrets/token
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	repoDir := filepath.Join(dir, "repo1")
+	if err := os.MkdirAll(repoDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, "config.yaml"), []byte(`repos:
+  repo1:
+    url: git@github.com:test/repo1.git
+    ssh_key_path: ssh-keys/repo1
+    branches:
+      - main
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.OpenBao == nil {
+		t.Fatal("expected OpenBao from global.yaml")
+	}
+	if !cfg.OpenBao.Enabled {
+		t.Fatal("expected OpenBao.Enabled = true")
+	}
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	repo := cfg.Repos["repo1"]
+	if repo.OpenBao == nil {
+		t.Fatal("expected repo.OpenBao to be set")
+	}
+}
+
+func TestLoadDir_PerRepoOpenBaoIgnored(t *testing.T) {
+	dir := t.TempDir()
+
+	repoDir := filepath.Join(dir, "repo1")
+	if err := os.MkdirAll(repoDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	// Per-repo config has an openbao block, which should be ignored.
+	if err := os.WriteFile(filepath.Join(repoDir, "config.yaml"), []byte(`openbao:
+  enabled: true
+  addr: http://openbao:8200
+  role: gfetch
+  service_account_token_path: /var/run/secrets/token
+repos:
+  repo1:
+    url: git@github.com:test/repo1.git
+    ssh_key_path: /tmp/key
+    local_path: /tmp/repo1
+    poll_interval: 1m
+    branches:
+      - main
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Write the key file so file-path validation passes.
+	if err := os.WriteFile("/tmp/key", []byte("fake"), 0600); err != nil {
+		// Can't write to /tmp/key; use a temp dir instead.
+		t.Skip("cannot write test key file")
+	}
+	t.Cleanup(func() { _ = os.Remove("/tmp/key") })
+
+	cfg, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The per-repo openbao is ignored; cfg.OpenBao remains nil because there's
+	// no global.yaml.
+	if cfg.OpenBao != nil {
+		t.Fatal("per-repo openbao should be ignored")
+	}
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	repo := cfg.Repos["repo1"]
+	if repo.OpenBao != nil {
+		t.Error("repo should not have OpenBao when per-repo block is ignored")
+	}
+}
+
+func TestValidate_OpenBaoEnabled_SSHKeyPathInheritedFromDefaults(t *testing.T) {
+	cfg := openBaoTestConfig(validOpenBao(), "")
+	cfg.Defaults = &RepoDefaults{SSHKeyPath: "ssh-keys/default"}
+
+	// Clear the repo's ssh_key_path so it inherits from defaults.
+	r := cfg.Repos[testRepoName]
+	r.SSHKeyPath = ""
+	cfg.Repos[testRepoName] = r
+
+	// Apply defaults as loadFile would.
+	for name, repo := range cfg.Repos {
+		applyDefaults(&repo, cfg.Defaults)
+		cfg.Repos[name] = repo
+	}
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected valid config, got: %v", err)
+	}
+	repo := cfg.Repos[testRepoName]
+	if repo.SSHKeyPath != "ssh-keys/default" {
+		t.Errorf("ssh_key_path = %q, want %q", repo.SSHKeyPath, "ssh-keys/default")
+	}
+	if repo.OpenBao == nil {
+		t.Fatal("expected repo.OpenBao to be set")
+	}
+}
+
+func TestMarshal_OpenBaoBlockPresent_RepoOpenBaoAbsent(t *testing.T) {
+	cfg := openBaoTestConfig(validOpenBao(), "ssh-keys/test")
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+
+	out, err := yaml.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	s := string(out)
+	if !strings.Contains(s, "openbao:") {
+		t.Error("expected openbao block in marshaled output")
+	}
+	if !strings.Contains(s, "ssh_key_path: ssh-keys/test") {
+		t.Error("expected ssh_key_path in marshaled output")
+	}
+	// The per-repo OpenBao (yaml:"-") should not appear as a nested openbao
+	// block under the repo. We check by parsing the output and inspecting the
+	// repos section: no repo should have an "openbao" key.
+	var parsed map[string]any
+	if err := yaml.Unmarshal(out, &parsed); err != nil {
+		t.Fatalf("unmarshal output: %v", err)
+	}
+	repos, ok := parsed["repos"].(map[string]any)
+	if !ok {
+		t.Fatal("expected repos map in marshaled output")
+	}
+	for name, raw := range repos {
+		repoMap, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		if _, has := repoMap["openbao"]; has {
+			t.Errorf("repo %q has an openbao key in marshaled output (yaml:\"-\" should suppress it)", name)
+		}
 	}
 }
