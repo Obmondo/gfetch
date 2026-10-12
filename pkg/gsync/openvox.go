@@ -324,6 +324,10 @@ func (s *Syncer) syncRepoOpenVox(ctx context.Context, repo *config.RepoConfig, o
 	cachePath := filepath.Join(repo.LocalPath, metaDir, "cache.git")
 	resolverPath := filepath.Join(repo.LocalPath, metaDir)
 	resolverRepo, refs, err := loadResolverRepoAndRefs(ctx, repo.Name, resolverPath, cachePath, repo.URL, auth)
+	if newAuth, ok := s.refreshAuthAfterSSHFailure(ctx, repo, err); ok {
+		auth = newAuth
+		resolverRepo, refs, err = loadResolverRepoAndRefs(ctx, repo.Name, resolverPath, cachePath, repo.URL, auth)
+	}
 	if err != nil {
 		if errors.Is(err, transport.ErrEmptyRemoteRepository) {
 			log.Info("remote repository has no commits yet, nothing to sync")

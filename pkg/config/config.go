@@ -332,9 +332,9 @@ func loadDir(dir string) (*Config, error) {
 		if err := yaml.Unmarshal(data, &sub); err != nil {
 			return nil, fmt.Errorf("parsing %s: %w", match, err)
 		}
-		// An openbao block in a per-repo config.yaml is ignored; it is only
-		// honored in global.yaml (directory mode) or at the top level of a
-		// single-file config.
+		if sub.OpenBao != nil {
+			slog.Warn("openbao block in per-repo config is ignored; set it in global.yaml", "file", match)
+		}
 		for name, repo := range sub.Repos {
 			if _, exists := cfg.Repos[name]; exists {
 				return nil, fmt.Errorf("duplicate repo name %q across config files", name)
@@ -688,8 +688,8 @@ func validateKVPath(repoName, path string) error {
 		if seg == "" {
 			return fmt.Errorf("repo %s: ssh_key_path %q must not contain empty segments", repoName, path)
 		}
-		if seg == ".." {
-			return fmt.Errorf("repo %s: ssh_key_path %q must not contain '..' segments", repoName, path)
+		if seg == "." || seg == ".." {
+			return fmt.Errorf("repo %s: ssh_key_path %q must not contain '.' or '..' segments", repoName, path)
 		}
 	}
 	return nil

@@ -23,8 +23,10 @@ import (
 )
 
 const (
-	testFieldName = "private_key"
-	testCachedPEM = "cached-pem"
+	testFieldName      = "private_key"
+	testPEMValue       = "pem"
+	testReasonUnavail  = "unavailable"
+	testReasonRejected = "rejected"
 )
 
 // newTestServer starts an httptest.Server that simulates the OpenBao API.
@@ -65,23 +67,30 @@ func kvResponse(data map[string]any) []byte {
 	return b
 }
 
-func loginResponse(token string) []byte {
+func loginResponseWithLease(token string, leaseDuration int) []byte {
 	body := map[string]any{
 		"auth": map[string]any{
-			"client_token": token,
+			"client_token":   token,
+			"lease_duration": leaseDuration,
 		},
 	}
 	b, _ := json.Marshal(body)
 	return b
 }
 
+func loginResponse(token string) []byte {
+	return loginResponseWithLease(token, 0)
+}
+
 func TestStore_LoginSendsRoleAndTrimmedJWT(t *testing.T) {
 	tokenFile := writeTokenFile(t, "  my-jwt-token  \n")
 	var gotRole, gotJWT string
+	var gotHeaders http.Header
 
 	ts := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case strings.HasPrefix(r.URL.Path, "/v1/auth/kubernetes/login"):
+			gotHeaders = r.Header.Clone()
 			body, _ := io.ReadAll(r.Body)
 			var req map[string]string
 			_ = json.Unmarshal(body, &req)
@@ -96,6 +105,12 @@ func TestStore_LoginSendsRoleAndTrimmedJWT(t *testing.T) {
 			w.WriteHeader(http.StatusNotFound)
 		}
 	})
+
+	// Set BAO_* env vars that should be ignored because api.NewConfig uses
+	// DisableEnvironment:true internally.
+	t.Setenv("BAO_TOKEN", "env-should-be-ignored")
+	t.Setenv("BAO_NAMESPACE", "env-ns-should-be-ignored")
+	t.Setenv("BAO_ADDR", "http://env-addr-should-be-ignored:9999")
 
 	cfg := &OpenBaoConfig{
 		Addr:                    ts.URL,
@@ -119,11 +134,17 @@ func TestStore_LoginSendsRoleAndTrimmedJWT(t *testing.T) {
 	if gotJWT != "my-jwt-token" {
 		t.Errorf("jwt = %q, want %q (trimmed)", gotJWT, "my-jwt-token")
 	}
+	// BAO_TOKEN / BAO_NAMESPACE env must not leak into login request headers.
+	if v := gotHeaders.Get("X-Vault-Token"); v != "" {
+		t.Errorf("X-Vault-Token header = %q, want empty (env must not leak)", v)
+	}
+	if v := gotHeaders.Get("X-Vault-Namespace"); v != "" {
+		t.Errorf("X-Vault-Namespace header = %q, want empty (env must not leak)", v)
+	}
 }
 
 func TestStore_TokenFileReReadPerLogin(t *testing.T) {
 	tokenFile := writeTokenFile(t, "jwt-first")
-	var loginCount atomic.Int32
 	var lastJWT atomic.Value
 
 	ts := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
@@ -133,25 +154,11 @@ func TestStore_TokenFileReReadPerLogin(t *testing.T) {
 			var req map[string]string
 			_ = json.Unmarshal(body, &req)
 			lastJWT.Store(req["jwt"])
-			n := loginCount.Add(1)
-			if n == 1 {
-				// First login succeeds.
-				w.WriteHeader(http.StatusOK)
-				writeBody(w, loginResponse("tok1"))
-			} else {
-				// Second login also succeeds.
-				w.WriteHeader(http.StatusOK)
-				writeBody(w, loginResponse("tok2"))
-			}
+			w.WriteHeader(http.StatusOK)
+			writeBody(w, loginResponse("tok"))
 		case strings.HasPrefix(r.URL.Path, "/v1/kv/data/"):
-			// First call returns 403 to trigger re-login; second succeeds.
-			if loginCount.Load() < 2 {
-				w.WriteHeader(http.StatusForbidden)
-				writeBody(w, []byte(`{"errors":["permission denied"]}`))
-			} else {
-				w.WriteHeader(http.StatusOK)
-				writeBody(w, kvResponse(map[string]any{testFieldName: "ok"}))
-			}
+			w.WriteHeader(http.StatusOK)
+			writeBody(w, kvResponse(map[string]any{testFieldName: "ok"}))
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -165,15 +172,30 @@ func TestStore_TokenFileReReadPerLogin(t *testing.T) {
 		Field:                   testFieldName,
 	}
 
-	// Rewrite the token file before the read that will trigger re-login.
+	store := NewStore()
+
+	// First read: login reads jwt-first from disk.
+	data, err := store.Read(context.Background(), "repo", cfg, "path")
+	if err != nil {
+		t.Fatalf("first Read: %v", err)
+	}
+	if string(data) != "ok" {
+		t.Errorf("got %q, want %q", data, "ok")
+	}
+	if v := lastJWT.Load(); v != "jwt-first" {
+		t.Errorf("first JWT = %q, want %q", v, "jwt-first")
+	}
+
+	// Rewrite the token file, then InvalidateAll to clear the client so the
+	// next Read creates a fresh client that re-reads the file.
 	if err := os.WriteFile(tokenFile, []byte("jwt-second"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	store.InvalidateAll()
 
-	store := NewStore()
-	data, err := store.Read(context.Background(), "repo", cfg, "path")
+	data, err = store.Read(context.Background(), "repo", cfg, "path")
 	if err != nil {
-		t.Fatalf("Read: %v", err)
+		t.Fatalf("second Read: %v", err)
 	}
 	if string(data) != "ok" {
 		t.Errorf("got %q, want %q", data, "ok")
@@ -185,12 +207,16 @@ func TestStore_TokenFileReReadPerLogin(t *testing.T) {
 
 func TestStore_ReadReturnsField(t *testing.T) {
 	tokenFile := writeTokenFile(t, "jwt")
+	var kvHits atomic.Int32
+	var loginHits atomic.Int32
 	ts := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case strings.HasPrefix(r.URL.Path, "/v1/auth/kubernetes/login"):
+			loginHits.Add(1)
 			w.WriteHeader(http.StatusOK)
 			writeBody(w, loginResponse("tok"))
 		case strings.HasPrefix(r.URL.Path, "/v1/kv/data/"):
+			kvHits.Add(1)
 			w.WriteHeader(http.StatusOK)
 			writeBody(w, kvResponse(map[string]any{testFieldName: "-----BEGIN OPENSSH PRIVATE KEY-----\ndata\n-----END OPENSSH PRIVATE KEY-----\n"}))
 		}
@@ -211,6 +237,21 @@ func TestStore_ReadReturnsField(t *testing.T) {
 	}
 	if !strings.HasPrefix(string(data), "-----BEGIN OPENSSH PRIVATE KEY-----") {
 		t.Errorf("expected PEM prefix, got %q", data)
+	}
+
+	// Second read must return cached value without hitting OpenBao.
+	data2, err := store.Read(context.Background(), "repo", cfg, "path")
+	if err != nil {
+		t.Fatalf("second Read: %v", err)
+	}
+	if string(data2) != string(data) {
+		t.Errorf("second read returned different value: %q vs %q", data2, data)
+	}
+	if got := kvHits.Load(); got != 1 {
+		t.Errorf("kv hits = %d, want 1 (second read should be cached)", got)
+	}
+	if got := loginHits.Load(); got != 1 {
+		t.Errorf("login hits = %d, want 1", got)
 	}
 }
 
@@ -245,46 +286,7 @@ func TestStore_MissingField_ErrInvalidSecret(t *testing.T) {
 	}
 }
 
-func TestStore_403ThenReloginThen200(t *testing.T) {
-	tokenFile := writeTokenFile(t, "jwt")
-	var kvCalls atomic.Int32
-
-	ts := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case strings.HasPrefix(r.URL.Path, "/v1/auth/kubernetes/login"):
-			w.WriteHeader(http.StatusOK)
-			writeBody(w, loginResponse("fresh-token"))
-		case strings.HasPrefix(r.URL.Path, "/v1/kv/data/"):
-			n := kvCalls.Add(1)
-			if n == 1 {
-				w.WriteHeader(http.StatusForbidden)
-				writeBody(w, []byte(`{"errors":["permission denied"]}`))
-			} else {
-				w.WriteHeader(http.StatusOK)
-				writeBody(w, kvResponse(map[string]any{testFieldName: "ok"}))
-			}
-		}
-	})
-
-	cfg := &OpenBaoConfig{
-		Addr:                    ts.URL,
-		Role:                    "r",
-		ServiceAccountTokenPath: tokenFile,
-		KVMount:                 "kv",
-		Field:                   testFieldName,
-	}
-
-	store := NewStore()
-	data, err := store.Read(context.Background(), "repo", cfg, "path")
-	if err != nil {
-		t.Fatalf("Read: %v", err)
-	}
-	if string(data) != "ok" {
-		t.Errorf("got %q, want %q", data, "ok")
-	}
-}
-
-func TestStore_403Twice_ErrForbidden(t *testing.T) {
+func TestStore_403FreshToken_ErrForbidden(t *testing.T) {
 	tokenFile := writeTokenFile(t, "jwt")
 	var loginCalls atomic.Int32
 
@@ -313,12 +315,107 @@ func TestStore_403Twice_ErrForbidden(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected ErrForbidden")
 	}
+	if !errors.Is(err, ErrForbidden) {
+		t.Errorf("expected ErrForbidden, got %v", err)
+	}
 	if !strings.Contains(err.Error(), "denied") {
 		t.Errorf("expected 'denied' in error, got %q", err)
 	}
-	// Login should be called at most 2 times (initial + re-login).
-	if n := loginCalls.Load(); n > 2 {
-		t.Errorf("login called %d times, want at most 2", n)
+	// Fresh token: should only login once (no 403 re-login attempt for fresh tokens).
+	if n := loginCalls.Load(); n != 1 {
+		t.Errorf("login called %d times, want exactly 1 (fresh token should not re-login)", n)
+	}
+}
+
+type reloginRetryRow struct {
+	name        string
+	retryStatus int // HTTP status for 3rd KV call (after 403 + re-login)
+	wantErr     error
+}
+
+func runReloginRetryRow(t *testing.T, tt reloginRetryRow) {
+	t.Helper()
+	tokenFile := writeTokenFile(t, "jwt")
+	var kvCalls atomic.Int32
+	var loginCalls atomic.Int32
+
+	ts := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/v1/auth/kubernetes/login"):
+			loginCalls.Add(1)
+			w.WriteHeader(http.StatusOK)
+			writeBody(w, loginResponse("fresh-token"))
+		case strings.HasPrefix(r.URL.Path, "/v1/kv/data/"):
+			n := kvCalls.Add(1)
+			switch n {
+			case 1:
+				w.WriteHeader(http.StatusOK)
+				writeBody(w, kvResponse(map[string]any{testFieldName: "initial"}))
+			case 2:
+				w.WriteHeader(http.StatusForbidden)
+				writeBody(w, []byte(`{"errors":["permission denied"]}`))
+			default:
+				w.WriteHeader(tt.retryStatus)
+				if tt.retryStatus == http.StatusOK {
+					writeBody(w, kvResponse(map[string]any{testFieldName: "ok"}))
+				} else {
+					writeBody(w, []byte(`{"errors":["permission denied"]}`))
+				}
+			}
+		}
+	})
+
+	cfg := &OpenBaoConfig{
+		Addr:                    ts.URL,
+		Role:                    "r",
+		ServiceAccountTokenPath: tokenFile,
+		KVMount:                 "kv",
+		Field:                   testFieldName,
+	}
+
+	fakeNow := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	store := NewStore()
+	store.now = func() time.Time { return fakeNow }
+
+	// First read populates cache.
+	if _, err := store.Read(context.Background(), "repo", cfg, "path"); err != nil {
+		t.Fatalf("initial read: %v", err)
+	}
+
+	// Advance time past reloginCooldown so the 403 triggers re-login.
+	fakeNow = fakeNow.Add(2 * time.Minute)
+
+	// Invalidate so next read hits OpenBao (which will 403 then retry).
+	store.Invalidate(cfg, "path")
+
+	data, err := store.Read(context.Background(), "repo", cfg, "path")
+	if tt.wantErr != nil {
+		if !errors.Is(err, tt.wantErr) {
+			t.Errorf("expected %v, got %v", tt.wantErr, err)
+		}
+	} else {
+		if err != nil {
+			t.Fatalf("Read: %v", err)
+		}
+		if string(data) != "ok" {
+			t.Errorf("got %q, want %q", data, "ok")
+		}
+	}
+	if n := loginCalls.Load(); n != 2 {
+		t.Errorf("login called %d times, want 2", n)
+	}
+}
+
+func TestStore_403ThenReloginThen200(t *testing.T) {
+	tests := []reloginRetryRow{
+		{"retry succeeds", http.StatusOK, nil},
+		{"retry also 403", http.StatusForbidden, ErrForbidden},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runReloginRetryRow(t, tt)
+		})
 	}
 }
 
@@ -366,23 +463,9 @@ func TestStore_NotFound(t *testing.T) {
 			}
 
 			store := NewStore()
-
-			// Seed the cache so we can verify eviction.
-			store.mu.Lock()
-			store.cache[cacheKey{cfg: *cfg, path: "path"}] = []byte("stale-key")
-			store.mu.Unlock()
-
 			_, err := store.Read(context.Background(), "repo", cfg, "path")
 			if err == nil {
 				t.Fatal("expected ErrNotFound")
-			}
-
-			// Cache must be evicted on NotFound.
-			store.mu.Lock()
-			_, cached := store.cache[cacheKey{cfg: *cfg, path: "path"}]
-			store.mu.Unlock()
-			if cached {
-				t.Error("expected cache to be evicted after NotFound")
 			}
 		})
 	}
@@ -390,16 +473,27 @@ func TestStore_NotFound(t *testing.T) {
 
 func TestStore_5xx_ErrUnavailable(t *testing.T) {
 	tokenFile := writeTokenFile(t, "jwt")
-	for _, code := range []int{500, 503} {
-		t.Run(fmt.Sprintf("status_%d", code), func(t *testing.T) {
+	tests := []struct {
+		code       int
+		wantErr    error
+		wantReason string
+	}{
+		{500, ErrUnavailable, testReasonUnavail},
+		{503, ErrUnavailable, testReasonUnavail},
+		{429, ErrUnavailable, testReasonUnavail},
+		{400, ErrRejected, testReasonRejected},
+		{405, ErrRejected, testReasonRejected},
+	}
+	for _, tt := range tests {
+		t.Run(fmt.Sprintf("status_%d", tt.code), func(t *testing.T) {
 			ts := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 				switch {
 				case strings.HasPrefix(r.URL.Path, "/v1/auth/kubernetes/login"):
 					w.WriteHeader(http.StatusOK)
 					writeBody(w, loginResponse("tok"))
 				case strings.HasPrefix(r.URL.Path, "/v1/kv/data/"):
-					w.WriteHeader(code)
-					writeBody(w, []byte(`{"errors":["internal"]}`))
+					w.WriteHeader(tt.code)
+					writeBody(w, []byte(`{"errors":["error"]}`))
 				}
 			})
 
@@ -411,12 +505,97 @@ func TestStore_5xx_ErrUnavailable(t *testing.T) {
 				Field:                   testFieldName,
 			}
 
+			before := testutil.ToFloat64(telemetry.SecretFetchFailuresTotal.WithLabelValues("status-repo-"+fmt.Sprint(tt.code), tt.wantReason))
+
 			store := NewStore()
-			_, err := store.Read(context.Background(), "repo", cfg, "path")
+			_, err := store.Read(context.Background(), "status-repo-"+fmt.Sprint(tt.code), cfg, "path")
 			if err == nil {
 				t.Fatal("expected error")
 			}
+			if !errors.Is(err, tt.wantErr) {
+				t.Errorf("expected %v, got %v", tt.wantErr, err)
+			}
+
+			after := testutil.ToFloat64(telemetry.SecretFetchFailuresTotal.WithLabelValues("status-repo-"+fmt.Sprint(tt.code), tt.wantReason))
+			if after != before+1 {
+				t.Errorf("metric delta: got %v, want 1", after-before)
+			}
 		})
+	}
+
+}
+
+func TestStore_503ThenSuccess_FailureNotCached(t *testing.T) {
+	tokenFile := writeTokenFile(t, "jwt")
+	var kvCalls atomic.Int32
+	ts := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/v1/auth/kubernetes/login"):
+			w.WriteHeader(http.StatusOK)
+			writeBody(w, loginResponse("tok"))
+		case strings.HasPrefix(r.URL.Path, "/v1/kv/data/"):
+			n := kvCalls.Add(1)
+			if n == 1 {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				writeBody(w, []byte(`{"errors":["unavailable"]}`))
+			} else {
+				w.WriteHeader(http.StatusOK)
+				writeBody(w, kvResponse(map[string]any{testFieldName: "ok"}))
+			}
+		}
+	})
+
+	cfg := &OpenBaoConfig{
+		Addr:                    ts.URL,
+		Role:                    "r",
+		ServiceAccountTokenPath: tokenFile,
+		KVMount:                 "kv",
+		Field:                   testFieldName,
+	}
+
+	store := NewStore()
+	_, err := store.Read(context.Background(), "retry-repo", cfg, "path")
+	if err == nil {
+		t.Fatal("first read: expected error")
+	}
+
+	// Second read should succeed (failure was not cached).
+	data, err := store.Read(context.Background(), "retry-repo", cfg, "path")
+	if err != nil {
+		t.Fatalf("second read: %v", err)
+	}
+	if string(data) != "ok" {
+		t.Errorf("got %q, want %q", data, "ok")
+	}
+}
+
+func TestStore_Login404_ErrRejected(t *testing.T) {
+	tokenFile := writeTokenFile(t, "jwt")
+	ts := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/v1/auth/kubernetes/login"):
+			w.WriteHeader(http.StatusNotFound)
+			writeBody(w, []byte(`{"errors":["not found"]}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+
+	cfg := &OpenBaoConfig{
+		Addr:                    ts.URL,
+		Role:                    "r",
+		ServiceAccountTokenPath: tokenFile,
+		KVMount:                 "kv",
+		Field:                   testFieldName,
+	}
+
+	store := NewStore()
+	_, err := store.Read(context.Background(), "login-404-repo", cfg, "path")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !errors.Is(err, ErrRejected) {
+		t.Errorf("expected ErrRejected, got %v", err)
 	}
 }
 
@@ -472,114 +651,117 @@ func TestStore_Timeout_ErrUnavailable(t *testing.T) {
 	}
 }
 
-func newFallbackServer(t *testing.T, responses []int) *httptest.Server {
-	t.Helper()
-	var callIdx atomic.Int32
+func TestStore_Invalidate(t *testing.T) {
+	tokenFile := writeTokenFile(t, "jwt")
+
+	tests := []struct {
+		name          string
+		action        string // "invalidate_path", "invalidate_other", "invalidate_all"
+		wantKVHits    int32
+		wantLogins    int32
+		wantClientLen int // only checked for invalidate_all
+	}{
+		{
+			name:       "invalidate path refetches",
+			action:     "invalidate_path",
+			wantKVHits: 2,
+			wantLogins: 1,
+		},
+		{
+			name:       "invalidate other path does not evict",
+			action:     "invalidate_other",
+			wantKVHits: 1,
+			wantLogins: 1,
+		},
+		{
+			name:          "invalidate all refetches and re-logins",
+			action:        "invalidate_all",
+			wantKVHits:    2,
+			wantLogins:    2,
+			wantClientLen: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var kvHits, loginHits atomic.Int32
+			ts := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case strings.HasPrefix(r.URL.Path, "/v1/auth/kubernetes/login"):
+					loginHits.Add(1)
+					w.WriteHeader(http.StatusOK)
+					writeBody(w, loginResponse(fmt.Sprintf("tok-%d", loginHits.Load())))
+				case strings.HasPrefix(r.URL.Path, "/v1/kv/data/"):
+					kvHits.Add(1)
+					w.WriteHeader(http.StatusOK)
+					writeBody(w, kvResponse(map[string]any{testFieldName: testPEMValue}))
+				}
+			})
+
+			cfg := &OpenBaoConfig{
+				Addr:                    ts.URL,
+				Role:                    "r",
+				ServiceAccountTokenPath: tokenFile,
+				KVMount:                 "kv",
+				Field:                   testFieldName,
+			}
+
+			store := NewStore()
+
+			// First read to populate cache.
+			if _, err := store.Read(context.Background(), "repo", cfg, "path/a"); err != nil {
+				t.Fatalf("initial read: %v", err)
+			}
+
+			switch tt.action {
+			case "invalidate_path":
+				store.Invalidate(cfg, "path/a")
+			case "invalidate_other":
+				store.Invalidate(cfg, "path/b")
+			case "invalidate_all":
+				store.InvalidateAll()
+				// Verify clients map is empty right after call.
+				store.mu.Lock()
+				clientLen := len(store.clients)
+				store.mu.Unlock()
+				if clientLen != tt.wantClientLen {
+					t.Errorf("clients len = %d, want %d", clientLen, tt.wantClientLen)
+				}
+			}
+
+			// Second read.
+			if _, err := store.Read(context.Background(), "repo", cfg, "path/a"); err != nil {
+				t.Fatalf("second read: %v", err)
+			}
+
+			if got := kvHits.Load(); got != tt.wantKVHits {
+				t.Errorf("kv hits = %d, want %d", got, tt.wantKVHits)
+			}
+			if got := loginHits.Load(); got != tt.wantLogins {
+				t.Errorf("login hits = %d, want %d", got, tt.wantLogins)
+			}
+		})
+	}
+
+}
+
+func TestStore_InvalidateAll_InFlightRace(t *testing.T) {
+	tokenFile := writeTokenFile(t, "jwt")
+	var kvHits atomic.Int32
+	gate := make(chan struct{})
+
 	ts := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case strings.HasPrefix(r.URL.Path, "/v1/auth/kubernetes/login"):
 			w.WriteHeader(http.StatusOK)
 			writeBody(w, loginResponse("tok"))
 		case strings.HasPrefix(r.URL.Path, "/v1/kv/data/"):
-			idx := int(callIdx.Add(1)) - 1
-			if idx >= len(responses) {
-				idx = len(responses) - 1
+			n := kvHits.Add(1)
+			if n == 1 {
+				<-gate // block first request
 			}
-			code := responses[idx]
-			if code == 200 {
-				w.WriteHeader(http.StatusOK)
-				writeBody(w, kvResponse(map[string]any{testFieldName: testCachedPEM}))
-			} else {
-				w.WriteHeader(code)
-				writeBody(w, []byte(`{"errors":["error"]}`))
-			}
-		}
-	})
-	return ts
-}
-
-func TestStore_FallbackCache_SuccessThenUnavailableReturnsCached(t *testing.T) {
-	tokenFile := writeTokenFile(t, "jwt")
-	ts := newFallbackServer(t, []int{200, 503})
-	cfg := &OpenBaoConfig{
-		Addr: ts.URL, Role: "r", ServiceAccountTokenPath: tokenFile,
-		KVMount: "kv", Field: testFieldName,
-	}
-
-	store := NewStore()
-	before := testutil.ToFloat64(telemetry.SecretCachedKeyUsedTotal.WithLabelValues("fb-repo"))
-
-	data, err := store.Read(context.Background(), "fb-repo", cfg, "path")
-	if err != nil {
-		t.Fatalf("first read: %v", err)
-	}
-	if string(data) != testCachedPEM {
-		t.Errorf("first read: got %q, want %q", data, testCachedPEM)
-	}
-
-	data, err = store.Read(context.Background(), "fb-repo", cfg, "path")
-	if err != nil {
-		t.Fatalf("second read: %v", err)
-	}
-	if string(data) != testCachedPEM {
-		t.Errorf("second read: got %q, want %q", data, testCachedPEM)
-	}
-
-	after := testutil.ToFloat64(telemetry.SecretCachedKeyUsedTotal.WithLabelValues("fb-repo"))
-	if after <= before {
-		t.Error("expected SecretCachedKeyUsedTotal to increment")
-	}
-}
-
-func TestStore_FallbackCache_UnavailableNoCacheReturnsError(t *testing.T) {
-	tokenFile := writeTokenFile(t, "jwt")
-	ts := newFallbackServer(t, []int{503})
-	cfg := &OpenBaoConfig{
-		Addr: ts.URL, Role: "r", ServiceAccountTokenPath: tokenFile,
-		KVMount: "kv", Field: testFieldName,
-	}
-
-	store := NewStore()
-	_, err := store.Read(context.Background(), "repo", cfg, "path")
-	if err == nil {
-		t.Fatal("expected error when unavailable with no cache")
-	}
-}
-
-func TestStore_FallbackCache_SuccessThen404EvictsCache(t *testing.T) {
-	tokenFile := writeTokenFile(t, "jwt")
-	ts := newFallbackServer(t, []int{200, 404})
-	cfg := &OpenBaoConfig{
-		Addr: ts.URL, Role: "r", ServiceAccountTokenPath: tokenFile,
-		KVMount: "kv", Field: testFieldName,
-	}
-
-	store := NewStore()
-
-	data, err := store.Read(context.Background(), "repo", cfg, "path")
-	if err != nil {
-		t.Fatalf("first read: %v", err)
-	}
-	if string(data) != testCachedPEM {
-		t.Errorf("first read: got %q, want %q", data, testCachedPEM)
-	}
-
-	_, err = store.Read(context.Background(), "repo", cfg, "path")
-	if err == nil {
-		t.Fatal("expected error after 404 eviction")
-	}
-}
-
-func TestStore_CancelledContext_NoFallback(t *testing.T) {
-	tokenFile := writeTokenFile(t, "jwt")
-	ts := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case strings.HasPrefix(r.URL.Path, "/v1/auth/kubernetes/login"):
 			w.WriteHeader(http.StatusOK)
-			writeBody(w, loginResponse("tok"))
-		case strings.HasPrefix(r.URL.Path, "/v1/kv/data/"):
-			w.WriteHeader(http.StatusOK)
-			writeBody(w, kvResponse(map[string]any{testFieldName: "pem"}))
+			writeBody(w, kvResponse(map[string]any{testFieldName: testPEMValue}))
 		}
 	})
 
@@ -592,16 +774,68 @@ func TestStore_CancelledContext_NoFallback(t *testing.T) {
 	}
 
 	store := NewStore()
-	// Populate cache.
-	_, err := store.Read(context.Background(), "repo", cfg, "path")
-	if err != nil {
-		t.Fatalf("initial read: %v", err)
+
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		_, _ = store.Read(context.Background(), "repo", cfg, "path/x")
+	})
+
+	// Wait for the blocked request to be in-flight.
+	deadline := time.After(5 * time.Second)
+	for kvHits.Load() < 1 {
+		select {
+		case <-deadline:
+			t.Fatal("timed out waiting for in-flight request")
+		default:
+			time.Sleep(time.Millisecond)
+		}
 	}
+
+	// Invalidate while in-flight.
+	store.InvalidateAll()
+
+	// Release the blocked request.
+	close(gate)
+	wg.Wait()
+
+	// The in-flight read should have succeeded but not populated the cache
+	// (gen mismatch), so next read refetches.
+	if _, err := store.Read(context.Background(), "repo", cfg, "path/x"); err != nil {
+		t.Fatalf("post-invalidate read: %v", err)
+	}
+
+	if got := kvHits.Load(); got != 2 {
+		t.Errorf("kv hits = %d, want 2 (in-flight + refetch)", got)
+	}
+}
+
+func TestStore_CancelledContext(t *testing.T) {
+	tokenFile := writeTokenFile(t, "jwt")
+	ts := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/v1/auth/kubernetes/login"):
+			w.WriteHeader(http.StatusOK)
+			writeBody(w, loginResponse("tok"))
+		case strings.HasPrefix(r.URL.Path, "/v1/kv/data/"):
+			w.WriteHeader(http.StatusOK)
+			writeBody(w, kvResponse(map[string]any{testFieldName: testPEMValue}))
+		}
+	})
+
+	cfg := &OpenBaoConfig{
+		Addr:                    ts.URL,
+		Role:                    "r",
+		ServiceAccountTokenPath: tokenFile,
+		KVMount:                 "kv",
+		Field:                   testFieldName,
+	}
+
+	store := NewStore()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel immediately
 
-	_, err = store.Read(ctx, "repo", cfg, "path")
+	_, err := store.Read(ctx, "repo", cfg, "path")
 	if err == nil {
 		t.Fatal("expected error for cancelled context")
 	}
@@ -622,7 +856,7 @@ func TestStore_ConcurrentFirstReads_OneLogin(t *testing.T) {
 			writeBody(w, loginResponse("tok"))
 		case strings.HasPrefix(r.URL.Path, "/v1/kv/data/"):
 			w.WriteHeader(http.StatusOK)
-			writeBody(w, kvResponse(map[string]any{testFieldName: "pem"}))
+			writeBody(w, kvResponse(map[string]any{testFieldName: testPEMValue}))
 		}
 	})
 
@@ -746,5 +980,127 @@ func TestStore_FetchFailuresMetric(t *testing.T) {
 	after := testutil.ToFloat64(telemetry.SecretFetchFailuresTotal.WithLabelValues("metric-repo", "not_found"))
 	if after != before+1 {
 		t.Errorf("SecretFetchFailuresTotal: got %v, want %v", after, before+1)
+	}
+}
+
+type proactiveReloginRow struct {
+	name              string
+	leaseSeconds      int
+	advanceDuration   time.Duration
+	secondLoginStatus int
+	wantLogins        int32
+	wantErr           bool
+}
+
+func runProactiveReloginRow(t *testing.T, tokenFile string, tt proactiveReloginRow) {
+	t.Helper()
+	var loginHits atomic.Int32
+	var lastTokenSeen atomic.Value
+
+	ts := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/v1/auth/kubernetes/login"):
+			n := loginHits.Add(1)
+			if n > 1 && tt.secondLoginStatus != 0 {
+				w.WriteHeader(tt.secondLoginStatus)
+				writeBody(w, []byte(`{"errors":["unavailable"]}`))
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+			writeBody(w, loginResponseWithLease(fmt.Sprintf("tok-%d", n), tt.leaseSeconds))
+		case strings.HasPrefix(r.URL.Path, "/v1/kv/data/"):
+			lastTokenSeen.Store(r.Header.Get("X-Vault-Token"))
+			w.WriteHeader(http.StatusOK)
+			writeBody(w, kvResponse(map[string]any{testFieldName: testPEMValue}))
+		}
+	})
+
+	cfg := &OpenBaoConfig{
+		Addr:                    ts.URL,
+		Role:                    "r",
+		ServiceAccountTokenPath: tokenFile,
+		KVMount:                 "kv",
+		Field:                   testFieldName,
+	}
+
+	fakeNow := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	store := NewStore()
+	store.now = func() time.Time { return fakeNow }
+
+	// First read.
+	if _, err := store.Read(context.Background(), "repo", cfg, "path/pr"); err != nil {
+		t.Fatalf("first read: %v", err)
+	}
+
+	// Advance time and invalidate to force a new OpenBao call.
+	fakeNow = fakeNow.Add(tt.advanceDuration)
+	store.Invalidate(cfg, "path/pr")
+
+	// Second read.
+	_, err := store.Read(context.Background(), "repo", cfg, "path/pr")
+	if tt.wantErr {
+		if err == nil {
+			t.Fatal("expected error")
+		}
+	} else if err != nil {
+		t.Fatalf("second read: %v", err)
+	}
+
+	if got := loginHits.Load(); got != tt.wantLogins {
+		t.Errorf("logins = %d, want %d", got, tt.wantLogins)
+	}
+
+	// For the 90/61s success case, verify the new token was used.
+	if tt.name == "90s lease, 61s advance, proactive renewal" {
+		if v := lastTokenSeen.Load(); v != "tok-2" {
+			t.Errorf("second kv request carried token %q, want %q", v, "tok-2")
+		}
+	}
+}
+
+func TestStore_ProactiveRelogin(t *testing.T) {
+	tokenFile := writeTokenFile(t, "jwt")
+
+	tests := []proactiveReloginRow{
+		{
+			name:            "90s lease, 59s advance, no renewal",
+			leaseSeconds:    90,
+			advanceDuration: 59 * time.Second,
+			wantLogins:      1,
+		},
+		{
+			name:            "90s lease, 61s advance, proactive renewal",
+			leaseSeconds:    90,
+			advanceDuration: 61 * time.Second,
+			wantLogins:      2,
+		},
+		{
+			name:            "0 lease, 24h advance, no renewal (non-expiring)",
+			leaseSeconds:    0,
+			advanceDuration: 24 * time.Hour,
+			wantLogins:      1,
+		},
+		{
+			name:              "90s lease, 61s advance, renewal fails 503, old token still works",
+			leaseSeconds:      90,
+			advanceDuration:   61 * time.Second,
+			secondLoginStatus: 503,
+			wantLogins:        2,
+			wantErr:           false,
+		},
+		{
+			name:              "90s lease, 91s advance, renewal fails 503, expired token",
+			leaseSeconds:      90,
+			advanceDuration:   91 * time.Second,
+			secondLoginStatus: 503,
+			wantLogins:        2,
+			wantErr:           true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runProactiveReloginRow(t, tokenFile, tt)
+		})
 	}
 }

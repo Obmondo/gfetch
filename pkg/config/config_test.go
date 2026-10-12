@@ -2,6 +2,7 @@ package config
 
 import (
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -998,6 +999,8 @@ func TestValidate_OpenBaoBadKVPath_PerRepoFailure(t *testing.T) {
 	}{
 		{"leading slash", "/ssh-keys/acme"},
 		{"double dot", "ssh-keys/../acme"},
+		{"single dot segment", "a/./b"},
+		{"just dot", "."},
 		{"empty segment", "ssh-keys//acme"},
 		{"bad charset", "ssh-keys/acme@host"},
 		{"data prefix", "data/ssh-keys/acme"},
@@ -1193,8 +1196,9 @@ func TestLoadDir_PerRepoOpenBaoIgnored(t *testing.T) {
 	if err := os.MkdirAll(repoDir, 0755); err != nil {
 		t.Fatal(err)
 	}
+	configPath := filepath.Join(repoDir, "config.yaml")
 	// Per-repo config has an openbao block, which should be ignored.
-	if err := os.WriteFile(filepath.Join(repoDir, "config.yaml"), []byte(`openbao:
+	if err := os.WriteFile(configPath, []byte(`openbao:
   enabled: true
   addr: http://openbao:8200
   role: gfetch
@@ -1218,6 +1222,13 @@ repos:
 	}
 	t.Cleanup(func() { _ = os.Remove("/tmp/key") })
 
+	// Capture slog output to verify the warning.
+	var buf strings.Builder
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	old := slog.Default()
+	slog.SetDefault(logger)
+	t.Cleanup(func() { slog.SetDefault(old) })
+
 	cfg, err := Load(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -1226,6 +1237,11 @@ repos:
 	// no global.yaml.
 	if cfg.OpenBao != nil {
 		t.Fatal("per-repo openbao should be ignored")
+	}
+
+	logged := buf.String()
+	if !strings.Contains(logged, configPath) {
+		t.Errorf("expected warning to mention per-repo config path %q, got: %s", configPath, logged)
 	}
 
 	if err := cfg.Validate(); err != nil {

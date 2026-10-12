@@ -17,24 +17,30 @@ import (
 const (
 	kubernetesAuthMount = "kubernetes"
 	requestTimeout      = 10 * time.Second
+	reloginCooldown     = time.Minute
+	renewFractionDenom  = 3
 )
 
 // client wraps an openbao API client for a single OpenBaoConfig. It handles
-// lazy kubernetes-auth login and one automatic re-login on 403.
+// lazy kubernetes-auth login, proactive renewal at 2/3 lease, and one
+// automatic re-login on 403 (rate-limited to reloginCooldown).
 type client struct {
 	api       *api.Client
 	kv        *api.KVv2
 	role      string
 	tokenPath string
 
-	mu    sync.Mutex
-	token string
+	mu         sync.Mutex
+	token      string
+	loggedInAt time.Time
+	lease      time.Duration
+	now        func() time.Time
 }
 
-func newClient(cfg *OpenBaoConfig) (*client, error) {
-	apiCfg := api.DefaultConfig()
+func newClient(cfg *OpenBaoConfig, now func() time.Time) (*client, error) {
+	apiCfg := api.NewConfig()
 	if apiCfg.Error != nil {
-		return nil, fmt.Errorf("secrets: openbao default config: %w", apiCfg.Error)
+		return nil, fmt.Errorf("secrets: openbao config: %w", apiCfg.Error)
 	}
 	apiCfg.Address = cfg.Addr
 	apiCfg.MaxRetries = 0
@@ -44,13 +50,13 @@ func newClient(cfg *OpenBaoConfig) (*client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("secrets: creating openbao client: %w", err)
 	}
-	ac.ClearToken()
 
 	return &client{
 		api:       ac,
 		kv:        ac.KVv2(cfg.KVMount),
 		role:      cfg.Role,
 		tokenPath: cfg.ServiceAccountTokenPath,
+		now:       now,
 	}, nil
 }
 
@@ -83,17 +89,48 @@ func (c *client) readField(ctx context.Context, path, field string) ([]byte, err
 	return []byte(s), nil
 }
 
-// do ensures a valid token exists, runs fn, and retries once after a re-login
-// on 403. The mutex prevents multiple goroutines from logging in concurrently.
-func (c *client) do(ctx context.Context, path string, fn func() error) error {
-	c.mu.Lock()
+// renewDue reports whether the token should be renewed. Must be called with
+// c.mu held.
+func (c *client) renewDue() bool {
+	return c.lease > 0 && !c.now().Before(c.loggedInAt.Add(c.lease*2/renewFractionDenom))
+}
+
+// expired reports whether the token's lease has fully elapsed. Must be called
+// with c.mu held.
+func (c *client) expired() bool {
+	return c.lease > 0 && !c.now().Before(c.loggedInAt.Add(c.lease))
+}
+
+// ensureToken acquires or renews the token. Must be called with c.mu held.
+func (c *client) ensureToken(ctx context.Context) error {
 	if c.token == "" {
-		if err := c.login(ctx); err != nil {
-			c.mu.Unlock()
+		return c.login(ctx)
+	}
+	if !c.renewDue() {
+		return nil
+	}
+	if err := c.login(ctx); err != nil {
+		if c.expired() {
 			return err
 		}
+		slog.Warn("openbao token renewal failed, using current token", "error", err)
+	}
+	return nil
+}
+
+// do ensures a valid token exists, runs fn, and retries once after a re-login
+// on 403. Proactive renewal at 2/3 lease prevents most 403s. A 403 on a
+// token younger than reloginCooldown is treated as a policy denial and
+// returns ErrForbidden without attempting re-login. The mutex prevents
+// multiple goroutines from logging in concurrently.
+func (c *client) do(ctx context.Context, path string, fn func() error) error {
+	c.mu.Lock()
+	if err := c.ensureToken(ctx); err != nil {
+		c.mu.Unlock()
+		return err
 	}
 	usedToken := c.token
+	tokenAge := c.now().Sub(c.loggedInAt)
 	c.mu.Unlock()
 
 	err := fn()
@@ -108,6 +145,11 @@ func (c *client) do(ctx context.Context, path string, fn func() error) error {
 	// 403: re-login once, skip if another goroutine already refreshed.
 	c.mu.Lock()
 	if c.token == usedToken {
+		if tokenAge < reloginCooldown {
+			// Fresh token denied: this is a policy denial, not an expired token.
+			c.mu.Unlock()
+			return fmt.Errorf("%w: denied with fresh token for path %q", ErrForbidden, path)
+		}
 		if loginErr := c.login(ctx); loginErr != nil {
 			c.mu.Unlock()
 			return loginErr
@@ -118,8 +160,7 @@ func (c *client) do(ctx context.Context, path string, fn func() error) error {
 	err = fn()
 	if err != nil {
 		if is403(err) {
-			slog.Error("openbao access denied after re-login", "path", path)
-			return ErrForbidden
+			return fmt.Errorf("%w: denied after re-login for path %q", ErrForbidden, path)
 		}
 		return mapError(ctx, err)
 	}
@@ -131,8 +172,7 @@ func (c *client) do(ctx context.Context, path string, fn func() error) error {
 func (c *client) login(ctx context.Context) error {
 	jwt, err := os.ReadFile(c.tokenPath)
 	if err != nil {
-		slog.Error("failed to read service account token file", "path", c.tokenPath, "error", err)
-		return ErrForbidden
+		return fmt.Errorf("%w: reading service account token: %w", ErrForbidden, err)
 	}
 
 	secret, err := c.api.Logical().WriteWithContext(ctx,
@@ -146,13 +186,20 @@ func (c *client) login(ctx context.Context) error {
 	}
 
 	if secret == nil || secret.Auth == nil {
-		slog.Error("openbao login returned no auth data")
-		return ErrForbidden
+		return fmt.Errorf("%w: login returned no auth data", ErrForbidden)
 	}
 
 	c.token = secret.Auth.ClientToken
 	c.api.SetToken(c.token)
+	c.loggedInAt = c.now()
+	c.lease = time.Duration(secret.Auth.LeaseDuration) * time.Second
 	return nil
+}
+
+// transient reports whether an HTTP status code indicates a transient error
+// that should be retried.
+func transient(code int) bool {
+	return code >= 500 || code == http.StatusTooManyRequests
 }
 
 // mapError translates openbao errors into package sentinels.
@@ -166,37 +213,36 @@ func mapError(ctx context.Context, err error) error {
 	}
 
 	if respErr, ok := errors.AsType[*api.ResponseError](err); ok {
-		switch respErr.StatusCode {
-		case http.StatusNotFound:
+		switch {
+		case respErr.StatusCode == http.StatusNotFound:
 			return ErrNotFound
-		case http.StatusForbidden:
-			slog.Error("openbao access denied", "error", err)
-			return ErrForbidden
+		case respErr.StatusCode == http.StatusForbidden:
+			return fmt.Errorf("%w (status %d): %w", ErrForbidden, respErr.StatusCode, err)
+		case transient(respErr.StatusCode):
+			return fmt.Errorf("%w (status %d): %w", ErrUnavailable, respErr.StatusCode, err)
 		default:
-			slog.Error("openbao request error", "error", err, "status", respErr.StatusCode)
-			return ErrUnavailable
+			return fmt.Errorf("%w (status %d): %w", ErrRejected, respErr.StatusCode, err)
 		}
 	}
 
-	slog.Error("openbao connection error", "error", err)
-	return ErrUnavailable
+	return fmt.Errorf("%w: %w", ErrUnavailable, err)
 }
 
 // mapLoginError translates errors from the kubernetes auth login request.
 func mapLoginError(err error) error {
 	if respErr, ok := errors.AsType[*api.ResponseError](err); ok {
 		if respErr.StatusCode == http.StatusBadRequest || respErr.StatusCode == http.StatusForbidden {
-			slog.Error("openbao login rejected", "error", err)
-			return ErrForbidden
+			return fmt.Errorf("%w (login status %d): %w", ErrForbidden, respErr.StatusCode, err)
 		}
-		slog.Error("openbao login server error", "error", err)
-		return ErrUnavailable
+		if transient(respErr.StatusCode) {
+			return fmt.Errorf("%w (login status %d): %w", ErrUnavailable, respErr.StatusCode, err)
+		}
+		return fmt.Errorf("%w (login status %d): %w", ErrRejected, respErr.StatusCode, err)
 	}
-	slog.Error("openbao login connection error", "error", err)
-	return ErrUnavailable
+	return fmt.Errorf("%w: %w", ErrUnavailable, err)
 }
 
 func is403(err error) bool {
-	var respErr *api.ResponseError
-	return errors.As(err, &respErr) && respErr.StatusCode == http.StatusForbidden
+	respErr, ok := errors.AsType[*api.ResponseError](err)
+	return ok && respErr.StatusCode == http.StatusForbidden
 }

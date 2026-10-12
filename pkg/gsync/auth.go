@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 
@@ -12,6 +13,7 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/obmondo/gfetch/pkg/config"
+	"github.com/obmondo/gfetch/pkg/telemetry"
 )
 
 // defaultSSHPort is used when transport.NewEndpoint reports Port == 0 (i.e.
@@ -136,6 +138,33 @@ func sshHostPort(repoURL string) (string, error) {
 		port = defaultSSHPort
 	}
 	return ep.Host + ":" + strconv.Itoa(port), nil
+}
+
+// isSSHAuthErr reports whether err is an SSH authentication failure. The
+// x/crypto ssh package wraps the failure as a plain fmt.Errorf string, so
+// substring matching is the only reliable detection.
+func isSSHAuthErr(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "ssh: unable to authenticate")
+}
+
+// refreshAuthAfterSSHFailure checks whether err is an SSH auth failure for a
+// repo using an OpenBao key. If so it evicts the cached key, refetches it, and
+// returns a new auth method for a single retry. Returns (nil, false) when no
+// retry should be attempted.
+func (s *Syncer) refreshAuthAfterSSHFailure(ctx context.Context, repo *config.RepoConfig, err error) (transport.AuthMethod, bool) {
+	if !isSSHAuthErr(err) || repo.OpenBao == nil {
+		return nil, false
+	}
+
+	s.secrets.Invalidate(repo.OpenBao, repo.SSHKeyPath)
+	telemetry.SecretAuthRefetchTotal.WithLabelValues(repo.Name).Inc()
+	slog.Warn("ssh auth failed with openbao key, refetching key", "repo", repo.Name)
+
+	newAuth, rerr := s.resolveAuth(ctx, repo)
+	if rerr != nil {
+		return nil, false
+	}
+	return newAuth, true
 }
 
 // mergeAlgorithms returns hostAlgos concatenated with fallback, deduplicated,

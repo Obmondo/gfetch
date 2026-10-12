@@ -114,9 +114,9 @@ var (
 		Help: "Total number of secret fetch failures per repo and reason.",
 	}, []string{labelRepo, labelReason})
 
-	SecretCachedKeyUsedTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name: "gfetch_secret_cached_key_used_total",
-		Help: "Total number of times a cached secret key was used due to backend unavailability.",
+	SecretAuthRefetchTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "gfetch_secret_auth_refetch_total",
+		Help: "Total number of times a cached secret key was evicted and refetched after an SSH authentication failure.",
 	}, []string{labelRepo})
 )
 
@@ -143,6 +143,6 @@ func init() {
 		LocalActiveRefsCount,
 		CacheSyncRetriesTotal,
 		SecretFetchFailuresTotal,
-		SecretCachedKeyUsedTotal,
+		SecretAuthRefetchTotal,
 	)
 }
