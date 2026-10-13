@@ -198,10 +198,11 @@ func (s *Scheduler) applyInitial(cfg *config.Config) error {
 	return nil
 }
 
-// Reload cancels every running job, swaps in newCfg, and re-schedules every
-// repo with a delayed first-fire (one full poll_interval out). The delay is
-// deliberate: SIGHUP / POST /reload can flip many repos' configs at once
-// (e.g. a defaults edit cascading to every tenant), and firing them all
+// Reload cancels every running job, swaps in newCfg, invalidates the secret
+// cache so rotated keys are picked up on the next sync, and re-schedules
+// every repo with a delayed first-fire (one full poll_interval out). The
+// delay is deliberate: SIGHUP / POST /reload can flip many repos' configs at
+// once (e.g. a defaults edit cascading to every tenant), and firing them all
 // immediately would stampede the upstream git host.
 //
 // In-flight syncs are NOT interrupted. Cancelling a gocron job does not kill
@@ -227,6 +228,9 @@ func (s *Scheduler) Reload(newCfg *config.Config) (ReloadResult, error) {
 	// Swap the live config so any concurrent fire/handler sees the new view.
 	// In-flight syncs already hold their *RepoConfig and finish against it.
 	s.cfg.Store(newCfg)
+
+	// Clear the secret cache so rotated keys are picked up on the next sync.
+	s.syncer.InvalidateSecrets()
 
 	names := make([]string, 0, len(newCfg.Repos))
 	for name, repo := range newCfg.Repos {
