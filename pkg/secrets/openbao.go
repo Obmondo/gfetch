@@ -202,6 +202,20 @@ func transient(code int) bool {
 	return code >= 500 || code == http.StatusTooManyRequests
 }
 
+// statusError maps an HTTP status code to the appropriate package sentinel,
+// wrapping both the sentinel and the original error. prefix distinguishes
+// read-path errors ("status") from login-path errors ("login status").
+func statusError(code int, prefix string, err error) error {
+	switch {
+	case code == http.StatusForbidden:
+		return fmt.Errorf("%w (%s %d): %w", ErrForbidden, prefix, code, err)
+	case transient(code):
+		return fmt.Errorf("%w (%s %d): %w", ErrUnavailable, prefix, code, err)
+	default:
+		return fmt.Errorf("%w (%s %d): %w", ErrRejected, prefix, code, err)
+	}
+}
+
 // mapError translates openbao errors into package sentinels.
 func mapError(ctx context.Context, err error) error {
 	if ctx.Err() != nil {
@@ -213,16 +227,10 @@ func mapError(ctx context.Context, err error) error {
 	}
 
 	if respErr, ok := errors.AsType[*api.ResponseError](err); ok {
-		switch {
-		case respErr.StatusCode == http.StatusNotFound:
+		if respErr.StatusCode == http.StatusNotFound {
 			return ErrNotFound
-		case respErr.StatusCode == http.StatusForbidden:
-			return fmt.Errorf("%w (status %d): %w", ErrForbidden, respErr.StatusCode, err)
-		case transient(respErr.StatusCode):
-			return fmt.Errorf("%w (status %d): %w", ErrUnavailable, respErr.StatusCode, err)
-		default:
-			return fmt.Errorf("%w (status %d): %w", ErrRejected, respErr.StatusCode, err)
 		}
+		return statusError(respErr.StatusCode, "status", err)
 	}
 
 	return fmt.Errorf("%w: %w", ErrUnavailable, err)
@@ -231,13 +239,10 @@ func mapError(ctx context.Context, err error) error {
 // mapLoginError translates errors from the kubernetes auth login request.
 func mapLoginError(err error) error {
 	if respErr, ok := errors.AsType[*api.ResponseError](err); ok {
-		if respErr.StatusCode == http.StatusBadRequest || respErr.StatusCode == http.StatusForbidden {
+		if respErr.StatusCode == http.StatusBadRequest {
 			return fmt.Errorf("%w (login status %d): %w", ErrForbidden, respErr.StatusCode, err)
 		}
-		if transient(respErr.StatusCode) {
-			return fmt.Errorf("%w (login status %d): %w", ErrUnavailable, respErr.StatusCode, err)
-		}
-		return fmt.Errorf("%w (login status %d): %w", ErrRejected, respErr.StatusCode, err)
+		return statusError(respErr.StatusCode, "login status", err)
 	}
 	return fmt.Errorf("%w: %w", ErrUnavailable, err)
 }

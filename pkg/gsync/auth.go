@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"os"
 	"strconv"
 	"strings"
 
@@ -88,15 +89,11 @@ func (s *Syncer) resolveAuth(ctx context.Context, repo *config.RepoConfig) (tran
 // default order with the algorithms we have entries for at hostPort promoted
 // to the front (see preferredHostKeyAlgorithms and mergeAlgorithms).
 func sshAuth(hostPort, keyPath, extraKnownHosts string) (*gitssh.PublicKeys, error) {
-	auth, err := gitssh.NewPublicKeysFromFile("git", keyPath, "")
+	pem, err := os.ReadFile(keyPath)
 	if err != nil {
 		return nil, fmt.Errorf("loading SSH key %s: %w", keyPath, err)
 	}
-
-	if err := applyKnownHostsAuth(auth, hostPort, extraKnownHosts); err != nil {
-		return nil, err
-	}
-	return auth, nil
+	return sshAuthFromPEM(hostPort, pem, extraKnownHosts)
 }
 
 // sshAuthFromPEM creates an SSH public key auth method from in-memory PEM
@@ -107,21 +104,13 @@ func sshAuthFromPEM(hostPort string, pemBytes []byte, extraKnownHosts string) (*
 		return nil, fmt.Errorf("parsing SSH key from secret: %w", err)
 	}
 
-	if err := applyKnownHostsAuth(auth, hostPort, extraKnownHosts); err != nil {
-		return nil, err
-	}
-	return auth, nil
-}
-
-// applyKnownHostsAuth sets the host-key callback and algorithm list on auth.
-func applyKnownHostsAuth(auth *gitssh.PublicKeys, hostPort, extraKnownHosts string) error {
 	callback, hostAlgos, err := buildKnownHostsAuth(extraKnownHosts, hostPort)
 	if err != nil {
-		return fmt.Errorf("building known_hosts auth: %w", err)
+		return nil, fmt.Errorf("building known_hosts auth: %w", err)
 	}
 	auth.HostKeyCallback = callback
 	auth.HostKeyAlgorithms = mergeAlgorithms(hostAlgos, preferredHostKeyAlgorithms)
-	return nil
+	return auth, nil
 }
 
 // sshHostPort returns the "host:port" string for the SSH connection implied
