@@ -77,7 +77,7 @@ func (s *Syncer) resolveAuth(ctx context.Context, repo *config.RepoConfig) (tran
 		if readErr != nil {
 			return nil, fmt.Errorf("fetching SSH key for %s: %w", repo.Name, readErr)
 		}
-		return sshAuthFromPEM(hostPort, pemBytes, repo.SSHKnownHosts)
+		return sshAuthFromPEM(hostPort, "secret "+repo.SSHKeyPath, pemBytes, repo.SSHKnownHosts)
 	}
 
 	return sshAuth(hostPort, repo.SSHKeyPath, repo.SSHKnownHosts)
@@ -93,15 +93,17 @@ func sshAuth(hostPort, keyPath, extraKnownHosts string) (*gitssh.PublicKeys, err
 	if err != nil {
 		return nil, fmt.Errorf("loading SSH key %s: %w", keyPath, err)
 	}
-	return sshAuthFromPEM(hostPort, pem, extraKnownHosts)
+	return sshAuthFromPEM(hostPort, "file "+keyPath, pem, extraKnownHosts)
 }
 
 // sshAuthFromPEM creates an SSH public key auth method from in-memory PEM
 // bytes. The PEM is parsed but never logged or included in error messages.
-func sshAuthFromPEM(hostPort string, pemBytes []byte, extraKnownHosts string) (*gitssh.PublicKeys, error) {
+// source is a human label identifying where the PEM came from (e.g. "file
+// /path/to/key" or "secret ssh-keys/cust/kubeaid"); it is never key material.
+func sshAuthFromPEM(hostPort string, source string, pemBytes []byte, extraKnownHosts string) (*gitssh.PublicKeys, error) {
 	auth, err := gitssh.NewPublicKeys("git", pemBytes, "")
 	if err != nil {
-		return nil, fmt.Errorf("parsing SSH key from secret: %w", err)
+		return nil, fmt.Errorf("parsing SSH key from %s: %w", source, err)
 	}
 
 	callback, hostAlgos, err := buildKnownHostsAuth(extraKnownHosts, hostPort)

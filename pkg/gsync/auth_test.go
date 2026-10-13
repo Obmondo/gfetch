@@ -308,7 +308,7 @@ func TestSSHAuthFromPEM_SameAlgorithmsAsFilePath(t *testing.T) {
 		t.Fatalf("sshAuth: %v", err)
 	}
 
-	pemAuth, err := sshAuthFromPEM(hostPort, pemBytes, "")
+	pemAuth, err := sshAuthFromPEM(hostPort, "test key", pemBytes, "")
 	if err != nil {
 		t.Fatalf("sshAuthFromPEM: %v", err)
 	}
@@ -320,15 +320,37 @@ func TestSSHAuthFromPEM_SameAlgorithmsAsFilePath(t *testing.T) {
 }
 
 // TestSSHAuthFromPEM_InvalidPEM_NoKeyInError verifies that a parse error for
-// invalid PEM does not leak key bytes.
+// invalid PEM does not leak key bytes, and that the error names the source.
 func TestSSHAuthFromPEM_InvalidPEM_NoKeyInError(t *testing.T) {
 	badPEM := []byte("not-a-real-key-SUPERSECRET")
-	_, err := sshAuthFromPEM("host:22", badPEM, "")
+
+	// PEM path: source label must appear, key bytes must not.
+	_, err := sshAuthFromPEM("host:22", "secret ssh-keys/acme/kubeaid", badPEM, "")
 	if err == nil {
 		t.Fatal("expected error for invalid PEM")
 	}
 	if strings.Contains(err.Error(), "SUPERSECRET") {
 		t.Errorf("error message contains key bytes: %v", err)
+	}
+	if !strings.Contains(err.Error(), "secret ssh-keys/acme/kubeaid") {
+		t.Errorf("error message does not contain the source label: %v", err)
+	}
+
+	// File path: write the same garbage to a temp file and go through sshAuth.
+	tmpDir := t.TempDir()
+	badKeyFile := filepath.Join(tmpDir, "bad_key")
+	if werr := os.WriteFile(badKeyFile, badPEM, 0o600); werr != nil {
+		t.Fatalf("write temp key file: %v", werr)
+	}
+	_, err = sshAuth("host:22", badKeyFile, "")
+	if err == nil {
+		t.Fatal("expected error for invalid PEM via sshAuth")
+	}
+	if strings.Contains(err.Error(), "SUPERSECRET") {
+		t.Errorf("sshAuth error message contains key bytes: %v", err)
+	}
+	if !strings.Contains(err.Error(), badKeyFile) {
+		t.Errorf("sshAuth error message does not contain the file path: %v", err)
 	}
 }
 
