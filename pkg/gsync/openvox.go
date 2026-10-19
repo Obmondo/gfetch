@@ -324,7 +324,7 @@ func (s *Syncer) syncRepoOpenVox(ctx context.Context, repo *config.RepoConfig, o
 	cachePath := filepath.Join(repo.LocalPath, metaDir, "cache.git")
 	resolverPath := filepath.Join(repo.LocalPath, metaDir)
 	resolverRepo, refs, err := loadResolverRepoAndRefs(ctx, repo.Name, resolverPath, cachePath, repo.URL, auth)
-	newAuth, rerr := s.refreshAuthAfterSSHFailure(ctx, repo, err)
+	newAuth, rerr := s.refreshAuthAfterSSHFailure(ctx, log, repo, auth, err)
 	if rerr != nil {
 		result.Err = rerr
 		return result

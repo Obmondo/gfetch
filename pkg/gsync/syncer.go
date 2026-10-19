@@ -174,7 +174,7 @@ func (s *Syncer) SyncRepo(ctx context.Context, repo *config.RepoConfig, opts Syn
 		return result
 	}
 
-	result, emptyRepo := s.runStandardSync(ctx, repo, auth, opts)
+	result, emptyRepo := s.runStandardSync(ctx, log, repo, auth, opts)
 	if isObjectNotFoundErr(result.Err) {
 		result, emptyRepo = s.repairIncompleteObjectStore(ctx, repo, auth, opts, log, result)
 	}
@@ -230,7 +230,7 @@ func (s *Syncer) repairIncompleteObjectStore(ctx context.Context, repo *config.R
 		return failed, false
 	}
 
-	return s.runStandardSync(ctx, repo, auth, opts)
+	return s.runStandardSync(ctx, log, repo, auth, opts)
 }
 
 // runStandardSync performs the clone/list/branch/tag/checkout flow for a single
@@ -238,7 +238,7 @@ func (s *Syncer) repairIncompleteObjectStore(ctx context.Context, repo *config.R
 // no commits yet), which the caller records as a benign no-op success. It is
 // safe to call twice (the caller wipes the local path and retries once on an
 // incomplete local object store).
-func (s *Syncer) runStandardSync(ctx context.Context, repo *config.RepoConfig, auth transport.AuthMethod, opts SyncOptions) (Result, bool) {
+func (s *Syncer) runStandardSync(ctx context.Context, log *slog.Logger, repo *config.RepoConfig, auth transport.AuthMethod, opts SyncOptions) (Result, bool) {
 	result := Result{RepoName: repo.Name}
 
 	r, err := ensureCloned(ctx, repo, auth)
@@ -249,7 +249,7 @@ func (s *Syncer) runStandardSync(ctx context.Context, repo *config.RepoConfig, a
 	}
 
 	refs, err := listRemoteRefs(ctx, r, auth, repo.Name, "standard")
-	newAuth, rerr := s.refreshAuthAfterSSHFailure(ctx, repo, err)
+	newAuth, rerr := s.refreshAuthAfterSSHFailure(ctx, log, repo, auth, err)
 	if rerr != nil {
 		result.Err = rerr
 		return result, false

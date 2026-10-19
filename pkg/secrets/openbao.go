@@ -35,9 +35,10 @@ type client struct {
 	loggedInAt time.Time
 	lease      time.Duration
 	now        func() time.Time
+	logger     *slog.Logger
 }
 
-func newClient(cfg *OpenBaoConfig, now func() time.Time) (*client, error) {
+func newClient(cfg *OpenBaoConfig, now func() time.Time, logger *slog.Logger) (*client, error) {
 	apiCfg := api.NewConfig()
 	if apiCfg.Error != nil {
 		return nil, fmt.Errorf("secrets: openbao config: %w", apiCfg.Error)
@@ -57,6 +58,7 @@ func newClient(cfg *OpenBaoConfig, now func() time.Time) (*client, error) {
 		role:      cfg.Role,
 		tokenPath: cfg.ServiceAccountTokenPath,
 		now:       now,
+		logger:    logger,
 	}, nil
 }
 
@@ -113,7 +115,7 @@ func (c *client) ensureToken(ctx context.Context) error {
 		if c.expired() {
 			return err
 		}
-		slog.Warn("openbao token renewal failed, using current token", "error", err)
+		c.logger.Warn("openbao token renewal failed, using current token", "error", err)
 	}
 	return nil
 }

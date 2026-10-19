@@ -265,11 +265,14 @@ func generateEd25519PEM(t *testing.T) []byte {
 
 // fakeSecretReader is an inline test fake for the secretReader interface.
 // With errAfter == 0 every read returns (data, err); with errAfter > 0 the
-// first errAfter reads return data and later reads return err.
+// first errAfter reads return data and later reads return err. When rotated
+// is set, the first read returns data and later reads return rotated (a key
+// rotated in OpenBao); rotated is ignored when errAfter > 0.
 type fakeSecretReader struct {
 	data     []byte
 	err      error
 	errAfter int
+	rotated  []byte
 
 	mu          sync.Mutex
 	reads       int
@@ -286,6 +289,9 @@ func (f *fakeSecretReader) Read(_ context.Context, _ string, _ *secrets.OpenBaoC
 			return nil, f.err
 		}
 		return f.data, nil
+	}
+	if f.rotated != nil && reads > 1 {
+		return f.rotated, nil
 	}
 	return f.data, f.err
 }
@@ -520,13 +526,15 @@ func sshRepoConfig(t *testing.T, name, addr, knownHosts string) *config.RepoConf
 }
 
 // TestSyncRepo_SSHAuthFailureRefetchesKeyOnce verifies that when SSH auth
-// fails with an OpenBao key, the key is invalidated, refetched, and one retry
-// is attempted. With a file-based key, no invalidation happens.
+// fails with an OpenBao key, the key is invalidated and refetched, and one
+// retry is attempted only when the refetched key differs. With a file-based
+// key, no invalidation happens.
 func TestSyncRepo_SSHAuthFailureRefetchesKeyOnce(t *testing.T) {
 	sshAddr, hostPub, sshConns := startRejectingSSHServer(t)
 	knownHosts := knownhosts.Line([]string{sshAddr}, hostPub)
 	keyPath := writeTempEd25519Key(t)
 	pemBytes := generateEd25519PEM(t)
+	rotatedPEM := generateEd25519PEM(t)
 
 	testOBCfg := &secrets.OpenBaoConfig{
 		Addr:                    testOpenBaoAddr,
@@ -542,6 +550,7 @@ func TestSyncRepo_SSHAuthFailureRefetchesKeyOnce(t *testing.T) {
 		openBao         *secrets.OpenBaoConfig
 		readerErr       error
 		errAfter        int
+		rotated         []byte
 		wantReads       int
 		wantInvalidated int
 		wantConns       int32
@@ -549,8 +558,28 @@ func TestSyncRepo_SSHAuthFailureRefetchesKeyOnce(t *testing.T) {
 		wantCode        FailureCode
 	}{
 		{
-			name:            "openbao standard",
+			name:            "openbao unchanged key no retry",
 			openBao:         testOBCfg,
+			wantReads:       2,
+			wantInvalidated: 1,
+			wantConns:       1,
+			wantRefetch:     1,
+			wantCode:        CodeGitAuthFailed,
+		},
+		{
+			name:            "openbao openvox unchanged key no retry",
+			openvox:         true,
+			openBao:         testOBCfg,
+			wantReads:       2,
+			wantInvalidated: 1,
+			wantConns:       1,
+			wantRefetch:     1,
+			wantCode:        CodeGitAuthFailed,
+		},
+		{
+			name:            "openbao rotated key retries",
+			openBao:         testOBCfg,
+			rotated:         rotatedPEM,
 			wantReads:       2,
 			wantInvalidated: 1,
 			wantConns:       2,
@@ -558,9 +587,10 @@ func TestSyncRepo_SSHAuthFailureRefetchesKeyOnce(t *testing.T) {
 			wantCode:        CodeGitAuthFailed,
 		},
 		{
-			name:            "openbao openvox",
+			name:            "openbao openvox rotated key retries",
 			openvox:         true,
 			openBao:         testOBCfg,
+			rotated:         rotatedPEM,
 			wantReads:       2,
 			wantInvalidated: 1,
 			wantConns:       2,
@@ -604,7 +634,7 @@ func TestSyncRepo_SSHAuthFailureRefetchesKeyOnce(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			sshConns.Store(0)
 
-			reader := &fakeSecretReader{data: pemBytes, err: tt.readerErr, errAfter: tt.errAfter}
+			reader := &fakeSecretReader{data: pemBytes, err: tt.readerErr, errAfter: tt.errAfter, rotated: tt.rotated}
 			s := New(WithSecretReader(reader))
 
 			repo := sshRepoConfig(t, "ssh-fail-"+tt.name, sshAddr, knownHosts)

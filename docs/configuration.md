@@ -253,7 +253,7 @@ openbao:
 
 The `openbao` block is allowed at the top level of a single-file config and in `global.yaml` in directory mode. An `openbao` block in a per-repo `*/config.yaml` is ignored.
 
-When `enabled: true`, per-repo `ssh_key_path` values are interpreted as KV secret paths instead of filesystem paths. The key is cached in memory per path after first fetch; on a successful config reload (SIGHUP or POST /reload) only the key paths of repos the reload added, removed or re-keyed are evicted, and the OpenBao client and token survive unless the openbao block changes. Deleting a key removes its repo config, and the next verify re-adds it, so a regenerated key at the same path is refetched. An SSH auth failure with an OpenBao key evicts the cached key, refetches it, and retries the network operation once (self-heals a missed reload). There is no stale-key fallback: if OpenBao is down on a cache miss, the sync fails. The key is never written to disk.
+When `enabled: true`, per-repo `ssh_key_path` values are interpreted as KV secret paths instead of filesystem paths. The key is cached in memory per path after first fetch; on a successful config reload (SIGHUP or POST /reload) only the key paths of repos the reload added, removed or re-keyed are evicted, and the OpenBao client and token survive unless the openbao block changes. Deleting a key removes its repo config, and the next verify re-adds it, so a regenerated key at the same path is refetched. An SSH auth failure with an OpenBao key evicts the cached key, refetches it, and retries the network operation once if the refetched key differs (self-heals a missed reload). There is no stale-key fallback: if OpenBao is down on a cache miss, the sync fails. The key is never written to disk.
 
 Token management: proactive re-login at 2/3 of the token lease duration, with a 403 backstop re-login rate-limited to one per minute. Recommend setting a short `token_ttl` on the Kubernetes auth role.
 
@@ -281,7 +281,7 @@ These shape failures are per-repo (the failing repo is dropped via `PartialValid
 
 Use an SSH-style URL (e.g. `git@github.com:user/repo.git`) and provide `ssh_key_path`. When the `openbao` block is enabled, `ssh_key_path` is the KV secret path; otherwise it is the filesystem path to a private key file. The username is always `git`. Passphrase-protected keys are not supported.
 
-The SSH key is fetched from OpenBao on first use and cached in memory per path. A config reload evicts only the keys of repos it added, removed or re-keyed. An SSH auth failure with an OpenBao key evicts the cached key, refetches it, and retries once. The key is never written to disk.
+The SSH key is fetched from OpenBao on first use and cached in memory per path. A config reload evicts only the keys of repos it added, removed or re-keyed. An SSH auth failure with an OpenBao key evicts the cached key, refetches it, and retries once if the refetched key differs. The key is never written to disk.
 
 Host key verification is always enabled using built-in keys. To add extra host keys (e.g. for a self-hosted Git server), use `ssh_known_hosts`:
 

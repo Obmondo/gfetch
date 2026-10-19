@@ -154,28 +154,48 @@ func isSSHAuthErr(err error) bool {
 
 // refreshAuthAfterSSHFailure checks whether err is an SSH auth failure for a
 // repo using an OpenBao key. If so it evicts the cached key, refetches it, and
-// returns a new auth method for a single retry. Returns (nil, nil) when no
-// retry should be attempted (not an SSH auth error, or not an OpenBao key),
-// and (nil, error joining the ssh failure and the refetch failure) when the
-// refetch itself fails; that failure is also logged and counted as a clone
-// failure.
-func (s *Syncer) refreshAuthAfterSSHFailure(ctx context.Context, repo *config.RepoConfig, err error) (transport.AuthMethod, error) {
+// returns a new auth method for a single retry when the refetched key differs
+// from auth. Returns (nil, nil) when no retry should be attempted (not an SSH
+// auth error, not an OpenBao key, or the refetched key is unchanged, so the
+// caller keeps the original auth error), and (nil, error joining the ssh
+// failure and the refetch failure) when the refetch itself fails; that
+// failure is also logged and counted as a clone failure.
+func (s *Syncer) refreshAuthAfterSSHFailure(ctx context.Context, log *slog.Logger, repo *config.RepoConfig, auth transport.AuthMethod, err error) (transport.AuthMethod, error) {
 	if !isSSHAuthErr(err) || repo.OpenBao == nil {
 		return nil, nil
 	}
 
 	s.secrets.Invalidate(repo.SSHKeyPath)
 	telemetry.SecretAuthRefetchTotal.WithLabelValues(repo.Name).Inc()
-	slog.Warn("ssh auth failed with openbao key, refetching key", "repo", repo.Name)
+	log.Warn("ssh auth failed with openbao key, refetching key")
 
 	newAuth, rerr := s.resolveAuth(ctx, repo)
 	if rerr != nil {
 		joined := errors.Join(err, rerr)
-		slog.Error("failed to refetch ssh key after auth failure", "repo", repo.Name, "error", joined)
+		log.Error("failed to refetch ssh key after auth failure", "error", joined)
 		telemetry.SyncFailuresTotal.WithLabelValues(repo.Name, "clone").Inc()
 		return nil, joined
 	}
+	if sameKey(auth, newAuth) {
+		log.Warn("ssh auth failed and the refetched openbao key is unchanged, not retrying")
+		return nil, nil
+	}
 	return newAuth, nil
+}
+
+// sameKey reports whether a and b are SSH public key auths for the same key.
+// It returns false when either is not a *gitssh.PublicKeys or has no signer,
+// which keeps the retry.
+func sameKey(a, b transport.AuthMethod) bool {
+	pa, ok := a.(*gitssh.PublicKeys)
+	if !ok || pa == nil || pa.Signer == nil {
+		return false
+	}
+	pb, ok := b.(*gitssh.PublicKeys)
+	if !ok || pb == nil || pb.Signer == nil {
+		return false
+	}
+	return ssh.FingerprintSHA256(pa.Signer.PublicKey()) == ssh.FingerprintSHA256(pb.Signer.PublicKey())
 }
 
 // mergeAlgorithms returns hostAlgos concatenated with fallback, deduplicated,

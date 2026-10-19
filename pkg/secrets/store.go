@@ -42,13 +42,15 @@ type Store struct {
 	cache     map[string][]byte
 	gen       uint64
 	now       func() time.Time
+	logger    *slog.Logger
 }
 
 // NewStore creates a new Store.
 func NewStore() *Store {
 	return &Store{
-		cache: make(map[string][]byte),
-		now:   time.Now,
+		cache:  make(map[string][]byte),
+		now:    time.Now,
+		logger: slog.Default(),
 	}
 }
 
@@ -81,7 +83,7 @@ func (s *Store) Read(ctx context.Context, repoName string, obCfg *OpenBaoConfig,
 		}
 		label := reason(err)
 		telemetry.SecretFetchFailuresTotal.WithLabelValues(repoName, label).Inc()
-		slog.Warn("secret fetch failed", "repo", repoName, "path", secretPath, "reason", label, "error", err)
+		s.logger.Warn("secret fetch failed", "repo", repoName, "path", secretPath, "reason", label, "error", err)
 		return nil, err
 	}
 
@@ -112,7 +114,7 @@ func (s *Store) clientForLocked(cfg *OpenBaoConfig) (*client, error) {
 		return s.client, nil
 	}
 
-	c, err := newClient(cfg, s.now)
+	c, err := newClient(cfg, s.now, s.logger)
 	if err != nil {
 		return nil, err
 	}
