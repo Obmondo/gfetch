@@ -2,7 +2,10 @@ package telemetry
 
 import "github.com/prometheus/client_golang/prometheus"
 
-const labelRepo = "repo"
+const (
+	labelRepo   = "repo"
+	labelReason = "reason"
+)
 
 var (
 	SyncFailuresTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
@@ -74,7 +77,7 @@ var (
 	ConfigReloadFailuresTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "gfetch_config_reload_failures_total",
 		Help: "Total number of config reload failures, by reason (load, validate, apply).",
-	}, []string{"reason"})
+	}, []string{labelReason})
 
 	ConfigRepoValidateFailuresTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "gfetch_config_repo_validate_failures_total",
@@ -105,6 +108,16 @@ var (
 		Name: "gfetch_cache_sync_retries_total",
 		Help: "Total number of times the central cache sync was retried due to missing remote refs.",
 	}, []string{labelRepo})
+
+	SecretFetchFailuresTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "gfetch_secret_fetch_failures_total",
+		Help: "Total number of secret fetch failures per repo and reason.",
+	}, []string{labelRepo, labelReason})
+
+	SecretAuthRefetchTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "gfetch_secret_auth_refetch_total",
+		Help: "Total number of times a cached secret key was evicted and refetched after an SSH authentication failure.",
+	}, []string{labelRepo})
 )
 
 func init() {
@@ -129,5 +142,7 @@ func init() {
 		RemoteRefsCount,
 		LocalActiveRefsCount,
 		CacheSyncRetriesTotal,
+		SecretFetchFailuresTotal,
+		SecretAuthRefetchTotal,
 	)
 }

@@ -1,7 +1,9 @@
 package daemon
 
 import (
+	"context"
 	"log/slog"
+	"sync"
 	"testing"
 	"time"
 
@@ -9,6 +11,7 @@ import (
 
 	"github.com/obmondo/gfetch/pkg/config"
 	"github.com/obmondo/gfetch/pkg/gsync"
+	"github.com/obmondo/gfetch/pkg/secrets"
 )
 
 func TestNewScheduler(t *testing.T) {
@@ -178,5 +181,65 @@ func assertEqualSlice(t *testing.T, label string, got, want []string) {
 		if !gotSet[w] {
 			t.Errorf("%s: missing %q in got=%v", label, w, got)
 		}
+	}
+}
+
+// fakeSecretReaderForTestSchedulerReload implements the secretReader interface
+// to count InvalidateAll calls from Scheduler.Reload.
+type fakeSecretReaderForTestSchedulerReload struct {
+	mu            sync.Mutex
+	invalidateAll int
+}
+
+func (*fakeSecretReaderForTestSchedulerReload) Read(_ context.Context, _ string, _ *secrets.OpenBaoConfig, _ string) ([]byte, error) {
+	return nil, nil
+}
+
+func (*fakeSecretReaderForTestSchedulerReload) Invalidate(_ *secrets.OpenBaoConfig, _ string) {}
+
+func (f *fakeSecretReaderForTestSchedulerReload) InvalidateAll() {
+	f.mu.Lock()
+	f.invalidateAll++
+	f.mu.Unlock()
+}
+
+func TestSchedulerReload_InvalidatesSecrets(t *testing.T) {
+	reader := &fakeSecretReaderForTestSchedulerReload{}
+	s := gsync.New(gsync.WithSecretReader(reader))
+	sched := NewScheduler(s, ":0", "")
+	cron := newGocronForTest(t)
+	sched.cron = cron
+	t.Cleanup(func() { _ = cron.Shutdown() })
+
+	repoA := testRepo("a", "main")
+	if err := sched.applyInitial(&config.Config{Repos: map[string]config.RepoConfig{"a": repoA}}); err != nil {
+		t.Fatalf("applyInitial: %v", err)
+	}
+
+	// Successful reload should invalidate secrets.
+	repoB := testRepo("b", "main")
+	if _, err := sched.Reload(&config.Config{Repos: map[string]config.RepoConfig{"b": repoB}}); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+
+	reader.mu.Lock()
+	count := reader.invalidateAll
+	reader.mu.Unlock()
+	if count != 1 {
+		t.Errorf("invalidateAll = %d, want 1 after successful Reload", count)
+	}
+
+	// Reload returning shutting-down error should NOT invalidate secrets.
+	sched.state.shuttingDown.Store(true)
+	_, err := sched.Reload(&config.Config{Repos: map[string]config.RepoConfig{"c": testRepo("c", "main")}})
+	if err == nil {
+		t.Fatal("expected error for shutting-down Reload")
+	}
+
+	reader.mu.Lock()
+	count = reader.invalidateAll
+	reader.mu.Unlock()
+	if count != 1 {
+		t.Errorf("invalidateAll = %d, want still 1 after shutting-down Reload", count)
 	}
 }
