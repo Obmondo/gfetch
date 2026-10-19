@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"os"
 	"os/signal"
+	"slices"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -168,7 +170,7 @@ func (s *Scheduler) runReloadOnSignal(ctx context.Context, hupCh <-chan os.Signa
 			return
 		case <-hupCh:
 			slog.Info("received SIGHUP, reloading config")
-			if _, _, err := loadValidateAndReload(s); err != nil {
+			if _, err := loadValidateAndReload(s); err != nil {
 				slog.Warn("SIGHUP reload failed", "error", err)
 			}
 		}
@@ -198,10 +200,11 @@ func (s *Scheduler) applyInitial(cfg *config.Config) error {
 	return nil
 }
 
-// Reload cancels every running job, swaps in newCfg, and re-schedules every
-// repo with a delayed first-fire (one full poll_interval out). The delay is
-// deliberate: SIGHUP / POST /reload can flip many repos' configs at once
-// (e.g. a defaults edit cascading to every tenant), and firing them all
+// Reload cancels every running job, swaps in newCfg, evicts the cached keys of
+// repos it added, removed or re-keyed, and re-schedules
+// every repo with a delayed first-fire (one full poll_interval out). The
+// delay is deliberate: SIGHUP / POST /reload can flip many repos' configs at
+// once (e.g. a defaults edit cascading to every tenant), and firing them all
 // immediately would stampede the upstream git host.
 //
 // In-flight syncs are NOT interrupted. Cancelling a gocron job does not kill
@@ -214,7 +217,7 @@ func (s *Scheduler) Reload(newCfg *config.Config) (ReloadResult, error) {
 	defer s.applyMu.Unlock()
 
 	if s.state.shuttingDown.Load() {
-		return ReloadResult{}, fmt.Errorf("daemon is shutting down")
+		return ReloadResult{}, errDaemonShuttingDown
 	}
 
 	for name, jobID := range s.jobs {
@@ -226,7 +229,13 @@ func (s *Scheduler) Reload(newCfg *config.Config) (ReloadResult, error) {
 
 	// Swap the live config so any concurrent fire/handler sees the new view.
 	// In-flight syncs already hold their *RepoConfig and finish against it.
+	old := s.cfg.Load()
 	s.cfg.Store(newCfg)
+
+	// Evict keys of repos added, removed or re-keyed; unchanged repos keep
+	// their cached key and the OpenBao token survives. A key rotated in place
+	// is caught by the ssh-auth refetch.
+	s.syncer.InvalidateSecrets(changedSecretPaths(old, newCfg))
 
 	names := make([]string, 0, len(newCfg.Repos))
 	for name, repo := range newCfg.Repos {
@@ -292,4 +301,49 @@ func (s *Scheduler) scheduleJob(name string, interval time.Duration, startNow bo
 		return uuid.Nil, err
 	}
 	return job.ID(), nil
+}
+
+// changedSecretPaths returns the OpenBao key paths of repos that newCfg adds,
+// removes, or re-keys (a different ssh_key_path or OpenBao config) relative to
+// oldCfg. Repos without OpenBao are ignored. A nil oldCfg counts as empty.
+func changedSecretPaths(oldCfg, newCfg *config.Config) []string {
+	var oldRepos, newRepos map[string]config.RepoConfig
+	if oldCfg != nil {
+		oldRepos = oldCfg.Repos
+	}
+	if newCfg != nil {
+		newRepos = newCfg.Repos
+	}
+
+	paths := make(map[string]struct{})
+	add := func(r config.RepoConfig) {
+		if r.OpenBao != nil {
+			paths[r.SSHKeyPath] = struct{}{}
+		}
+	}
+	for name, o := range oldRepos {
+		n, ok := newRepos[name]
+		if ok && sameSecretSource(o, n) {
+			continue
+		}
+		add(o)
+		if ok {
+			add(n)
+		}
+	}
+	for name, n := range newRepos {
+		if _, ok := oldRepos[name]; !ok {
+			add(n)
+		}
+	}
+	return slices.Sorted(maps.Keys(paths))
+}
+
+// sameSecretSource reports whether two configs of one repo read the same key:
+// neither uses OpenBao, or both use the same OpenBao config and key path.
+func sameSecretSource(a, b config.RepoConfig) bool {
+	if a.OpenBao == nil || b.OpenBao == nil {
+		return a.OpenBao == nil && b.OpenBao == nil
+	}
+	return a.SSHKeyPath == b.SSHKeyPath && *a.OpenBao == *b.OpenBao
 }

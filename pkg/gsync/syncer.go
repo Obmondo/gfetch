@@ -17,6 +17,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/protocol/packp/capability"
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	"github.com/obmondo/gfetch/pkg/config"
+	"github.com/obmondo/gfetch/pkg/secrets"
 	"github.com/obmondo/gfetch/pkg/telemetry"
 )
 
@@ -46,9 +47,27 @@ type Result struct {
 	Err              error
 }
 
+// secretReader fetches an SSH private key from a secret backend.
+type secretReader interface {
+	Read(ctx context.Context, repoName string, obCfg *secrets.OpenBaoConfig, kvPath string) ([]byte, error)
+	Invalidate(kvPath string)
+}
+
+// Option configures a Syncer.
+type Option func(*Syncer)
+
+// WithSecretReader sets the secret reader used for SSH keys stored in a
+// secret backend. When nil (the default), a new secrets.Store is created.
+func WithSecretReader(r secretReader) Option {
+	return func(s *Syncer) {
+		s.secrets = r
+	}
+}
+
 // Syncer performs git sync operations.
 type Syncer struct {
-	mu sync.Mutex
+	mu      sync.Mutex
+	secrets secretReader
 }
 
 // New creates a new Syncer.
@@ -72,11 +91,26 @@ type Syncer struct {
 // That global is gone in go-git v6, so this will not compile against it.
 // Upgrading is a rewrite rather than a bump - see "Known future work" in
 // AGENTS.md before attempting it.
-func New() *Syncer {
+func New(opts ...Option) *Syncer {
 	transport.UnsupportedCapabilities = []capability.Capability{
 		capability.ThinPack,
 	}
-	return &Syncer{}
+	s := &Syncer{}
+	for _, o := range opts {
+		o(s)
+	}
+	if s.secrets == nil {
+		s.secrets = secrets.NewStore()
+	}
+	return s
+}
+
+// InvalidateSecrets evicts the cached keys at paths. Called by the daemon
+// after a reload with the key paths of changed repos.
+func (s *Syncer) InvalidateSecrets(paths []string) {
+	for _, p := range paths {
+		s.secrets.Invalidate(p)
+	}
 }
 
 // SyncAll syncs all repositories in the config.
@@ -133,14 +167,14 @@ func (s *Syncer) SyncRepo(ctx context.Context, repo *config.RepoConfig, opts Syn
 		return s.syncRepoOpenVox(ctx, repo, opts)
 	}
 
-	auth, err := resolveAuth(repo)
+	auth, err := s.resolveAuth(ctx, repo)
 	if err != nil {
 		telemetry.SyncFailuresTotal.WithLabelValues(repo.Name, "clone").Inc()
 		result.Err = err
 		return result
 	}
 
-	result, emptyRepo := s.runStandardSync(ctx, repo, auth, opts)
+	result, emptyRepo := s.runStandardSync(ctx, log, repo, auth, opts)
 	if isObjectNotFoundErr(result.Err) {
 		result, emptyRepo = s.repairIncompleteObjectStore(ctx, repo, auth, opts, log, result)
 	}
@@ -196,7 +230,7 @@ func (s *Syncer) repairIncompleteObjectStore(ctx context.Context, repo *config.R
 		return failed, false
 	}
 
-	return s.runStandardSync(ctx, repo, auth, opts)
+	return s.runStandardSync(ctx, log, repo, auth, opts)
 }
 
 // runStandardSync performs the clone/list/branch/tag/checkout flow for a single
@@ -204,7 +238,7 @@ func (s *Syncer) repairIncompleteObjectStore(ctx context.Context, repo *config.R
 // no commits yet), which the caller records as a benign no-op success. It is
 // safe to call twice (the caller wipes the local path and retries once on an
 // incomplete local object store).
-func (s *Syncer) runStandardSync(ctx context.Context, repo *config.RepoConfig, auth transport.AuthMethod, opts SyncOptions) (Result, bool) {
+func (s *Syncer) runStandardSync(ctx context.Context, log *slog.Logger, repo *config.RepoConfig, auth transport.AuthMethod, opts SyncOptions) (Result, bool) {
 	result := Result{RepoName: repo.Name}
 
 	r, err := ensureCloned(ctx, repo, auth)
@@ -215,6 +249,15 @@ func (s *Syncer) runStandardSync(ctx context.Context, repo *config.RepoConfig, a
 	}
 
 	refs, err := listRemoteRefs(ctx, r, auth, repo.Name, "standard")
+	newAuth, rerr := s.refreshAuthAfterSSHFailure(ctx, log, repo, auth, err)
+	if rerr != nil {
+		result.Err = rerr
+		return result, false
+	}
+	if newAuth != nil {
+		auth = newAuth
+		refs, err = listRemoteRefs(ctx, r, auth, repo.Name, "standard")
+	}
 	if err != nil {
 		if errors.Is(err, transport.ErrEmptyRemoteRepository) {
 			return result, true

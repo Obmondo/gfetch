@@ -1,6 +1,21 @@
+# --- OpenBao secret backend (optional) ---
+# When enabled, per-repo ssh_key_path values are KV secret paths instead of
+# filesystem paths. The SSH key is fetched from OpenBao on first use and
+# cached in memory per path. The cache is cleared on every successful config
+# reload. An openbao block in a per-repo config.yaml (directory mode) is
+# ignored; use global.yaml instead.
+#
+# openbao:
+#   enabled: true
+#   addr: http://openbao.openbao:8200
+#   role: gfetch
+#   service_account_token_path: /var/run/secrets/openbao/token
+#   kv_mount: kv            # default: kv
+#   field: private_key      # default: private_key
+
 # --- Shared defaults ---
 defaults:
-  ssh_key_path: /home/gfetch/.ssh/id_rsa
+  ssh_key_path: /home/gfetch/.ssh/id_rsa   # or a KV path when openbao.enabled
   poll_interval: 10m
   local_path: /var/repos
   branches:

@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"log/slog"
+	"slices"
 	"testing"
 	"time"
 
@@ -9,6 +10,7 @@ import (
 
 	"github.com/obmondo/gfetch/pkg/config"
 	"github.com/obmondo/gfetch/pkg/gsync"
+	"github.com/obmondo/gfetch/pkg/secrets"
 )
 
 func TestNewScheduler(t *testing.T) {
@@ -178,5 +180,116 @@ func assertEqualSlice(t *testing.T, label string, got, want []string) {
 		if !gotSet[w] {
 			t.Errorf("%s: missing %q in got=%v", label, w, got)
 		}
+	}
+}
+
+// TestSchedulerReload_InvalidatesSecrets verifies that a reload evicts only
+// the key paths of OpenBao repos it adds, removes or re-keys, and that a
+// refused (shutting-down) reload evicts nothing.
+func TestSchedulerReload_InvalidatesSecrets(t *testing.T) {
+	const keyA = "keys/a"
+
+	obRepo := func(name, keyPath string) config.RepoConfig {
+		r := testRepo(name, testMainBranch)
+		r.SSHKeyPath = keyPath
+		r.OpenBao = &secrets.OpenBaoConfig{Addr: testOpenBaoAddr, Role: "gfetch", KVMount: "kv", Field: "private_key"}
+		return r
+	}
+	fileRepo := func(name, keyPath string) config.RepoConfig {
+		r := testRepo(name, testMainBranch)
+		r.SSHKeyPath = keyPath
+		return r
+	}
+
+	tests := []struct {
+		name         string
+		old          map[string]config.RepoConfig
+		new          map[string]config.RepoConfig
+		shuttingDown bool
+		want         []string
+	}{
+		{
+			name: "unchanged",
+			old:  map[string]config.RepoConfig{"a": obRepo("a", keyA)},
+			new:  map[string]config.RepoConfig{"a": obRepo("a", keyA)},
+		},
+		{
+			name: "added",
+			old:  map[string]config.RepoConfig{"a": obRepo("a", keyA)},
+			new:  map[string]config.RepoConfig{"a": obRepo("a", keyA), "b": obRepo("b", "keys/b")},
+			want: []string{"keys/b"},
+		},
+		{
+			name: "removed",
+			old:  map[string]config.RepoConfig{"a": obRepo("a", keyA), "b": obRepo("b", "keys/b")},
+			new:  map[string]config.RepoConfig{"a": obRepo("a", keyA)},
+			want: []string{"keys/b"},
+		},
+		{
+			name: "re-keyed",
+			old:  map[string]config.RepoConfig{"a": obRepo("a", keyA)},
+			new:  map[string]config.RepoConfig{"a": obRepo("a", "keys/a2")},
+			want: []string{keyA, "keys/a2"},
+		},
+		{
+			name: "openbao config changed",
+			old:  map[string]config.RepoConfig{"a": obRepo("a", keyA)},
+			new: map[string]config.RepoConfig{"a": func() config.RepoConfig {
+				r := obRepo("a", keyA)
+				r.OpenBao.Role = "gfetch-2"
+				return r
+			}()},
+			want: []string{keyA},
+		},
+		{
+			name: "openbao to file key",
+			old:  map[string]config.RepoConfig{"a": obRepo("a", keyA)},
+			new:  map[string]config.RepoConfig{"a": fileRepo("a", "/keys/a")},
+			want: []string{keyA},
+		},
+		{
+			name: "file key to openbao",
+			old:  map[string]config.RepoConfig{"a": fileRepo("a", "/keys/a")},
+			new:  map[string]config.RepoConfig{"a": obRepo("a", keyA)},
+			want: []string{keyA},
+		},
+		{
+			name: "file key",
+			old:  map[string]config.RepoConfig{"a": obRepo("a", keyA)},
+			new:  map[string]config.RepoConfig{"a": obRepo("a", keyA), "f": testRepo("f", testMainBranch)},
+		},
+		{
+			name:         testShuttingDownCaseName,
+			old:          map[string]config.RepoConfig{"a": obRepo("a", keyA)},
+			new:          map[string]config.RepoConfig{"b": obRepo("b", "keys/b")},
+			shuttingDown: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reader := &fakeSecretReaderForDaemonTests{}
+			sched := NewScheduler(gsync.New(gsync.WithSecretReader(reader)), ":0", "")
+			cron := newGocronForTest(t)
+			sched.cron = cron
+			t.Cleanup(func() { _ = cron.Shutdown() })
+
+			if err := sched.applyInitial(&config.Config{Repos: tt.old}); err != nil {
+				t.Fatalf("applyInitial: %v", err)
+			}
+			sched.state.shuttingDown.Store(tt.shuttingDown)
+
+			_, err := sched.Reload(&config.Config{Repos: tt.new})
+			if tt.shuttingDown != (err != nil) {
+				t.Fatalf("Reload error = %v, want error: %v", err, tt.shuttingDown)
+			}
+
+			reader.mu.Lock()
+			got := slices.Sorted(slices.Values(reader.invalidated))
+			reader.mu.Unlock()
+			if !slices.Equal(got, tt.want) {
+				t.Errorf("invalidated = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }
