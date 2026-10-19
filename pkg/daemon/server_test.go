@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -26,6 +27,7 @@ const (
 	testExistingRepoName     = "existing"
 	testMainBranch           = "main"
 	testShuttingDownCaseName = "shutting down"
+	testOpenBaoAddr          = "http://openbao:8200"
 )
 
 func TestHealthEndpoint(t *testing.T) {
@@ -266,7 +268,7 @@ func TestFailureSpecs(t *testing.T) {
 		http.StatusInternalServerError: true,
 		http.StatusServiceUnavailable:  true,
 	}
-	seen := make(map[string]failureCode, len(failureSpecs))
+	seen := make(map[string]gsync.FailureCode, len(failureSpecs))
 	for code, spec := range failureSpecs {
 		if spec.message == "" {
 			t.Errorf("%s: empty message", code)
@@ -280,25 +282,6 @@ func TestFailureSpecs(t *testing.T) {
 		}
 	}
 }
-
-// fakeSecretReaderForTestSyncEndpointFailureStatusAndCode implements the
-// secretReader interface, failing every read with the caller's context error
-// when it is set (as Store.Read does), otherwise with err.
-type fakeSecretReaderForTestSyncEndpointFailureStatusAndCode struct {
-	err error
-}
-
-func (f *fakeSecretReaderForTestSyncEndpointFailureStatusAndCode) Read(ctx context.Context, _ string, _ *secrets.OpenBaoConfig, _ string) ([]byte, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	return nil, f.err
-}
-
-func (*fakeSecretReaderForTestSyncEndpointFailureStatusAndCode) Invalidate(_ *secrets.OpenBaoConfig, _ string) {
-}
-
-func (*fakeSecretReaderForTestSyncEndpointFailureStatusAndCode) InvalidateAll() {}
 
 // TestSyncEndpoint_FailureStatusAndCode verifies that a failed manual sync
 // maps to the HTTP status of its failure class and carries the stable code
@@ -360,7 +343,7 @@ func TestSyncEndpoint_FailureStatusAndCode(t *testing.T) {
 		{
 			// An OpenBao request timeout is wrapped in ErrUnavailable: 503.
 			name:       "openbao request timeout",
-			readErr:    fmt.Errorf("%w: %w", secrets.ErrUnavailable, &url.Error{Op: "Put", URL: "http://openbao:8200", Err: context.DeadlineExceeded}),
+			readErr:    fmt.Errorf("%w: %w", secrets.ErrUnavailable, &url.Error{Op: "Put", URL: testOpenBaoAddr, Err: context.DeadlineExceeded}),
 			repo:       openBaoRepoForSyncEndpointTests,
 			wantStatus: http.StatusServiceUnavailable,
 			wantCode:   string(gsync.CodeSecretUnavailable),
@@ -387,7 +370,7 @@ func TestSyncEndpoint_FailureStatusAndCode(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			reader := &fakeSecretReaderForTestSyncEndpointFailureStatusAndCode{err: tt.readErr}
+			reader := &fakeSecretReaderForDaemonTests{err: tt.readErr}
 			sched := NewScheduler(gsync.New(gsync.WithSecretReader(reader)), ":0", "")
 			sched.cfg.Store(&config.Config{Repos: map[string]config.RepoConfig{repoName: tt.repo(t, repoName)}})
 			if tt.guardHeld {
@@ -476,7 +459,7 @@ func TestSyncAllEndpoint_AggregatesStatus(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			reader := &fakeSecretReaderForTestSyncEndpointFailureStatusAndCode{err: secrets.ErrUnavailable}
+			reader := &fakeSecretReaderForDaemonTests{err: secrets.ErrUnavailable}
 			sched := NewScheduler(gsync.New(gsync.WithSecretReader(reader)), ":0", "")
 			sched.cfg.Store(&config.Config{Repos: map[string]config.RepoConfig{
 				"r1": tt.r1(t, "r1"),
@@ -511,6 +494,28 @@ func TestSyncAllEndpoint_AggregatesStatus(t *testing.T) {
 	}
 }
 
+// fakeSecretReaderForDaemonTests implements the secretReader interface. Read
+// fails with the caller's context error when it is set (as Store.Read does),
+// otherwise with err; Invalidate records the evicted paths.
+type fakeSecretReaderForDaemonTests struct {
+	err         error
+	mu          sync.Mutex
+	invalidated []string
+}
+
+func (f *fakeSecretReaderForDaemonTests) Read(ctx context.Context, _ string, _ *secrets.OpenBaoConfig, _ string) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return nil, f.err
+}
+
+func (f *fakeSecretReaderForDaemonTests) Invalidate(path string) {
+	f.mu.Lock()
+	f.invalidated = append(f.invalidated, path)
+	f.mu.Unlock()
+}
+
 // decodeResultsByRepoForSyncEndpointTests decodes a /sync response body and
 // returns the per-repo results indexed by repo name.
 func decodeResultsByRepoForSyncEndpointTests(t *testing.T, rr *httptest.ResponseRecorder) map[string]map[string]string {
@@ -534,7 +539,7 @@ func openBaoRepoForSyncEndpointTests(t *testing.T, name string) config.RepoConfi
 		Name:         name,
 		URL:          "ssh://git@127.0.0.1:1/x.git",
 		SSHKeyPath:   "ssh-keys/c/kubeaid",
-		OpenBao:      &secrets.OpenBaoConfig{Addr: "http://openbao:8200", Role: "gfetch", Field: "private_key"},
+		OpenBao:      &secrets.OpenBaoConfig{Addr: testOpenBaoAddr, Role: "gfetch", Field: "private_key"},
 		LocalPath:    t.TempDir(),
 		PollInterval: config.Duration(time.Minute),
 		Branches:     []config.Pattern{{Raw: testMainBranch}},

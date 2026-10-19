@@ -23,11 +23,11 @@ pkg/config/
   url.go                      # CheckHTTPSAccessible() helper
   config_test.go              # Config unit tests
 pkg/secrets/
-  store.go                    # Store — concurrent-safe secret reader with cache-first per-path cache, Invalidate/InvalidateAll; sentinels ErrNotFound/ErrForbidden/ErrUnavailable/ErrRejected/ErrInvalidSecret
+  store.go                    # Store — concurrent-safe secret reader: cache per path, Invalidate; one client replaced only when the openbao config changes; sentinels ErrNotFound/ErrForbidden/ErrUnavailable/ErrRejected/ErrInvalidSecret
   openbao.go                  # OpenBao KV v2 client — lazy kubernetes-auth login, proactive renewal at 2/3 lease, 403 backstop re-login rate-limited to reloginCooldown, error mapping to sentinels
   store_test.go               # httptest-based tests for login, read, cache-first, invalidation, proactive re-login, concurrency, metrics
 pkg/gsync/
-  auth.go                     # resolveAuth() — SSH key from file, OpenBao secret, or nil (HTTPS); sshAuth (file), sshAuthFromPEM (in-memory PEM); preferredHostKeyAlgorithms + mergeAlgorithms (OpenSSH-style dynamic per-host promotion); sshHostPort()
+  auth.go                     # resolveAuth() — SSH key from file, OpenBao secret, or nil (HTTPS); sshAuth (file), parseSSHKey + withKnownHosts (in-memory PEM); preferredHostKeyAlgorithms + mergeAlgorithms (OpenSSH-style dynamic per-host promotion); sshHostPort()
   auth_test.go                # SSH auth and host key algorithm tests
   errors.go                   # Classify(): maps sync errors to stable FailureCodes; secret errors are typed at resolveAuth
   known_hosts.go              # buildKnownHostsAuth() — host key callback + per-host algorithms via gitssh.NewKnownHostsDb
@@ -70,7 +70,7 @@ renovate.json                 # Renovate config (gomod, dockerfile, github-actio
 - **Directory-mode layout**: `loadDir` discovers per-repo configs at `<dir>/<repo>/config.yaml` via `filepath.Glob`. `<dir>/global.yaml` at the root carries shared defaults.
 - **Pruning in daemon mode**: daemon passes `SyncOptions{}` to `SyncRepo`, which then promotes `repo.Prune`, `repo.PruneStale`, and `repo.StaleAge` from the repo config into the options. Set `prune: true` or `prune_stale: true` in config to enable pruning per-repo in daemon mode. `--prune` and `--dry-run` CLI flags remain exclusive to the `sync` subcommand.
 - **SSH HostKeyAlgorithms**: `gitssh.NewKnownHostsDb` produces both the host-key callback and the list of algorithms our known_hosts has entries for at the dialed `host:port`. `mergeAlgorithms` puts those first, then appends the OpenSSH 9.x default order (Ed25519/ECDSA/RSA-SHA2 plus their cert variants) — mimicking OpenSSH's dynamic per-host HostKeyAlgorithms promotion so negotiation lands on a key type we can verify. Plain `ssh-rsa` (SHA-1) and `ssh-dss` are intentionally omitted.
-- **Cache-first SSH key fetch**: when `openbao.enabled: true`, the SSH private key is fetched from OpenBao KV v2 on first use and cached in memory per path. `InvalidateSecrets` is called on every successful `Scheduler.Reload`, clearing the cache so rotated keys are picked up on the next sync. An SSH auth failure at the first network op (listRemoteRefs / loadResolverRepoAndRefs) evicts the cached key, refetches it, and retries once (self-heals a missed reload). There is no stale-key fallback: if OpenBao is down on a cache miss, the sync fails.
+- **Cache-first SSH key fetch**: when `openbao.enabled: true`, the SSH private key is fetched from OpenBao KV v2 on first use and cached in memory per path. On reload only the key paths of repos added, removed or re-keyed are evicted (`InvalidateSecrets`); the OpenBao client and token survive, and a key rotated in place is picked up by the ssh-auth refetch. An SSH auth failure at the first network op (listRemoteRefs / loadResolverRepoAndRefs) evicts the cached key, refetches it, and retries once (self-heals a missed reload). There is no stale-key fallback: if OpenBao is down on a cache miss, the sync fails.
 - **HTTP error contract**: `/sync`, `/sync/{repo}` and `/reload` failures return a status per failure class (503 secret backend / shutting down, 422 git host or invalid config, 409 sync in progress, 404 unknown repo, 500 otherwise). `error` keeps the raw error chain; `code` (one table in `pkg/daemon/constants.go`) and `message` are the stable surface callers should match on. An OpenBao request timeout is `secret_unavailable`; a request the caller cancelled is `internal`; a git-host dial timeout is `git_unreachable` (never 503).
 - **Package Naming**: `pkg/gsync` is used for git sync logic to avoid conflict with the standard `sync` package. `pkg/telemetry` is used for metrics.
 - **Concurrent OpenVox Sync**: When `openvox: true` is set, branches and tags are synced in parallel using a worker pool (default 5 workers). A mutex protects the shared resolver repo (`.gfetch-meta`) from concurrent access conflicts.
@@ -215,7 +215,7 @@ Patterns appear in `branches` and `tags` YAML lists:
 
 ## Auth System
 
-- **SSH**: any non-HTTPS URL. When `openbao.enabled: true`, the key is fetched from OpenBao KV v2 via `sshAuthFromPEM` (cache-first; see decision above); otherwise uses `go-git/go-git/v5/plumbing/transport/ssh.NewPublicKeysFromFile("git", keyPath, "")`. No passphrase support. SSH auth failure with an OpenBao key triggers one evict-refetch-retry cycle; file-based keys are not retried.
+- **SSH**: any non-HTTPS URL. When `openbao.enabled: true`, the key is fetched from OpenBao KV v2 and parsed in memory via `parseSSHKey` + `withKnownHosts` (cache-first; see decision above); otherwise uses `go-git/go-git/v5/plumbing/transport/ssh.NewPublicKeysFromFile("git", keyPath, "")`. No passphrase support. SSH auth failure with an OpenBao key triggers one evict-refetch-retry cycle; file-based keys are not retried.
 - **Validation**: KV paths reject `.` and `..` segments; a per-repo `openbao` block in directory mode is ignored with a warning.
 - **HTTPS**: URLs starting with `https://` or `http://`. Auth is `nil` (anonymous). Only public repos are supported.
 

@@ -20,7 +20,7 @@ var errDaemonShuttingDown = errors.New("daemon shutting down")
 
 // reloadError is a fatal reload failure carrying its failure code.
 type reloadError struct {
-	code failureCode
+	code gsync.FailureCode
 	err  error
 }
 
@@ -56,7 +56,7 @@ func newServer(sched *Scheduler) http.Handler {
 				writeJSONError(w, codeSyncInProgress, errSyncInProgress.Error())
 				return
 			}
-			writeJSONError(w, codeRepoNotFound, codeRepoNotFound.message())
+			writeJSONError(w, codeRepoNotFound, messageFor(codeRepoNotFound))
 			return
 		}
 
@@ -97,10 +97,10 @@ func handleReload(w http.ResponseWriter, _ *http.Request, sched *Scheduler) {
 // writeJSONError writes a JSON error body carrying the raw error text plus
 // the stable code, with the status and message taken from the code's table
 // row.
-func writeJSONError(w http.ResponseWriter, code failureCode, errText string) {
+func writeJSONError(w http.ResponseWriter, code gsync.FailureCode, errText string) {
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(code.status())
-	_ = json.NewEncoder(w).Encode(map[string]string{"error": errText, "code": string(code), "message": code.message()})
+	w.WriteHeader(statusFor(code))
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": errText, "code": string(code), "message": messageFor(code)})
 }
 
 // loadValidateAndReload reads the config from disk, validates it, and applies
@@ -170,7 +170,7 @@ func RunGuardedSync(ctx context.Context, s *gsync.Syncer, state *SyncRuntimeStat
 }
 
 // resultCode returns the failure code for a sync result error.
-func resultCode(ctx context.Context, err error) failureCode {
+func resultCode(ctx context.Context, err error) gsync.FailureCode {
 	switch {
 	case errors.Is(err, errDaemonShuttingDown):
 		return codeShuttingDown
@@ -178,9 +178,9 @@ func resultCode(ctx context.Context, err error) failureCode {
 		return codeSyncInProgress
 	case ctx.Err() != nil:
 		// The caller went away; nobody reads this reply.
-		return failureCode(gsync.CodeInternal)
+		return gsync.CodeInternal
 	}
-	return failureCode(gsync.Classify(err))
+	return gsync.Classify(err)
 }
 
 // writeResult writes the per-repo results. The status is the aggregated
@@ -215,10 +215,10 @@ func writeResult(ctx context.Context, w http.ResponseWriter, results []gsync.Res
 			out[i].Error = r.Err.Error()
 			code := resultCode(ctx, r.Err)
 			out[i].Code = string(code)
-			out[i].Message = code.message()
+			out[i].Message = messageFor(code)
 			// All failures sharing one status report it; mixed statuses
 			// fall back to 500. Successful repos don't count.
-			switch st := code.status(); failStatus {
+			switch st := statusFor(code); failStatus {
 			case 0:
 				failStatus = st
 			case st:

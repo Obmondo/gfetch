@@ -50,8 +50,7 @@ type Result struct {
 // secretReader fetches an SSH private key from a secret backend.
 type secretReader interface {
 	Read(ctx context.Context, repoName string, obCfg *secrets.OpenBaoConfig, kvPath string) ([]byte, error)
-	Invalidate(obCfg *secrets.OpenBaoConfig, kvPath string)
-	InvalidateAll()
+	Invalidate(kvPath string)
 }
 
 // Option configures a Syncer.
@@ -106,11 +105,12 @@ func New(opts ...Option) *Syncer {
 	return s
 }
 
-// InvalidateSecrets clears the secret store's cache. Called by the daemon
-// after a successful config reload so that rotated keys are picked up on the
-// next sync without waiting for an SSH auth failure.
-func (s *Syncer) InvalidateSecrets() {
-	s.secrets.InvalidateAll()
+// InvalidateSecrets evicts the cached keys at paths. Called by the daemon
+// after a reload with the key paths of changed repos.
+func (s *Syncer) InvalidateSecrets(paths []string) {
+	for _, p := range paths {
+		s.secrets.Invalidate(p)
+	}
 }
 
 // SyncAll syncs all repositories in the config.

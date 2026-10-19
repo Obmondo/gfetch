@@ -271,10 +271,9 @@ type fakeSecretReader struct {
 	err      error
 	errAfter int
 
-	mu            sync.Mutex
-	reads         int
-	invalidated   int
-	invalidateAll int
+	mu          sync.Mutex
+	reads       int
+	invalidated int
 }
 
 func (f *fakeSecretReader) Read(_ context.Context, _ string, _ *secrets.OpenBaoConfig, _ string) ([]byte, error) {
@@ -291,22 +290,17 @@ func (f *fakeSecretReader) Read(_ context.Context, _ string, _ *secrets.OpenBaoC
 	return f.data, f.err
 }
 
-func (f *fakeSecretReader) Invalidate(_ *secrets.OpenBaoConfig, _ string) {
+func (f *fakeSecretReader) Invalidate(_ string) {
 	f.mu.Lock()
 	f.invalidated++
 	f.mu.Unlock()
 }
 
-func (f *fakeSecretReader) InvalidateAll() {
-	f.mu.Lock()
-	f.invalidateAll++
-	f.mu.Unlock()
-}
-
-// TestSSHAuthFromPEM_SameAlgorithmsAsFilePath verifies that a PEM-based auth
-// produces the same HostKeyAlgorithms as a file-based auth for the same key
-// and host.
-func TestSSHAuthFromPEM_SameAlgorithmsAsFilePath(t *testing.T) {
+// TestParseSSHKey_SameAlgorithmsAsFilePath verifies that an in-memory PEM
+// auth (parseSSHKey + withKnownHosts, as resolveAuth builds it for OpenBao
+// keys) produces the same HostKeyAlgorithms as a file-based auth for the same
+// key and host.
+func TestParseSSHKey_SameAlgorithmsAsFilePath(t *testing.T) {
 	keyPath := writeTempEd25519Key(t)
 	pemBytes, err := os.ReadFile(keyPath)
 	if err != nil {
@@ -320,9 +314,13 @@ func TestSSHAuthFromPEM_SameAlgorithmsAsFilePath(t *testing.T) {
 		t.Fatalf("sshAuth: %v", err)
 	}
 
-	pemAuth, err := sshAuthFromPEM(hostPort, "test key", pemBytes, "")
+	parsed, err := parseSSHKey("test key", pemBytes)
 	if err != nil {
-		t.Fatalf("sshAuthFromPEM: %v", err)
+		t.Fatalf("parseSSHKey: %v", err)
+	}
+	pemAuth, err := withKnownHosts(parsed, hostPort, "")
+	if err != nil {
+		t.Fatalf("withKnownHosts: %v", err)
 	}
 
 	if !slices.Equal(fileAuth.HostKeyAlgorithms, pemAuth.HostKeyAlgorithms) {
@@ -331,13 +329,13 @@ func TestSSHAuthFromPEM_SameAlgorithmsAsFilePath(t *testing.T) {
 	}
 }
 
-// TestSSHAuthFromPEM_InvalidPEM_NoKeyInError verifies that a parse error for
+// TestParseSSHKey_InvalidPEM_NoKeyInError verifies that a parse error for
 // invalid PEM does not leak key bytes, and that the error names the source.
-func TestSSHAuthFromPEM_InvalidPEM_NoKeyInError(t *testing.T) {
+func TestParseSSHKey_InvalidPEM_NoKeyInError(t *testing.T) {
 	badPEM := []byte("not-a-real-key-SUPERSECRET")
 
 	// PEM path: source label must appear, key bytes must not.
-	_, err := sshAuthFromPEM("host:22", "secret ssh-keys/acme/kubeaid", badPEM, "")
+	_, err := parseSSHKey("secret ssh-keys/acme/kubeaid", badPEM)
 	if err == nil {
 		t.Fatal("expected error for invalid PEM")
 	}

@@ -19,7 +19,7 @@ var (
 )
 
 // OpenBaoConfig holds the connection parameters for an OpenBao KV v2 backend.
-// It is comparable so it can be used as a map key.
+// It is comparable, so a config change can be detected by value.
 type OpenBaoConfig struct {
 	Addr                    string `yaml:"addr"`
 	Role                    string `yaml:"role"`
@@ -28,30 +28,27 @@ type OpenBaoConfig struct {
 	Field                   string `yaml:"field"`
 }
 
-// Store reads secrets from OpenBao KV v2 backends, caching the value per path
-// after first fetch. The cache is cleared on every successful config reload
-// (InvalidateAll) and per-path on SSH auth failure (Invalidate). Failures are
-// never cached: an OpenBao outage on cache miss fails the sync; the next sync
-// retries. It is safe for concurrent use.
+// Store reads secrets from an OpenBao KV v2 backend, caching the value per
+// path after first fetch. A path is evicted on an SSH auth failure and when a
+// config reload adds, removes or re-keys its repo (Invalidate). The client and
+// its token live for the process unless the OpenBao config changes, which
+// replaces the client and clears the cache. Failures are never cached: an
+// OpenBao outage on cache miss fails the sync; the next sync retries. It is
+// safe for concurrent use.
 type Store struct {
-	mu      sync.Mutex
-	clients map[OpenBaoConfig]*client
-	cache   map[cacheKey][]byte
-	gen     uint64
-	now     func() time.Time
-}
-
-type cacheKey struct {
-	cfg  OpenBaoConfig
-	path string
+	mu        sync.Mutex
+	client    *client
+	clientCfg OpenBaoConfig
+	cache     map[string][]byte
+	gen       uint64
+	now       func() time.Time
 }
 
 // NewStore creates a new Store.
 func NewStore() *Store {
 	return &Store{
-		clients: make(map[OpenBaoConfig]*client),
-		cache:   make(map[cacheKey][]byte),
-		now:     time.Now,
+		cache: make(map[string][]byte),
+		now:   time.Now,
 	}
 }
 
@@ -61,20 +58,21 @@ func NewStore() *Store {
 // contacting OpenBao. Failures are never cached. The raw key bytes are never
 // logged.
 func (s *Store) Read(ctx context.Context, repoName string, obCfg *OpenBaoConfig, secretPath string) ([]byte, error) {
-	key := cacheKey{cfg: *obCfg, path: secretPath}
-
+	// Picking the client, the cache lookup and the gen capture share one
+	// critical section, so a read that started before a client replacement
+	// fails the gen check below and does not cache the old backend's key.
 	s.mu.Lock()
-	if cached, ok := s.cache[key]; ok {
+	c, err := s.clientForLocked(obCfg)
+	if err != nil {
+		s.mu.Unlock()
+		return nil, err
+	}
+	if cached, ok := s.cache[secretPath]; ok {
 		s.mu.Unlock()
 		return cached, nil
 	}
 	gen := s.gen
 	s.mu.Unlock()
-
-	c, err := s.clientFor(obCfg)
-	if err != nil {
-		return nil, err
-	}
 
 	data, err := c.readField(ctx, secretPath, obCfg.Field)
 	if err != nil {
@@ -89,7 +87,7 @@ func (s *Store) Read(ctx context.Context, repoName string, obCfg *OpenBaoConfig,
 
 	s.mu.Lock()
 	if s.gen == gen {
-		s.cache[key] = data
+		s.cache[secretPath] = data
 	}
 	s.mu.Unlock()
 	return data, nil
@@ -98,37 +96,30 @@ func (s *Store) Read(ctx context.Context, repoName string, obCfg *OpenBaoConfig,
 // Invalidate evicts the cached value for a single secret path and increments
 // the generation counter so any in-flight reads that started before the
 // invalidation will not re-populate the evicted entry.
-func (s *Store) Invalidate(obCfg *OpenBaoConfig, secretPath string) {
+func (s *Store) Invalidate(secretPath string) {
 	s.mu.Lock()
-	delete(s.cache, cacheKey{cfg: *obCfg, path: secretPath})
+	delete(s.cache, secretPath)
 	s.gen++
 	s.mu.Unlock()
 }
 
-// InvalidateAll clears the entire cache and all cached clients, and increments
-// the generation counter. Called by the daemon after a successful config reload.
-func (s *Store) InvalidateAll() {
-	s.mu.Lock()
-	s.cache = make(map[cacheKey][]byte)
-	s.clients = make(map[OpenBaoConfig]*client)
-	s.gen++
-	s.mu.Unlock()
-}
-
-// clientFor returns (or lazily creates) a client for the given config.
-func (s *Store) clientFor(cfg *OpenBaoConfig) (*client, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if c, ok := s.clients[*cfg]; ok {
-		return c, nil
+// clientForLocked returns the client for cfg, building it lazily. A cfg
+// different from the current client's replaces the client and clears the
+// cache: a different backend means different secrets. Must be called with
+// s.mu held.
+func (s *Store) clientForLocked(cfg *OpenBaoConfig) (*client, error) {
+	if s.client != nil && s.clientCfg == *cfg {
+		return s.client, nil
 	}
 
 	c, err := newClient(cfg, s.now)
 	if err != nil {
 		return nil, err
 	}
-	s.clients[*cfg] = c
+	s.client = c
+	s.clientCfg = *cfg
+	s.cache = make(map[string][]byte)
+	s.gen++
 	return c, nil
 }
 

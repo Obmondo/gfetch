@@ -146,16 +146,18 @@ func TestStore_LoginSendsRoleAndTrimmedJWT(t *testing.T) {
 func TestStore_TokenFileReReadPerLogin(t *testing.T) {
 	tokenFile := writeTokenFile(t, "jwt-first")
 	var lastJWT atomic.Value
+	var logins atomic.Int32
 
 	ts := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case strings.HasPrefix(r.URL.Path, "/v1/auth/kubernetes/login"):
+			logins.Add(1)
 			body, _ := io.ReadAll(r.Body)
 			var req map[string]string
 			_ = json.Unmarshal(body, &req)
 			lastJWT.Store(req["jwt"])
 			w.WriteHeader(http.StatusOK)
-			writeBody(w, loginResponse("tok"))
+			writeBody(w, loginResponseWithLease("tok", 90))
 		case strings.HasPrefix(r.URL.Path, "/v1/kv/data/"):
 			w.WriteHeader(http.StatusOK)
 			writeBody(w, kvResponse(map[string]any{testFieldName: "ok"}))
@@ -172,7 +174,9 @@ func TestStore_TokenFileReReadPerLogin(t *testing.T) {
 		Field:                   testFieldName,
 	}
 
+	fakeNow := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	store := NewStore()
+	store.now = func() time.Time { return fakeNow }
 
 	// First read: login reads jwt-first from disk.
 	data, err := store.Read(context.Background(), "repo", cfg, "path")
@@ -186,12 +190,14 @@ func TestStore_TokenFileReReadPerLogin(t *testing.T) {
 		t.Errorf("first JWT = %q, want %q", v, "jwt-first")
 	}
 
-	// Rewrite the token file, then InvalidateAll to clear the client so the
-	// next Read creates a fresh client that re-reads the file.
+	// Rotate the token file, move past 2/3 of the 90s lease so the same
+	// client re-logs in proactively, and evict the path so the read reaches
+	// OpenBao.
 	if err := os.WriteFile(tokenFile, []byte("jwt-second"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	store.InvalidateAll()
+	fakeNow = fakeNow.Add(61 * time.Second)
+	store.Invalidate("path")
 
 	data, err = store.Read(context.Background(), "repo", cfg, "path")
 	if err != nil {
@@ -202,6 +208,9 @@ func TestStore_TokenFileReReadPerLogin(t *testing.T) {
 	}
 	if v := lastJWT.Load(); v != "jwt-second" {
 		t.Errorf("last JWT = %q, want %q (re-read from disk)", v, "jwt-second")
+	}
+	if n := logins.Load(); n != 2 {
+		t.Errorf("logins = %d, want 2", n)
 	}
 }
 
@@ -386,7 +395,7 @@ func runReloginRetryRow(t *testing.T, tt reloginRetryRow) {
 	fakeNow = fakeNow.Add(2 * time.Minute)
 
 	// Invalidate so next read hits OpenBao (which will 403 then retry).
-	store.Invalidate(cfg, "path")
+	store.Invalidate("path")
 
 	data, err := store.Read(context.Background(), "repo", cfg, "path")
 	if tt.wantErr != nil {
@@ -638,7 +647,9 @@ func TestStore_Timeout_ErrUnavailable(t *testing.T) {
 	}
 
 	store := NewStore()
-	c, err := store.clientFor(cfg)
+	store.mu.Lock()
+	c, err := store.clientForLocked(cfg)
+	store.mu.Unlock()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -655,11 +666,10 @@ func TestStore_Invalidate(t *testing.T) {
 	tokenFile := writeTokenFile(t, "jwt")
 
 	tests := []struct {
-		name          string
-		action        string // "invalidate_path", "invalidate_other", "invalidate_all"
-		wantKVHits    int32
-		wantLogins    int32
-		wantClientLen int // only checked for invalidate_all
+		name       string
+		action     string // "invalidate_path", "invalidate_other", "other_path", "config_changed"
+		wantKVHits int32
+		wantLogins int32
 	}{
 		{
 			name:       "invalidate path refetches",
@@ -674,11 +684,16 @@ func TestStore_Invalidate(t *testing.T) {
 			wantLogins: 1,
 		},
 		{
-			name:          "invalidate all refetches and re-logins",
-			action:        "invalidate_all",
-			wantKVHits:    2,
-			wantLogins:    2,
-			wantClientLen: 0,
+			name:       "other path reuses the client",
+			action:     "other_path",
+			wantKVHits: 2,
+			wantLogins: 1,
+		},
+		{
+			name:       "changed config builds a new client and drops the cache",
+			action:     "config_changed",
+			wantKVHits: 2,
+			wantLogins: 2,
 		},
 	}
 
@@ -713,24 +728,22 @@ func TestStore_Invalidate(t *testing.T) {
 				t.Fatalf("initial read: %v", err)
 			}
 
+			secondCfg, secondPath := cfg, "path/a"
 			switch tt.action {
 			case "invalidate_path":
-				store.Invalidate(cfg, "path/a")
+				store.Invalidate("path/a")
 			case "invalidate_other":
-				store.Invalidate(cfg, "path/b")
-			case "invalidate_all":
-				store.InvalidateAll()
-				// Verify clients map is empty right after call.
-				store.mu.Lock()
-				clientLen := len(store.clients)
-				store.mu.Unlock()
-				if clientLen != tt.wantClientLen {
-					t.Errorf("clients len = %d, want %d", clientLen, tt.wantClientLen)
-				}
+				store.Invalidate("path/b")
+			case "other_path":
+				secondPath = "path/b"
+			case "config_changed":
+				changed := *cfg
+				changed.Role = "r2"
+				secondCfg = &changed
 			}
 
 			// Second read.
-			if _, err := store.Read(context.Background(), "repo", cfg, "path/a"); err != nil {
+			if _, err := store.Read(context.Background(), "repo", secondCfg, secondPath); err != nil {
 				t.Fatalf("second read: %v", err)
 			}
 
@@ -742,10 +755,9 @@ func TestStore_Invalidate(t *testing.T) {
 			}
 		})
 	}
-
 }
 
-func TestStore_InvalidateAll_InFlightRace(t *testing.T) {
+func TestStore_Invalidate_InFlightRace(t *testing.T) {
 	tokenFile := writeTokenFile(t, "jwt")
 	var kvHits atomic.Int32
 	gate := make(chan struct{})
@@ -792,7 +804,7 @@ func TestStore_InvalidateAll_InFlightRace(t *testing.T) {
 	}
 
 	// Invalidate while in-flight.
-	store.InvalidateAll()
+	store.Invalidate("path/x")
 
 	// Release the blocked request.
 	close(gate)
@@ -806,6 +818,79 @@ func TestStore_InvalidateAll_InFlightRace(t *testing.T) {
 
 	if got := kvHits.Load(); got != 2 {
 		t.Errorf("kv hits = %d, want 2 (in-flight + refetch)", got)
+	}
+}
+
+// TestStore_ClientReplacedDuringInFlightRead verifies that a read in flight
+// against the old backend when a changed config replaces the client does not
+// cache the old backend's key over the new one.
+func TestStore_ClientReplacedDuringInFlightRead(t *testing.T) {
+	tokenFile := writeTokenFile(t, "jwt")
+	var oldKVHits, newKVHits atomic.Int32
+	gate := make(chan struct{})
+
+	kvServer := func(value string, hits *atomic.Int32, block bool) *httptest.Server {
+		return newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+			switch {
+			case strings.HasPrefix(r.URL.Path, "/v1/auth/kubernetes/login"):
+				w.WriteHeader(http.StatusOK)
+				writeBody(w, loginResponse("tok"))
+			case strings.HasPrefix(r.URL.Path, "/v1/kv/data/"):
+				hits.Add(1)
+				if block {
+					<-gate
+				}
+				w.WriteHeader(http.StatusOK)
+				writeBody(w, kvResponse(map[string]any{testFieldName: value}))
+			}
+		})
+	}
+	oldTS := kvServer("old-key", &oldKVHits, true)
+	newTS := kvServer("new-key", &newKVHits, false)
+
+	oldCfg := &OpenBaoConfig{Addr: oldTS.URL, Role: "r", ServiceAccountTokenPath: tokenFile, KVMount: "kv", Field: testFieldName}
+	newCfg := *oldCfg
+	newCfg.Addr = newTS.URL
+
+	store := NewStore()
+
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		_, _ = store.Read(context.Background(), "repo", oldCfg, "path/x")
+	})
+
+	deadline := time.After(5 * time.Second)
+	for oldKVHits.Load() < 1 {
+		select {
+		case <-deadline:
+			t.Fatal("timed out waiting for in-flight request")
+		default:
+			time.Sleep(time.Millisecond)
+		}
+	}
+
+	// Replace the client while the old read is in flight.
+	data, err := store.Read(context.Background(), "repo", &newCfg, "path/x")
+	if err != nil {
+		t.Fatalf("new-config read: %v", err)
+	}
+	if string(data) != "new-key" {
+		t.Fatalf("new-config read = %q, want %q", data, "new-key")
+	}
+
+	close(gate)
+	wg.Wait()
+
+	// The in-flight old read must not have overwritten the cache.
+	data, err = store.Read(context.Background(), "repo", &newCfg, "path/x")
+	if err != nil {
+		t.Fatalf("final read: %v", err)
+	}
+	if string(data) != "new-key" {
+		t.Errorf("final read = %q, want %q (old backend key cached)", data, "new-key")
+	}
+	if got := newKVHits.Load(); got != 1 {
+		t.Errorf("new backend kv hits = %d, want 1 (final read served from cache)", got)
 	}
 }
 
@@ -1034,7 +1119,7 @@ func runProactiveReloginRow(t *testing.T, tokenFile string, tt proactiveReloginR
 
 	// Advance time and invalidate to force a new OpenBao call.
 	fakeNow = fakeNow.Add(tt.advanceDuration)
-	store.Invalidate(cfg, "path/pr")
+	store.Invalidate("path/pr")
 
 	// Second read.
 	_, err := store.Read(context.Background(), "repo", cfg, "path/pr")

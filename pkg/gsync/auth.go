@@ -99,15 +99,7 @@ func sshAuth(hostPort, keyPath, extraKnownHosts string) (*gitssh.PublicKeys, err
 	if err != nil {
 		return nil, fmt.Errorf("loading SSH key %s: %w", keyPath, err)
 	}
-	return sshAuthFromPEM(hostPort, "file "+keyPath, pem, extraKnownHosts)
-}
-
-// sshAuthFromPEM creates an SSH public key auth method from in-memory PEM
-// bytes. The PEM is parsed but never logged or included in error messages.
-// source is a human label identifying where the PEM came from (e.g. "file
-// /path/to/key" or "secret ssh-keys/cust/kubeaid"); it is never key material.
-func sshAuthFromPEM(hostPort string, source string, pemBytes []byte, extraKnownHosts string) (*gitssh.PublicKeys, error) {
-	auth, err := parseSSHKey(source, pemBytes)
+	auth, err := parseSSHKey("file "+keyPath, pem)
 	if err != nil {
 		return nil, err
 	}
@@ -172,7 +164,7 @@ func (s *Syncer) refreshAuthAfterSSHFailure(ctx context.Context, repo *config.Re
 		return nil, nil
 	}
 
-	s.secrets.Invalidate(repo.OpenBao, repo.SSHKeyPath)
+	s.secrets.Invalidate(repo.SSHKeyPath)
 	telemetry.SecretAuthRefetchTotal.WithLabelValues(repo.Name).Inc()
 	slog.Warn("ssh auth failed with openbao key, refetching key", "repo", repo.Name)
 
