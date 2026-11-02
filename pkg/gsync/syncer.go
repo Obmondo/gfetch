@@ -17,6 +17,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/protocol/packp/capability"
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	"github.com/obmondo/gfetch/pkg/config"
+	"github.com/obmondo/gfetch/pkg/secrets"
 	"github.com/obmondo/gfetch/pkg/telemetry"
 )
 
@@ -46,9 +47,28 @@ type Result struct {
 	Err              error
 }
 
+// secretReader fetches an SSH private key from a secret backend.
+type secretReader interface {
+	Read(ctx context.Context, repoName string, obCfg *secrets.OpenBaoConfig, kvPath string) ([]byte, error)
+	Refetch(ctx context.Context, repoName string, obCfg *secrets.OpenBaoConfig, kvPath string) ([]byte, error)
+	Invalidate(kvPath string)
+}
+
+// Option configures a Syncer.
+type Option func(*Syncer)
+
+// WithSecretReader sets the secret reader used for SSH keys stored in a
+// secret backend. When nil (the default), a new secrets.Store is created.
+func WithSecretReader(r secretReader) Option {
+	return func(s *Syncer) {
+		s.secrets = r
+	}
+}
+
 // Syncer performs git sync operations.
 type Syncer struct {
-	mu sync.Mutex
+	mu      sync.Mutex
+	secrets secretReader
 }
 
 // New creates a new Syncer.
@@ -72,11 +92,26 @@ type Syncer struct {
 // That global is gone in go-git v6, so this will not compile against it.
 // Upgrading is a rewrite rather than a bump - see "Known future work" in
 // AGENTS.md before attempting it.
-func New() *Syncer {
+func New(opts ...Option) *Syncer {
 	transport.UnsupportedCapabilities = []capability.Capability{
 		capability.ThinPack,
 	}
-	return &Syncer{}
+	s := &Syncer{}
+	for _, o := range opts {
+		o(s)
+	}
+	if s.secrets == nil {
+		s.secrets = secrets.NewStore()
+	}
+	return s
+}
+
+// InvalidateSecrets evicts the cached keys at paths. Called by the daemon
+// after a reload with the key paths of changed repos.
+func (s *Syncer) InvalidateSecrets(paths []string) {
+	for _, p := range paths {
+		s.secrets.Invalidate(p)
+	}
 }
 
 // SyncAll syncs all repositories in the config.
@@ -133,14 +168,16 @@ func (s *Syncer) SyncRepo(ctx context.Context, repo *config.RepoConfig, opts Syn
 		return s.syncRepoOpenVox(ctx, repo, opts)
 	}
 
-	auth, err := resolveAuth(repo)
+	auth, err := s.resolveAuth(ctx, repo)
 	if err != nil {
 		telemetry.SyncFailuresTotal.WithLabelValues(repo.Name, "clone").Inc()
 		result.Err = err
 		return result
 	}
 
-	result, emptyRepo := s.runStandardSync(ctx, repo, auth, opts)
+	// runStandardSync returns the auth it ended with, which differs from auth
+	// when it refetched a rotated key, so the repair re-clones with that key.
+	result, auth, emptyRepo := s.runStandardSync(ctx, log, repo, auth, opts)
 	if isObjectNotFoundErr(result.Err) {
 		result, emptyRepo = s.repairIncompleteObjectStore(ctx, repo, auth, opts, log, result)
 	}
@@ -196,33 +233,44 @@ func (s *Syncer) repairIncompleteObjectStore(ctx context.Context, repo *config.R
 		return failed, false
 	}
 
-	return s.runStandardSync(ctx, repo, auth, opts)
+	result, _, emptyRepo := s.runStandardSync(ctx, log, repo, auth, opts)
+	return result, emptyRepo
 }
 
 // runStandardSync performs the clone/list/branch/tag/checkout flow for a single
-// non-openvox repo. It returns the Result and whether the remote is empty (has
-// no commits yet), which the caller records as a benign no-op success. It is
-// safe to call twice (the caller wipes the local path and retries once on an
-// incomplete local object store).
-func (s *Syncer) runStandardSync(ctx context.Context, repo *config.RepoConfig, auth transport.AuthMethod, opts SyncOptions) (Result, bool) {
+// non-openvox repo. It returns the Result, the auth it ended with (a refetched
+// key's auth when the first one was rejected and the key had rotated), and
+// whether the remote is empty (has no commits yet), which the caller records
+// as a benign no-op success. It is safe to call twice (the caller wipes the
+// local path and retries once on an incomplete local object store).
+func (s *Syncer) runStandardSync(ctx context.Context, log *slog.Logger, repo *config.RepoConfig, auth transport.AuthMethod, opts SyncOptions) (Result, transport.AuthMethod, bool) {
 	result := Result{RepoName: repo.Name}
 
-	r, err := ensureCloned(ctx, repo, auth)
+	r, err := ensureCloned(repo)
 	if err != nil {
 		telemetry.SyncFailuresTotal.WithLabelValues(repo.Name, "clone").Inc()
 		result.Err = err
-		return result, false
+		return result, auth, false
 	}
 
 	refs, err := listRemoteRefs(ctx, r, auth, repo.Name, "standard")
+	newAuth, rerr := s.refreshAuthAfterSSHFailure(ctx, log, repo, auth, err)
+	if rerr != nil {
+		result.Err = rerr
+		return result, auth, false
+	}
+	if newAuth != nil {
+		auth = newAuth
+		refs, err = listRemoteRefs(ctx, r, auth, repo.Name, "standard")
+	}
 	if err != nil {
 		if errors.Is(err, transport.ErrEmptyRemoteRepository) {
-			return result, true
+			return result, auth, true
 		}
 		slog.Error("failed to list remote refs", "repo", repo.Name, "error", err)
 		telemetry.SyncFailuresTotal.WithLabelValues(repo.Name, "clone").Inc()
 		result.Err = fmt.Errorf("listing remote refs: %w", err)
-		return result, false
+		return result, auth, false
 	}
 
 	defaultBranch, _, matchedBranches, matchedTagRefs := extractRemoteRefState(refs, repo.Branches, repo.Tags, repo.ExcludeBranches, repo.ExcludeTags, repo.IsDefaultBranchOnly())
@@ -235,7 +283,7 @@ func (s *Syncer) runStandardSync(ctx context.Context, repo *config.RepoConfig, a
 	s.syncTagsWrapper(ctx, r, repo, auth, opts, matchedTags, &result)
 	s.handleCheckout(r, repo, defaultBranch, &result)
 
-	return result, false
+	return result, auth, false
 }
 
 func (s *Syncer) addBranchSynced(result *Result, branch string) {
@@ -563,9 +611,11 @@ func (s *Syncer) handleCheckout(r *git.Repository, repo *config.RepoConfig, defa
 	s.setCheckout(result, defaultBranch)
 }
 
-// ensureCloned opens an existing repo or inits an empty one with the remote configured.
+// ensureCloned opens an existing repo or inits an empty one with the remote
+// configured. It is local only and never authenticates: the first network op,
+// and so the first use of the key, is listRemoteRefs, on a fresh clone too.
 // Actual fetching is deferred to syncBranch/syncTags which use narrow refspecs.
-func ensureCloned(_ context.Context, repo *config.RepoConfig, _ transport.AuthMethod) (*git.Repository, error) {
+func ensureCloned(repo *config.RepoConfig) (*git.Repository, error) {
 	// Stat .git, not the directory. A bare mkdir - the shared-PVC init container
 	// makes these, and a failed earlier sync can leave one behind - satisfied the
 	// old check, so PlainOpen ran against a path holding no repository and the

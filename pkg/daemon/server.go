@@ -18,6 +18,15 @@ import (
 var errSyncInProgress = errors.New("sync already in progress")
 var errDaemonShuttingDown = errors.New("daemon shutting down")
 
+// reloadError is a fatal reload failure carrying its failure code.
+type reloadError struct {
+	code gsync.FailureCode
+	err  error
+}
+
+func (e *reloadError) Error() string { return e.err.Error() }
+func (e *reloadError) Unwrap() error { return e.err }
+
 func newServer(sched *Scheduler) http.Handler {
 	mux := http.NewServeMux()
 
@@ -44,53 +53,27 @@ func newServer(sched *Scheduler) http.Handler {
 			// quiescent dropped repo gets the terminal 404. This lets a caller
 			// tearing the clone down wait instead of racing the live sync.
 			if sched.state.guard.IsActive(repoName) {
-				http.Error(w, `{"error":"sync already in progress"}`, http.StatusConflict)
+				writeJSONError(w, codeSyncInProgress, errSyncInProgress.Error())
 				return
 			}
-			http.Error(w, `{"error":"repo not found"}`, http.StatusNotFound)
+			writeJSONError(w, codeRepoNotFound, messageFor(codeRepoNotFound))
 			return
 		}
 
 		slog.Info("manual sync triggered", "repo", repoName)
 		result := RunGuardedSync(r.Context(), sched.syncer, sched.state, &repo, "manual")
-		if errors.Is(result.Err, errDaemonShuttingDown) {
-			writeResultWithStatus(w, []gsync.Result{result}, http.StatusServiceUnavailable)
-			return
-		}
-		if errors.Is(result.Err, errSyncInProgress) {
-			writeResultWithStatus(w, []gsync.Result{result}, http.StatusConflict)
-			return
-		}
-		writeResult(w, []gsync.Result{result})
+		writeResult(r.Context(), w, []gsync.Result{result})
 	})
 
 	mux.HandleFunc("POST /sync", func(w http.ResponseWriter, r *http.Request) {
 		cfg := sched.Config()
 		slog.Info("manual sync triggered for all repos")
 		results := make([]gsync.Result, 0, len(cfg.Repos))
-		hasShutdownErr := false
-		hasInProgressErr := false
 		for name := range cfg.Repos {
 			repo := cfg.Repos[name]
-			res := RunGuardedSync(r.Context(), sched.syncer, sched.state, &repo, "manual")
-			if errors.Is(res.Err, errDaemonShuttingDown) {
-				hasShutdownErr = true
-			}
-			if errors.Is(res.Err, errSyncInProgress) {
-				hasInProgressErr = true
-			}
-			results = append(results, res)
+			results = append(results, RunGuardedSync(r.Context(), sched.syncer, sched.state, &repo, "manual"))
 		}
-
-		if hasShutdownErr {
-			writeResultWithStatus(w, results, http.StatusServiceUnavailable)
-			return
-		}
-		if hasInProgressErr {
-			writeResultWithStatus(w, results, http.StatusConflict)
-			return
-		}
-		writeResult(w, results)
+		writeResult(r.Context(), w, results)
 	})
 
 	return mux
@@ -98,28 +81,39 @@ func newServer(sched *Scheduler) http.Handler {
 
 // handleReload services POST /reload directly.
 func handleReload(w http.ResponseWriter, _ *http.Request, sched *Scheduler) {
-	res, status, err := loadValidateAndReload(sched)
-	w.Header().Set("Content-Type", "application/json")
+	res, err := loadValidateAndReload(sched)
 	if err != nil {
-		w.WriteHeader(status)
-		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		code := codeConfigApplyFailed
+		if re, ok := errors.AsType[*reloadError](err); ok {
+			code = re.code
+		}
+		writeJSONError(w, code, err.Error())
 		return
 	}
+	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(res)
+}
+
+// writeJSONError writes a JSON error body carrying the raw error text plus
+// the stable code, with the status and message taken from the code's table
+// row.
+func writeJSONError(w http.ResponseWriter, code gsync.FailureCode, errText string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(statusFor(code))
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": errText, "code": string(code), "message": messageFor(code)})
 }
 
 // loadValidateAndReload reads the config from disk, validates it, and applies
 // it via Scheduler.Reload. On fatal failure the old config keeps running and
-// the returned status is the HTTP status the caller should write. Per-repo
-// validate failures are surfaced as a *config.PartialValidateError and the
-// reload proceeds with the remaining repos; an empty result after partial
-// errors is treated as a 422.
-func loadValidateAndReload(sched *Scheduler) (ReloadResult, int, error) {
+// the returned error is a *reloadError carrying the failure code. Per-repo validate failures are surfaced as a
+// *config.PartialValidateError and the reload proceeds with the remaining
+// repos; an empty result after partial errors is treated as a 422.
+func loadValidateAndReload(sched *Scheduler) (ReloadResult, error) {
 	cfg, err := config.Load(sched.ConfigPath())
 	if err != nil {
 		telemetry.ConfigReloadFailuresTotal.WithLabelValues("load").Inc()
 		slog.Warn("config reload failed (load)", "error", err)
-		return ReloadResult{}, http.StatusInternalServerError, fmt.Errorf("load config: %w", err)
+		return ReloadResult{}, &reloadError{code: codeConfigLoadFailed, err: fmt.Errorf("load config: %w", err)}
 	}
 
 	var partialValidate *config.PartialValidateError
@@ -130,23 +124,27 @@ func loadValidateAndReload(sched *Scheduler) (ReloadResult, int, error) {
 	case err != nil:
 		telemetry.ConfigReloadFailuresTotal.WithLabelValues("validate").Inc()
 		slog.Warn("config reload failed (validate)", "error", err)
-		return ReloadResult{}, http.StatusUnprocessableEntity, fmt.Errorf("validate config: %w", err)
+		return ReloadResult{}, &reloadError{code: codeConfigInvalid, err: fmt.Errorf("validate config: %w", err)}
 	}
 
 	if len(cfg.Repos) == 0 {
 		telemetry.ConfigReloadFailuresTotal.WithLabelValues("validate").Inc()
 		slog.Warn("config reload aborted: no usable repos after load+validate, keeping previous config")
-		return ReloadResult{}, http.StatusUnprocessableEntity, fmt.Errorf("validate config: no usable repos after load+validate")
+		return ReloadResult{}, &reloadError{code: codeConfigInvalid, err: fmt.Errorf("validate config: no usable repos after load+validate")}
 	}
 
 	res, err := sched.Reload(cfg)
 	if err != nil {
 		telemetry.ConfigReloadFailuresTotal.WithLabelValues("apply").Inc()
 		slog.Warn("config reload failed (apply)", "error", err)
-		return ReloadResult{}, http.StatusInternalServerError, fmt.Errorf("apply config: %w", err)
+		code := codeConfigApplyFailed
+		if errors.Is(err, errDaemonShuttingDown) {
+			code = codeShuttingDown
+		}
+		return ReloadResult{}, &reloadError{code: code, err: fmt.Errorf("apply config: %w", err)}
 	}
 	slog.Info("config reloaded", "repos", len(res.Repos))
-	return res, http.StatusOK, nil
+	return res, nil
 }
 
 func RunGuardedSync(ctx context.Context, s *gsync.Syncer, state *SyncRuntimeState, repo *config.RepoConfig, source string) gsync.Result {
@@ -171,20 +169,24 @@ func RunGuardedSync(ctx context.Context, s *gsync.Syncer, state *SyncRuntimeStat
 	return s.SyncRepo(ctx, repo, gsync.SyncOptions{})
 }
 
-func writeResult(w http.ResponseWriter, results []gsync.Result) {
-	writeResultWithStatus(w, results, 0)
+// resultCode returns the failure code for a sync result error.
+func resultCode(ctx context.Context, err error) gsync.FailureCode {
+	switch {
+	case errors.Is(err, errDaemonShuttingDown):
+		return codeShuttingDown
+	case errors.Is(err, errSyncInProgress):
+		return codeSyncInProgress
+	case ctx.Err() != nil:
+		// The caller went away; nobody reads this reply.
+		return gsync.CodeInternal
+	}
+	return gsync.Classify(err)
 }
 
-func writeResultWithStatus(w http.ResponseWriter, results []gsync.Result, status int) {
+// writeResult writes the per-repo results. The status is the aggregated
+// failure status, or 200 when no repo failed.
+func writeResult(ctx context.Context, w http.ResponseWriter, results []gsync.Result) {
 	w.Header().Set("Content-Type", "application/json")
-
-	hasErr := false
-	for _, r := range results {
-		if r.Err != nil {
-			hasErr = true
-			break
-		}
-	}
 
 	type jsonResult struct {
 		RepoName         string   `json:"repo"`
@@ -194,9 +196,12 @@ func writeResultWithStatus(w http.ResponseWriter, results []gsync.Result, status
 		TagsFetched      []string `json:"tags_fetched,omitempty"`
 		TagsUpToDate     []string `json:"tags_up_to_date,omitempty"`
 		Error            string   `json:"error,omitempty"`
+		Code             string   `json:"code,omitempty"`
+		Message          string   `json:"message,omitempty"`
 	}
 
 	out := make([]jsonResult, len(results))
+	failStatus := 0
 	for i, r := range results {
 		out[i] = jsonResult{
 			RepoName:         r.RepoName,
@@ -208,15 +213,24 @@ func writeResultWithStatus(w http.ResponseWriter, results []gsync.Result, status
 		}
 		if r.Err != nil {
 			out[i].Error = r.Err.Error()
+			code := resultCode(ctx, r.Err)
+			out[i].Code = string(code)
+			out[i].Message = messageFor(code)
+			// All failures sharing one status report it; mixed statuses
+			// fall back to 500. Successful repos don't count.
+			switch st := statusFor(code); failStatus {
+			case 0:
+				failStatus = st
+			case st:
+			default:
+				failStatus = http.StatusInternalServerError
+			}
 		}
 	}
 
-	if status != 0 {
-		w.WriteHeader(status)
+	if failStatus == 0 {
+		failStatus = http.StatusOK
 	}
-
-	if status == 0 && hasErr {
-		w.WriteHeader(http.StatusInternalServerError)
-	}
+	w.WriteHeader(failStatus)
 	_ = json.NewEncoder(w).Encode(out)
 }

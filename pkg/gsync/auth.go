@@ -1,8 +1,12 @@
 package gsync
 
 import (
+	"context"
+	"errors"
 	"flag"
 	"fmt"
+	"log/slog"
+	"os"
 	"strconv"
 	"strings"
 
@@ -11,6 +15,8 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/obmondo/gfetch/pkg/config"
+	"github.com/obmondo/gfetch/pkg/secrets"
+	"github.com/obmondo/gfetch/pkg/telemetry"
 )
 
 // defaultSSHPort is used when transport.NewEndpoint reports Port == 0 (i.e.
@@ -53,8 +59,9 @@ var preferredHostKeyAlgorithms = []string{
 // resolveAuth returns the appropriate auth method for a repo.
 // HTTPS public repos use anonymous (nil) auth; SSH repos use key-based auth
 // with built-in host key verification (plus any extra entries from
-// ssh_known_hosts).
-func resolveAuth(repo *config.RepoConfig) (transport.AuthMethod, error) {
+// ssh_known_hosts). When repo.OpenBao is set the key is fetched from the
+// secret backend instead of the filesystem.
+func (s *Syncer) resolveAuth(ctx context.Context, repo *config.RepoConfig) (transport.AuthMethod, error) {
 	if repo.IsHTTPS() {
 		return nil, nil
 	}
@@ -62,11 +69,43 @@ func resolveAuth(repo *config.RepoConfig) (transport.AuthMethod, error) {
 	if strings.HasPrefix(repo.URL, "/") && flag.Lookup("test.v") != nil {
 		return nil, nil
 	}
+
+	// The URL is parsed first, so a malformed one fails before an OpenBao
+	// read or a cache entry is spent on it.
+	hostPort, err := repoHostPort(repo)
+	if err != nil {
+		return nil, err
+	}
+
+	if repo.OpenBao != nil {
+		pemBytes, readErr := s.secrets.Read(ctx, repo.Name, repo.OpenBao, repo.SSHKeyPath)
+		if readErr != nil {
+			return nil, newSecretError(repo.Name, readErr)
+		}
+		return openBaoAuth(repo, hostPort, pemBytes)
+	}
+
+	return sshAuth(hostPort, repo.SSHKeyPath, repo.SSHKnownHosts)
+}
+
+// repoHostPort returns the host:port of repo's SSH endpoint.
+func repoHostPort(repo *config.RepoConfig) (string, error) {
 	hostPort, err := sshHostPort(repo.URL)
 	if err != nil {
-		return nil, fmt.Errorf("parsing SSH endpoint %q: %w", repo.URL, err)
+		return "", fmt.Errorf("parsing SSH endpoint %q: %w", repo.URL, err)
 	}
-	return sshAuth(hostPort, repo.SSHKeyPath, repo.SSHKnownHosts)
+	return hostPort, nil
+}
+
+// openBaoAuth builds the SSH auth for repo from pemBytes, its key as read
+// from OpenBao, with host key verification for hostPort. A key that does not
+// parse is a secret error wrapping ErrInvalidSecret.
+func openBaoAuth(repo *config.RepoConfig, hostPort string, pemBytes []byte) (*gitssh.PublicKeys, error) {
+	auth, err := parseSSHKey("secret "+repo.SSHKeyPath, pemBytes)
+	if err != nil {
+		return nil, newSecretError(repo.Name, fmt.Errorf("%w: %w", secrets.ErrInvalidSecret, err))
+	}
+	return withKnownHosts(auth, hostPort, repo.SSHKnownHosts)
 }
 
 // sshAuth creates an SSH public key auth method from a key file.
@@ -75,18 +114,37 @@ func resolveAuth(repo *config.RepoConfig) (transport.AuthMethod, error) {
 // default order with the algorithms we have entries for at hostPort promoted
 // to the front (see preferredHostKeyAlgorithms and mergeAlgorithms).
 func sshAuth(hostPort, keyPath, extraKnownHosts string) (*gitssh.PublicKeys, error) {
-	auth, err := gitssh.NewPublicKeysFromFile("git", keyPath, "")
+	pem, err := os.ReadFile(keyPath)
 	if err != nil {
 		return nil, fmt.Errorf("loading SSH key %s: %w", keyPath, err)
 	}
+	auth, err := parseSSHKey("file "+keyPath, pem)
+	if err != nil {
+		return nil, err
+	}
+	return withKnownHosts(auth, hostPort, extraKnownHosts)
+}
 
+// parseSSHKey parses in-memory PEM bytes into an SSH public key auth method
+// without host key verification. The PEM is never included in the error;
+// source labels where it came from.
+func parseSSHKey(source string, pemBytes []byte) (*gitssh.PublicKeys, error) {
+	auth, err := gitssh.NewPublicKeys("git", pemBytes, "")
+	if err != nil {
+		return nil, fmt.Errorf("parsing SSH key from %s: %w", source, err)
+	}
+	return auth, nil
+}
+
+// withKnownHosts sets host key verification on auth: the known_hosts callback
+// for hostPort and the merged HostKeyAlgorithms preference.
+func withKnownHosts(auth *gitssh.PublicKeys, hostPort, extraKnownHosts string) (*gitssh.PublicKeys, error) {
 	callback, hostAlgos, err := buildKnownHostsAuth(extraKnownHosts, hostPort)
 	if err != nil {
 		return nil, fmt.Errorf("building known_hosts auth: %w", err)
 	}
 	auth.HostKeyCallback = callback
 	auth.HostKeyAlgorithms = mergeAlgorithms(hostAlgos, preferredHostKeyAlgorithms)
-
 	return auth, nil
 }
 
@@ -104,6 +162,71 @@ func sshHostPort(repoURL string) (string, error) {
 		port = defaultSSHPort
 	}
 	return ep.Host + ":" + strconv.Itoa(port), nil
+}
+
+// isSSHAuthErr reports whether err is an SSH authentication failure. The
+// x/crypto ssh package wraps the failure as a plain fmt.Errorf string, so
+// substring matching is the only reliable detection.
+func isSSHAuthErr(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "ssh: unable to authenticate")
+}
+
+// refreshAuthAfterSSHFailure checks whether err is an SSH auth failure for a
+// repo using an OpenBao key. If so it refetches the key from OpenBao, which
+// replaces the cached key only when it changed, and returns an auth method
+// built from the refetched key for a single retry when it differs from auth.
+// The key is the one the refetch returned, not read back from the cache, so an
+// eviction in between neither costs a second OpenBao read nor turns a refetch
+// that worked into a failure. Returns
+// (nil, nil) when no retry should be attempted (not an SSH auth error, not an
+// OpenBao key, or the refetched key is unchanged, so the caller keeps the
+// original auth error), and (nil, error joining the ssh failure and the
+// refetch failure) when the refetch itself fails; that failure is also logged
+// and counted as a clone failure.
+func (s *Syncer) refreshAuthAfterSSHFailure(ctx context.Context, log *slog.Logger, repo *config.RepoConfig, auth transport.AuthMethod, err error) (transport.AuthMethod, error) {
+	if !isSSHAuthErr(err) || repo.OpenBao == nil {
+		return nil, nil
+	}
+
+	telemetry.SecretAuthRefetchTotal.WithLabelValues(repo.Name).Inc()
+	log.Warn("ssh auth failed with openbao key, refetching key")
+
+	var newAuth *gitssh.PublicKeys
+	hostPort, rerr := repoHostPort(repo)
+	if rerr == nil {
+		pemBytes, fetchErr := s.secrets.Refetch(ctx, repo.Name, repo.OpenBao, repo.SSHKeyPath)
+		if fetchErr != nil {
+			rerr = newSecretError(repo.Name, fetchErr)
+		} else {
+			newAuth, rerr = openBaoAuth(repo, hostPort, pemBytes)
+		}
+	}
+	if rerr != nil {
+		joined := errors.Join(err, rerr)
+		log.Error("failed to refetch ssh key after auth failure", "error", joined)
+		telemetry.SyncFailuresTotal.WithLabelValues(repo.Name, "clone").Inc()
+		return nil, joined
+	}
+	if sameKey(auth, newAuth) {
+		log.Warn("ssh auth failed and the refetched openbao key is unchanged, not retrying")
+		return nil, nil
+	}
+	return newAuth, nil
+}
+
+// sameKey reports whether a and b are SSH public key auths for the same key.
+// It returns false when either is not a *gitssh.PublicKeys or has no signer,
+// which keeps the retry.
+func sameKey(a, b transport.AuthMethod) bool {
+	pa, ok := a.(*gitssh.PublicKeys)
+	if !ok || pa == nil || pa.Signer == nil {
+		return false
+	}
+	pb, ok := b.(*gitssh.PublicKeys)
+	if !ok || pb == nil || pb.Signer == nil {
+		return false
+	}
+	return ssh.FingerprintSHA256(pa.Signer.PublicKey()) == ssh.FingerprintSHA256(pb.Signer.PublicKey())
 }
 
 // mergeAlgorithms returns hostAlgos concatenated with fallback, deduplicated,
