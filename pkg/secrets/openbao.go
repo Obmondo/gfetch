@@ -19,6 +19,9 @@ const (
 	requestTimeout      = 10 * time.Second
 	reloginCooldown     = time.Minute
 	renewFractionDenom  = 3
+	// loginFailureBackoff is how long a failed login is answered from memory
+	// instead of with a new login.
+	loginFailureBackoff = 5 * time.Second
 )
 
 // client wraps an openbao API client for a single OpenBaoConfig. It handles
@@ -43,8 +46,21 @@ type client struct {
 	// per policyDenialWindow instead of on every read.
 	renewing         bool
 	lastRenewAttempt time.Time
-	now              func() time.Time
-	logger           *slog.Logger
+	// flight is the login reads are waiting for, nil when none runs.
+	// lastLoginErr is the error of the last login reads waited for, and
+	// lastLoginFailedAt when it failed; it is cleared by a successful one.
+	flight            *loginFlight
+	lastLoginErr      error
+	lastLoginFailedAt time.Time
+	now               func() time.Time
+	logger            *slog.Logger
+}
+
+// loginFlight is one login that any number of reads wait for. err is set
+// before done is closed.
+type loginFlight struct {
+	done chan struct{}
+	err  error
 }
 
 func newClient(cfg *OpenBaoConfig, now func() time.Time, logger *slog.Logger) (*client, error) {
@@ -125,19 +141,82 @@ func (c *client) expired() bool {
 	return c.lease > 0 && !c.now().Before(c.loggedInAt.Add(c.lease))
 }
 
-// ensureToken makes sure there is a token to read with. Without one, or with
-// an expired one, it logs in itself, and readers queued on c.mu wait for that
-// one login. A token past 2/3 of its lease is renewed in the background while
-// this read goes ahead with it, so a slow login never stalls reads that still
-// hold a valid token. Must be called with c.mu held.
-func (c *client) ensureToken(ctx context.Context) error {
-	if c.token == "" || c.expired() {
-		return c.login(ctx)
+// readToken returns the token to read with. A token past 2/3 of its lease is
+// returned at once and renewed in the background, so a slow login never
+// stalls reads that still hold a valid token. Without a token, or with an
+// expired one, the read waits for a login (see loginLocked and awaitLogin).
+func (c *client) readToken(ctx context.Context) (string, error) {
+	c.mu.Lock()
+	if c.token != "" && !c.expired() {
+		if c.renewDue() {
+			c.startRenewal()
+		}
+		token := c.token
+		c.mu.Unlock()
+		return token, nil
 	}
-	if c.renewDue() {
-		c.startRenewal()
+	flight, err := c.loginLocked()
+	c.mu.Unlock()
+	if err != nil {
+		return "", err
 	}
-	return nil
+	if err := awaitLogin(ctx, flight); err != nil {
+		return "", err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.token, nil
+}
+
+// loginLocked returns the login reads are waiting for, starting one if none
+// runs. The login runs on its own goroutine and context, without c.mu, so
+// readers neither queue on the mutex nor cancel it for each other. Within
+// loginFailureBackoff of a failed login it returns that login's error instead
+// of trying again, so a down OpenBao costs one login per backoff rather than
+// one per read. Must be called with c.mu held.
+func (c *client) loginLocked() (*loginFlight, error) {
+	if c.flight != nil {
+		return c.flight, nil
+	}
+	if c.lastLoginErr != nil && c.now().Sub(c.lastLoginFailedAt) < loginFailureBackoff {
+		return nil, c.lastLoginErr
+	}
+	flight := &loginFlight{done: make(chan struct{})}
+	c.flight = flight
+	go c.runLogin(flight)
+	return flight, nil
+}
+
+// runLogin logs in for flight, swaps the new token in or records the failure,
+// and wakes the reads waiting for it.
+func (c *client) runLogin(flight *loginFlight) {
+	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+	defer cancel()
+	token, lease, err := c.requestToken(ctx)
+
+	c.mu.Lock()
+	if err != nil {
+		c.lastLoginErr = err
+		c.lastLoginFailedAt = c.now()
+	} else {
+		c.lastLoginErr = nil
+		c.setToken(token, lease)
+	}
+	c.flight = nil
+	flight.err = err
+	c.mu.Unlock()
+	close(flight.done)
+}
+
+// awaitLogin waits for flight, or until ctx ends: a read with a short
+// deadline is not held up by a slow login it shares with others.
+func awaitLogin(ctx context.Context, flight *loginFlight) error {
+	select {
+	case <-flight.done:
+		return flight.err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // startRenewal starts a background renewal unless one is running or the last
@@ -173,18 +252,19 @@ func (c *client) renew() {
 // do ensures a valid token exists, runs fn, and retries once after a re-login
 // on 403. Renewal from 2/3 of the lease prevents most 403s. A 403 on a token
 // still younger than policyDenialWindow when the 403 arrives is treated as a
-// policy denial and returns ErrForbidden without attempting re-login. Logins
-// made for a read hold c.mu, so concurrent readers do not log in twice.
+// policy denial and returns ErrForbidden without attempting re-login. The
+// re-login is the same shared login a missing token waits for, so concurrent
+// readers do not log in twice.
 func (c *client) do(ctx context.Context, path string, fn func() error) error {
-	c.mu.Lock()
-	if err := c.ensureToken(ctx); err != nil {
-		c.mu.Unlock()
+	if err := ctx.Err(); err != nil {
 		return err
 	}
-	usedToken := c.token
-	c.mu.Unlock()
+	usedToken, err := c.readToken(ctx)
+	if err != nil {
+		return err
+	}
 
-	err := fn()
+	err = fn()
 	if err == nil {
 		return nil
 	}
@@ -205,12 +285,17 @@ func (c *client) do(ctx context.Context, path string, fn func() error) error {
 			c.mu.Unlock()
 			return fmt.Errorf("%w: denied with fresh token for path %q", ErrForbidden, path)
 		}
-		if loginErr := c.login(ctx); loginErr != nil {
-			c.mu.Unlock()
+		flight, loginErr := c.loginLocked()
+		c.mu.Unlock()
+		if loginErr != nil {
 			return loginErr
 		}
+		if loginErr := awaitLogin(ctx, flight); loginErr != nil {
+			return loginErr
+		}
+	} else {
+		c.mu.Unlock()
 	}
-	c.mu.Unlock()
 
 	err = fn()
 	if err != nil {
@@ -219,16 +304,6 @@ func (c *client) do(ctx context.Context, path string, fn func() error) error {
 		}
 		return mapError(ctx, err)
 	}
-	return nil
-}
-
-// login logs in and swaps the new token in. Must be called with c.mu held.
-func (c *client) login(ctx context.Context) error {
-	token, lease, err := c.requestToken(ctx)
-	if err != nil {
-		return err
-	}
-	c.setToken(token, lease)
 	return nil
 }
 

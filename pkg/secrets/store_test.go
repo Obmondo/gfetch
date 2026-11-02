@@ -917,6 +917,10 @@ func TestStore_Refetch(t *testing.T) {
 // TestStore_Invalidate_InFlightRace verifies that evicting or replacing a path
 // while a read of it is in flight stops that read from caching what it
 // fetched, and that doing so to another path does not.
+// inFlightRaceSecondRead is what TestStore_Invalidate_InFlightRace's second
+// OpenBao read of path/x returns.
+const inFlightRaceSecondRead = "path/x-2"
+
 func TestStore_Invalidate_InFlightRace(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -928,7 +932,7 @@ func TestStore_Invalidate_InFlightRace(t *testing.T) {
 			name:      "invalidate same path stops caching",
 			act:       func(store *Store, _ *OpenBaoConfig) error { store.Invalidate("path/x"); return nil },
 			wantHits:  2,
-			wantFinal: "path/x-2",
+			wantFinal: inFlightRaceSecondRead,
 		},
 		{
 			name:      "invalidate other path still caches",
@@ -945,7 +949,18 @@ func TestStore_Invalidate_InFlightRace(t *testing.T) {
 				return err
 			},
 			wantHits:  2,
-			wantFinal: "path/x-2",
+			wantFinal: inFlightRaceSecondRead,
+		},
+		{
+			// Another read of path/x finishes first and caches the newer
+			// key; the older in-flight read must not overwrite it.
+			name: "older read finishing last does not overwrite a newer cached key",
+			act: func(store *Store, cfg *OpenBaoConfig) error {
+				_, err := store.Read(context.Background(), "repo", cfg, "path/x")
+				return err
+			},
+			wantHits:  2,
+			wantFinal: inFlightRaceSecondRead,
 		},
 		{
 			name: "changed key on other path still caches",
@@ -1562,6 +1577,114 @@ func TestStore_TokenRenewal(t *testing.T) {
 			h.advance(91 * time.Second)
 			if _, err := h.read(); !errors.Is(err, ErrUnavailable) {
 				t.Errorf("read error = %v, want ErrUnavailable", err)
+			}
+		}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
+	}
+}
+
+// readSharedForSharedLogin evicts and reads the path TestStore_SharedLogin uses,
+// so the read reaches the client.
+func readSharedForSharedLogin(ctx context.Context, h *tokenRenewalHarness) error {
+	h.store.Invalidate("path/shared")
+	_, err := h.store.Read(ctx, "repo", h.cfg, "path/shared")
+	return err
+}
+
+// readConcurrentlyForSharedLogin starts n reads of the shared path, waits
+// until the first login has started, runs release, and returns every read's
+// error.
+func readConcurrentlyForSharedLogin(h *tokenRenewalHarness, n int, release func()) []error {
+	errs := make([]error, n)
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := range n {
+		go func() {
+			defer wg.Done()
+			errs[i] = readSharedForSharedLogin(context.Background(), h)
+		}()
+	}
+	h.waitFor("the first login", func() bool { return h.loginCount() == 1 })
+	release()
+	wg.Wait()
+	return errs
+}
+
+// TestStore_SharedLogin verifies that reads without a token share one login,
+// that a failed login is answered from memory for loginFailureBackoff instead
+// of being retried by every read, and that a read waiting for a login gives up
+// at its own deadline.
+func TestStore_SharedLogin(t *testing.T) {
+	const readers = 5
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{name: "concurrent reads share one successful login", run: func(t *testing.T) {
+			h := newTokenRenewalHarness(t, 90)
+			release := h.blockLogin(1)
+			for i, err := range readConcurrentlyForSharedLogin(h, readers, release) {
+				if err != nil {
+					t.Errorf("read %d: %v", i, err)
+				}
+			}
+			if n := h.loginCount(); n != 1 {
+				t.Errorf("logins = %d, want 1", n)
+			}
+		}},
+		{name: "concurrent reads share one failed login, which is not retried until the backoff ends", run: func(t *testing.T) {
+			h := newTokenRenewalHarness(t, 90)
+			for n := 1; n <= readers; n++ {
+				h.failLogin(n, http.StatusServiceUnavailable)
+			}
+			release := h.blockLogin(1)
+			for i, err := range readConcurrentlyForSharedLogin(h, readers, release) {
+				if !errors.Is(err, ErrUnavailable) {
+					t.Errorf("read %d error = %v, want ErrUnavailable", i, err)
+				}
+			}
+			if n := h.loginCount(); n != 1 {
+				t.Fatalf("logins = %d, want 1", n)
+			}
+			// Inside the backoff the failure is answered without a login.
+			if err := readSharedForSharedLogin(context.Background(), h); !errors.Is(err, ErrUnavailable) {
+				t.Errorf("read inside the backoff error = %v, want ErrUnavailable", err)
+			}
+			if n := h.loginCount(); n != 1 {
+				t.Fatalf("logins inside the backoff = %d, want 1", n)
+			}
+			// Past it the next read logs in again.
+			h.advance(loginFailureBackoff)
+			h.failLogin(2, http.StatusOK)
+			h.mustRead("tok-2")
+		}},
+		{name: "a read waiting for a slow login returns at its deadline", run: func(t *testing.T) {
+			h := newTokenRenewalHarness(t, 90)
+			release := h.blockLogin(1)
+			firstDone := make(chan error, 1)
+			go func() { firstDone <- readSharedForSharedLogin(context.Background(), h) }()
+			h.waitFor("the first login", func() bool { return h.loginCount() == 1 })
+
+			ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+			defer cancel()
+			start := time.Now()
+			err := readSharedForSharedLogin(ctx, h)
+			if !errors.Is(err, context.DeadlineExceeded) {
+				t.Errorf("read error = %v, want context.DeadlineExceeded", err)
+			}
+			if waited := time.Since(start); waited > time.Second {
+				t.Errorf("read waited %v for a login past its deadline", waited)
+			}
+
+			release()
+			if err := <-firstDone; err != nil {
+				t.Fatalf("first read: %v", err)
+			}
+			if n := h.loginCount(); n != 1 {
+				t.Errorf("logins = %d, want 1", n)
 			}
 		}},
 	}

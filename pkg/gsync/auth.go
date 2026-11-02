@@ -82,27 +82,34 @@ func (s *Syncer) resolveAuth(ctx context.Context, repo *config.RepoConfig) (tran
 		if readErr != nil {
 			return nil, newSecretError(repo.Name, readErr)
 		}
-		return openBaoAuth(repo, hostPort, pemBytes)
+		return s.openBaoAuth(repo, hostPort, pemBytes)
 	}
 
 	return sshAuth(hostPort, repo.SSHKeyPath, repo.SSHKnownHosts)
 }
 
-// repoHostPort returns the host:port of repo's SSH endpoint.
+// errRepoURL marks a repo URL whose SSH endpoint does not parse.
+var errRepoURL = errors.New("parsing SSH endpoint")
+
+// repoHostPort returns the host:port of repo's SSH endpoint. A URL that does
+// not parse is an errRepoURL error.
 func repoHostPort(repo *config.RepoConfig) (string, error) {
 	hostPort, err := sshHostPort(repo.URL)
 	if err != nil {
-		return "", fmt.Errorf("parsing SSH endpoint %q: %w", repo.URL, err)
+		return "", fmt.Errorf("%w %q: %w", errRepoURL, repo.URL, err)
 	}
 	return hostPort, nil
 }
 
 // openBaoAuth builds the SSH auth for repo from pemBytes, its key as read
 // from OpenBao, with host key verification for hostPort. A key that does not
-// parse is a secret error wrapping ErrInvalidSecret.
-func openBaoAuth(repo *config.RepoConfig, hostPort string, pemBytes []byte) (*gitssh.PublicKeys, error) {
+// parse is a secret error wrapping ErrInvalidSecret, and is evicted from the
+// cache: it never reaches the network, so no auth failure would ever refetch
+// it, and the next sync has to read OpenBao again for a fixed value to count.
+func (s *Syncer) openBaoAuth(repo *config.RepoConfig, hostPort string, pemBytes []byte) (*gitssh.PublicKeys, error) {
 	auth, err := parseSSHKey("secret "+repo.SSHKeyPath, pemBytes)
 	if err != nil {
+		s.secrets.Invalidate(repo.SSHKeyPath)
 		return nil, newSecretError(repo.Name, fmt.Errorf("%w: %w", secrets.ErrInvalidSecret, err))
 	}
 	return withKnownHosts(auth, hostPort, repo.SSHKnownHosts)
@@ -198,7 +205,7 @@ func (s *Syncer) refreshAuthAfterSSHFailure(ctx context.Context, log *slog.Logge
 		if fetchErr != nil {
 			rerr = newSecretError(repo.Name, fetchErr)
 		} else {
-			newAuth, rerr = openBaoAuth(repo, hostPort, pemBytes)
+			newAuth, rerr = s.openBaoAuth(repo, hostPort, pemBytes)
 		}
 	}
 	if rerr != nil {

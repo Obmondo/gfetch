@@ -213,7 +213,7 @@ The daemon exposes the following HTTP endpoints on the listen address (default `
 
 To pick up a config change before syncing, call `POST /reload` (or send `SIGHUP`) first, then `POST /sync`.
 
-Error responses carry a stable `code` and `message` next to `error`, which holds the raw error chain (on `/sync` per repo result). The status follows the failure class; on `POST /sync` only failed repos count, and failures with different statuses return `500`.
+Error responses carry a stable `code` and `message` next to `error`, which holds the raw error chain (on `/sync` per repo result). The status follows the failure class; on `POST /sync` only failed repos count, and failures with different statuses return `500`. `git_unreachable` covers a git host that cannot be dialled or closes the SSH handshake early; a repo URL that does not parse is `internal`.
 
 | Status | Codes |
 | :--- | :--- |

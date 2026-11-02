@@ -80,9 +80,10 @@ func NewStore() *Store {
 
 // Read fetches the SSH private key for repoName from the OpenBao secret at
 // secretPath, using the provided OpenBao configuration. On success the value
-// is cached under that config and path; subsequent reads of them return a
-// copy of the cached value without contacting OpenBao. Failures are never
-// cached. The raw key bytes are never logged.
+// is cached under that config and path, unless a read of them that finished
+// first already cached one; subsequent reads return a copy of the cached value
+// without contacting OpenBao. Failures are never cached. The raw key bytes are
+// never logged.
 func (s *Store) Read(ctx context.Context, repoName string, obCfg *OpenBaoConfig, secretPath string) ([]byte, error) {
 	// The cache lookup and the gen capture share one critical section, so a
 	// read that started before an eviction or replacement of its path fails
@@ -107,8 +108,11 @@ func (s *Store) Read(ctx context.Context, repoName string, obCfg *OpenBaoConfig,
 		return nil, err
 	}
 
+	// A read of the same path that finished first has already cached its
+	// value; this one, slower, may hold the key from before a rotation, so it
+	// does not overwrite it.
 	s.mu.Lock()
-	if s.gens[secretPath] == gen {
+	if _, cached := s.cache[key]; !cached && s.gens[secretPath] == gen {
 		s.cache[key] = bytes.Clone(data)
 	}
 	s.mu.Unlock()

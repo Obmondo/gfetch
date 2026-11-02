@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/url"
 	"os"
@@ -13,10 +14,17 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	"golang.org/x/crypto/ssh/knownhosts"
 
+	"github.com/obmondo/gfetch/pkg/config"
 	"github.com/obmondo/gfetch/pkg/secrets"
 )
 
 const testNetTCP = "tcp"
+
+// repoHostPortErrForClassify returns the error repoHostPort gives for url.
+func repoHostPortErrForClassify(url string) error {
+	_, err := repoHostPort(&config.RepoConfig{URL: url})
+	return err
+}
 
 func TestClassify(t *testing.T) {
 	secretFetch := func(err error) error {
@@ -48,11 +56,19 @@ func TestClassify(t *testing.T) {
 		{name: "git read deadline", err: &net.OpError{Op: "read", Net: testNetTCP, Err: os.ErrDeadlineExceeded}, want: CodeGitUnreachable},
 		{name: "refetch failure joined with ssh auth error", err: errors.Join(errors.New("ssh: handshake failed: ssh: unable to authenticate"), secretFetch(secrets.ErrUnavailable)), want: CodeSecretUnavailable},
 		{name: "openvox lock wait timeout", err: fmt.Errorf("waiting for file lock %s: %w", "/repo/.gfetch-meta/locks/main.lock", context.DeadlineExceeded), want: CodeInternal},
+		{name: "server closed the ssh handshake before its banner", err: fmt.Errorf("listing remote refs: %w", fmt.Errorf("ssh: handshake failed: %w", io.EOF)), want: CodeGitUnreachable},
+		{name: "server closed the ssh handshake mid key exchange", err: fmt.Errorf("ssh: handshake failed: %w", io.ErrUnexpectedEOF), want: CodeGitUnreachable},
+		{name: "eof outside an ssh handshake", err: fmt.Errorf("reading pack: %w", io.EOF), want: CodeInternal},
+		{name: "url with a port that does not parse", err: repoHostPortErrForClassify("ssh://git@host:badport/r.git"), want: CodeInternal},
+		{name: "url with an unclosed ipv6 host", err: repoHostPortErrForClassify("ssh://git@[::1/r.git"), want: CodeInternal},
 		{name: "other error", err: errors.New("checkout main: boom"), want: CodeInternal},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			if tt.want != "" && tt.err == nil {
+				t.Fatal("the row's error is nil")
+			}
 			if got := Classify(tt.err); got != tt.want {
 				t.Errorf("Classify(%v) = %q, want %q", tt.err, got, tt.want)
 			}

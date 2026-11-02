@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"strings"
 
@@ -71,6 +72,11 @@ func Classify(err error) FailureCode {
 		return ""
 	case errors.As(err, &se):
 		return se.code
+	// A URL that does not parse is a config problem: the url.Error it wraps
+	// satisfies net.Error, so it is caught before isNetErr would call it
+	// unreachable and have it retried forever.
+	case errors.Is(err, errRepoURL):
+		return CodeInternal
 	case errors.As(err, new(*knownhosts.KeyError)):
 		return CodeGitHostKeyMismatch
 	case errors.Is(err, transport.ErrRepositoryNotFound):
@@ -79,7 +85,7 @@ func Classify(err error) FailureCode {
 		errors.Is(err, transport.ErrAuthenticationRequired),
 		errors.Is(err, transport.ErrAuthorizationFailed):
 		return CodeGitAuthFailed
-	case isNetErr(err), isGoGitTimeoutErr(err):
+	case isNetErr(err), isGoGitTimeoutErr(err), isHandshakeEOF(err):
 		return CodeGitUnreachable
 	default:
 		return CodeInternal
@@ -98,6 +104,16 @@ func isNetErr(err error) bool {
 	}
 	bareDeadline := errors.Unwrap(ne) == nil && errors.Is(ne, context.DeadlineExceeded)
 	return !bareDeadline
+}
+
+// isHandshakeEOF reports whether err is an SSH handshake the server closed
+// early: before its version banner (sshd throttling new connections with
+// MaxStartups, a load balancer with no healthy backend) or during the key
+// exchange. x/crypto reports it as "ssh: handshake failed: EOF", which is not
+// a net.Error, so it would otherwise read as internal.
+func isHandshakeEOF(err error) bool {
+	return strings.Contains(err.Error(), "ssh: handshake failed") &&
+		(errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF))
 }
 
 // isGoGitTimeoutErr reports whether err is go-git's timeout-exceeded error.

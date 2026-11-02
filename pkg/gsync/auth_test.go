@@ -6,10 +6,13 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/x509"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
@@ -396,6 +399,8 @@ func TestResolveAuth_SecretReader(t *testing.T) {
 		// wantPlainErr is a substring of an error that is not a secret error.
 		wantPlainErr string
 		wantReads    int
+		// wantInvalidated is how often the key path was evicted.
+		wantInvalidated int
 	}{
 		{
 			name:      "success",
@@ -416,11 +421,13 @@ func TestResolveAuth_SecretReader(t *testing.T) {
 			wantReads: 1,
 		},
 		{
-			name:      "invalid pem",
-			reader:    &fakeSecretReader{data: []byte("not-a-real-key")},
-			wantCode:  CodeSecretInvalid,
-			wantErr:   []error{secrets.ErrInvalidSecret},
-			wantReads: 1,
+			// A key that does not parse is evicted, so a fixed value is read.
+			name:            "invalid pem",
+			reader:          &fakeSecretReader{data: []byte("not-a-real-key")},
+			wantCode:        CodeSecretInvalid,
+			wantErr:         []error{secrets.ErrInvalidSecret},
+			wantReads:       1,
+			wantInvalidated: 1,
 		},
 	}
 
@@ -445,6 +452,9 @@ func TestResolveAuth_SecretReader(t *testing.T) {
 			if tt.reader.reads != tt.wantReads {
 				t.Errorf("secret reads = %d, want %d", tt.reader.reads, tt.wantReads)
 			}
+			if tt.reader.invalidated != tt.wantInvalidated {
+				t.Errorf("invalidations = %d, want %d", tt.reader.invalidated, tt.wantInvalidated)
+			}
 			if tt.wantPlainErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tt.wantPlainErr) {
 					t.Fatalf("error = %v, want it to contain %q", err, tt.wantPlainErr)
@@ -462,6 +472,68 @@ func TestResolveAuth_SecretReader(t *testing.T) {
 				t.Fatal("expected non-nil auth")
 			}
 		})
+	}
+}
+
+// TestResolveAuth_InvalidKeyFixedInOpenBao verifies, against a real Store and
+// a fake OpenBao, that a key which does not parse is not served from the cache
+// afterwards: once the value is fixed in OpenBao, the next resolveAuth reads it
+// again and gets past parsing.
+func TestResolveAuth_InvalidKeyFixedInOpenBao(t *testing.T) {
+	var (
+		mu      sync.Mutex
+		value   = "not-a-real-key"
+		kvReads int
+	)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/v1/auth/kubernetes/login"):
+			_, _ = w.Write([]byte(`{"auth":{"client_token":"tok","lease_duration":3600}}`))
+		case strings.HasPrefix(r.URL.Path, "/v1/kv/data/"):
+			mu.Lock()
+			kvReads++
+			body, _ := json.Marshal(map[string]any{"data": map[string]any{"data": map[string]any{testOpenBaoField: value}}})
+			mu.Unlock()
+			_, _ = w.Write(body)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(ts.Close)
+
+	tokenFile := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(tokenFile, []byte("jwt"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := New(WithSecretReader(secrets.NewStore()))
+	repo := &config.RepoConfig{
+		SSHKeyPath: "ssh-keys/acme/kubeaid",
+		Name:       testAuthRepoName,
+		URL:        testAuthRepoURL,
+		OpenBao: &secrets.OpenBaoConfig{
+			Addr:                    ts.URL,
+			Role:                    testOpenBaoRole,
+			ServiceAccountTokenPath: tokenFile,
+			KVMount:                 "kv",
+			Field:                   testOpenBaoField,
+		},
+	}
+
+	_, err := s.resolveAuth(context.Background(), repo)
+	assertSecretErrorForResolveAuthSecretReader(t, err, CodeSecretInvalid, []error{secrets.ErrInvalidSecret})
+
+	mu.Lock()
+	value = string(generateEd25519PEM(t))
+	mu.Unlock()
+
+	if _, err := s.resolveAuth(context.Background(), repo); err != nil {
+		t.Fatalf("resolveAuth after the key was fixed: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if kvReads != 2 {
+		t.Errorf("OpenBao reads = %d, want 2: the unparseable key must not be served from the cache", kvReads)
 	}
 }
 
@@ -741,6 +813,46 @@ func TestSyncRepo_SSHAuthFailureRefetchesKeyOnce(t *testing.T) {
 // TestSyncRepo_HostKeyMismatchClassified verifies that a host key not matching
 // the known_hosts entry for the dialed host:port classifies as a host key
 // mismatch, for both the standard and the openvox flow.
+// TestSyncRepo_ServerClosingHandshakeClassified verifies that a git host
+// that accepts the connection and closes it before its SSH banner (sshd
+// throttling, a load balancer without a backend) is classified unreachable.
+func TestSyncRepo_ServerClosingHandshakeClassified(t *testing.T) {
+	ln, err := net.Listen(testNetTCP, "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for {
+			conn, acceptErr := ln.Accept()
+			if acceptErr != nil {
+				return
+			}
+			_ = conn.Close()
+		}
+	}()
+
+	_, hostPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate host key: %v", err)
+	}
+	hostSigner, err := ssh.NewSignerFromKey(hostPriv)
+	if err != nil {
+		t.Fatalf("host signer: %v", err)
+	}
+	addr := ln.Addr().String()
+	repo := sshRepoConfig(t, "handshake-eof", addr, knownhosts.Line([]string{addr}, hostSigner.PublicKey()))
+	repo.SSHKeyPath = writeTempEd25519Key(t)
+
+	result := New().SyncRepo(context.Background(), repo, SyncOptions{})
+	if result.Err == nil {
+		t.Fatal("expected error for a host closing the handshake")
+	}
+	if got := Classify(result.Err); got != CodeGitUnreachable {
+		t.Errorf("Classify(%q) = %q, want %q", result.Err, got, CodeGitUnreachable)
+	}
+}
+
 func TestSyncRepo_HostKeyMismatchClassified(t *testing.T) {
 	sshAddr, _, _ := startRejectingSSHServer(t)
 	_, otherPriv, err := ed25519.GenerateKey(rand.Reader)
