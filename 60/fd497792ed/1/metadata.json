@@ -1,0 +1,33 @@
+{
+  "cli_version": "0.4.4",
+  "checkpoint_id": "60fd497792ed",
+  "session_id": "1a751a8e-514c-4d8b-bfd3-c0ad92169fc5",
+  "strategy": "manual-commit",
+  "created_at": "2026-11-03T09:21:24.532863912Z",
+  "branch": "chore/cog-release",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "AGENTS.md",
+    "README.md",
+    "cog.toml"
+  ],
+  "agent": "Claude Code",
+  "transcript_identifier_at_start": "c097a539-9c2e-42c2-9901-040930765d17",
+  "token_usage": {
+    "input_tokens": 74,
+    "cache_creation_tokens": 154547,
+    "cache_read_tokens": 4367896,
+    "output_tokens": 83146,
+    "api_call_count": 32
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-11-03T09:21:24.004845083Z",
+    "agent_lines": 54,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 54,
+    "agent_percentage": 100
+  },
+  "transcript_path": ".claude/projects/-home-ashish-gitea-gfetch/1a751a8e-514c-4d8b-bfd3-c0ad92169fc5.jsonl"
+}
