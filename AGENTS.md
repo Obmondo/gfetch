@@ -18,13 +18,18 @@ internal/cli/
   cat.go                      # "cat" subcommand — print resolved config as YAML
   version.go                  # "version" subcommand + Version/Commit/Date vars
 pkg/config/
-  config.go                   # Config/RepoDefaults/RepoConfig/Pattern structs; RepoConfig embeds RepoDefaults inline; Load(), Validate(), validateRepo(), validateAuth(); PartialValidateError for partial-validate tolerance; per-repo-subdir (<dir>/<repo>/config.yaml) directory discovery — strict fail-fast on load
+  config.go                   # Config/RepoDefaults/RepoConfig/OpenBaoConfig/Pattern structs; RepoConfig embeds RepoDefaults inline; OpenBaoConfig embeds secrets.OpenBaoConfig with Enabled flag; Load(), Validate(), validateRepo(), validateAuth(), validateOpenBaoConfig(), validateKVPath(); PartialValidateError for partial-validate tolerance; per-repo-subdir (<dir>/<repo>/config.yaml) directory discovery — strict fail-fast on load
   duration.go                 # ParseDuration() — support for s, m, h, d
   url.go                      # CheckHTTPSAccessible() helper
   config_test.go              # Config unit tests
+pkg/secrets/
+  store.go                    # Store — concurrent-safe secret reader: cache per openbao config and path handing out copies, with a generation per path (the first of two concurrent reads of a path to finish caches, a slower one never overwrites it); Refetch (replaces a cached key only when it changed), Invalidate (evicts a path under every config); one client per openbao config, built on first use and kept; sentinels ErrNotFound/ErrForbidden/ErrUnavailable/ErrRejected/ErrInvalidSecret/ErrClientConfig (a client that cannot be built from the config); a failed read, client build included, is counted on the secret fetch failure metric
+  openbao.go                  # OpenBao KV v2 client — lazy kubernetes-auth login, background renewal from 2/3 lease (reads keep the current token; a failed renewal is retried at most once per policyDenialWindow; only a missing or expired token makes a read wait for a login: one login runs at a time on its own context without the mutex, every read needing it waits on it until its own ctx ends, and a failed one is answered from memory for loginFailureBackoff instead of retried per read), 403 backstop re-login through that same shared login rate-limited to reloginCooldown (a third of the lease when that is shorter, token age taken at the 403), error mapping to sentinels (an unreadable service-account token file is ErrUnavailable)
+  store_test.go               # httptest-based tests for login, shared login and its failure backoff, read, cache-first, invalidation, background token renewal, concurrency, metrics
 pkg/gsync/
-  auth.go                     # resolveAuth() — SSH key or nil (HTTPS); preferredHostKeyAlgorithms + mergeAlgorithms (OpenSSH-style dynamic per-host promotion); sshHostPort()
+  auth.go                     # resolveAuth() — SSH key from file, OpenBao secret, or nil (HTTPS); sshAuth (file), openBaoAuth = parseSSHKey + withKnownHosts (in-memory PEM, from Read or the bytes Refetch returned; the endpoint is parsed before the OpenBao read); preferredHostKeyAlgorithms + mergeAlgorithms (OpenSSH-style dynamic per-host promotion); sshHostPort()
   auth_test.go                # SSH auth and host key algorithm tests
+  errors.go                   # Classify(): maps sync errors to stable FailureCodes; secret errors are typed at resolveAuth
   known_hosts.go              # buildKnownHostsAuth() — host key callback + per-host algorithms via gitssh.NewKnownHostsDb
   syncer.go                   # Syncer, SyncAll(), SyncRepo(), syncBranches(), syncTagsWrapper(), handleCheckout(), ensureCloned()
   refs.go                     # resolveBranches/resolveTags/default branch + staleness and branch discovery helpers
@@ -34,8 +39,9 @@ pkg/gsync/
   openvox.go                  # OpenVox sync flow and per-ref directory sync/prune logic
   syncer_test.go              # Integration tests using in-process bare repos
 pkg/telemetry/
-  telemetry.go                # Prometheus metrics definitions and registration (sync metrics + config reload metrics)
+  telemetry.go                # Prometheus metrics definitions and registration (sync metrics + config reload metrics + secret fetch metrics)
 pkg/daemon/
+  constants.go                # failure code table: HTTP status + message per code
   scheduler.go                # Scheduler — gocron-backed periodic syncing; atomic config pointer + Reload() (cancel all jobs / swap config / reschedule with delayed first-fire)
   scheduler_test.go           # Scheduler + Reload diff tests
   server.go                   # HTTP server: /health, /metrics, /sync, /sync/{repo}, POST /reload
@@ -64,6 +70,8 @@ renovate.json                 # Renovate config (gomod, dockerfile, github-actio
 - **Directory-mode layout**: `loadDir` discovers per-repo configs at `<dir>/<repo>/config.yaml` via `filepath.Glob`. `<dir>/global.yaml` at the root carries shared defaults.
 - **Pruning in daemon mode**: daemon passes `SyncOptions{}` to `SyncRepo`, which then promotes `repo.Prune`, `repo.PruneStale`, and `repo.StaleAge` from the repo config into the options. Set `prune: true` or `prune_stale: true` in config to enable pruning per-repo in daemon mode. `--prune` and `--dry-run` CLI flags remain exclusive to the `sync` subcommand.
 - **SSH HostKeyAlgorithms**: `gitssh.NewKnownHostsDb` produces both the host-key callback and the list of algorithms our known_hosts has entries for at the dialed `host:port`. `mergeAlgorithms` puts those first, then appends the OpenSSH 9.x default order (Ed25519/ECDSA/RSA-SHA2 plus their cert variants) — mimicking OpenSSH's dynamic per-host HostKeyAlgorithms promotion so negotiation lands on a key type we can verify. Plain `ssh-rsa` (SHA-1) and `ssh-dss` are intentionally omitted.
+- **Cache-first SSH key fetch**: when `openbao.enabled: true`, the SSH private key is fetched from OpenBao KV v2 on first use and cached in memory per path. On reload only the key paths of repos added, removed or re-keyed are evicted (`InvalidateSecrets`), except a path an unchanged repo still reads; the OpenBao client and token survive, and a key rotated in place is picked up by the ssh-auth refetch. Each openbao config has its own client and cache entries, so after a reload that changes the block, syncs still running on the old one and syncs on the new one do not evict each other's client or cache. An SSH auth failure at the first network op (listRemoteRefs / loadResolverRepoAndRefs; `ensureCloned` is local only, so this holds on a fresh clone too) refetches the key, replaces the cached one only if it changed, and retries once with the key the refetch returned if it differs (self-heals a missed reload); the sync then carries on, object-store repair included, with the refetched key. A key that does not parse is evicted (it never reaches the network, so no auth failure would refetch it), so a value fixed in OpenBao is read on the next sync. There is no stale-key fallback: if OpenBao is down on a cache miss, the sync fails.
+- **HTTP error contract**: `/sync`, `/sync/{repo}` and `/reload` failures return a status per failure class (503 secret backend unavailable / git host unreachable / shutting down, 422 git host rejection, missing, invalid, denied or rejected secret, or invalid config, 409 sync in progress, 404 unknown repo, 500 otherwise, including an OpenBao client that cannot be built from the config, `secret_config_invalid`). `error` keeps the raw error chain; `code` (one table in `pkg/daemon/constants.go`) and `message` are the stable surface callers should match on. An OpenBao request timeout or an unreadable service-account token file is `secret_unavailable`; a policy denial (`secret_forbidden`) or a request OpenBao rejects (`secret_rejected`) does not clear on a retry, so it is 422; a request the caller cancelled is `internal`; a git-host dial failure or timeout, or an SSH handshake the host closes early (EOF), is `git_unreachable`, 503 since it is transient; a repo URL that does not parse is `internal`, not `git_unreachable`, even though its url.Error satisfies net.Error.
 - **Package Naming**: `pkg/gsync` is used for git sync logic to avoid conflict with the standard `sync` package. `pkg/telemetry` is used for metrics.
 - **Concurrent OpenVox Sync**: When `openvox: true` is set, branches and tags are synced in parallel using a worker pool (default 5 workers). A mutex protects the shared resolver repo (`.gfetch-meta`) from concurrent access conflicts.
 - **Index auto-repair**: `checkoutRefContext` automatically detects corrupted, truncated, or unknown `.git/index` files (including `unexpected EOF`, `EOF`, and `index.ErrMalformedSignature`) and deletes/rebuilds them on the fly.
@@ -107,7 +115,7 @@ For AI coding agents: after making code changes, run `go fix ./...` before tests
 
 - **Go version**: 1.27 (see `go.mod`)
 - **Module path**: `github.com/obmondo/gfetch`
-- **Logging**: `log/slog` with text handler to stderr. Logger is passed through structs (e.g., `Syncer.logger`), not globals. Use `.With("key", value)` for structured fields.
+- **Logging**: `log/slog` with text handler to stderr. Per-repo code builds a `log *slog.Logger` with `slog.With("repo", …)` and passes it down as a parameter (e.g. `runStandardSync`, `refreshAuthAfterSSHFailure`, the openvox workers); a type that owns its logging holds a struct logger (e.g. `secrets.Store`); package-level code without a per-repo context (e.g. config loading, the scheduler) logs via the slog default. Use `.With("key", value)` for structured fields.
 - **CLI framework**: `github.com/spf13/cobra`. Commands are defined in `internal/cli/` with `newXxxCmd()` factory functions. Flags use package-level vars.
 - **Config parsing**: `gopkg.in/yaml.v3`. Config validation is manual in `Config.Validate()` — no struct validation tags.
 - **Git operations**: `github.com/go-git/go-git/v5`. All git work is done through the go-git library, not by shelling out to git.
@@ -190,9 +198,10 @@ Commits should be logically atomic — one concern per commit. When a session to
 - `prune` (bool) enables obsolete-ref pruning (branches/tags no longer matching any pattern); defaults to false
 - `prune_stale` (bool) and `stale_age` (duration) enable inactivity-based pruning; `prune_stale` only has effect when `prune: true` is also set (a warning is logged otherwise)
 - Regex patterns (wrapped in `/`) are compiled and validated
-- SSH URLs require `ssh_key_path` pointing to an existing file
+- SSH URLs require `ssh_key_path`. When `openbao.enabled: true`, it is shape-checked as a KV path (charset `[A-Za-z0-9._/-]`, no leading `/`, no `..` or empty segments, no `data/` prefix); otherwise it must point to an existing file
 - HTTPS URLs must be publicly accessible (HEAD request returns 200)
 - `checkout` (if set) must match at least one branch or tag pattern
+- `openbao` block with `enabled: true` must have a valid `addr` (http/https URL with host), `role`, and `service_account_token_path`. An invalid block is a hard config error (not per-repo). Defaults: `kv_mount=kv`, `field=private_key`. The `openbao` block in a per-repo `*/config.yaml` is ignored; only honored in `global.yaml` or at the single-file top level.
 
 ## Pattern System
 
@@ -206,7 +215,8 @@ Patterns appear in `branches` and `tags` YAML lists:
 
 ## Auth System
 
-- **SSH**: any non-HTTPS URL. Uses `go-git/go-git/v5/plumbing/transport/ssh.NewPublicKeysFromFile("git", keyPath, "")`. No passphrase support.
+- **SSH**: any non-HTTPS URL. When `openbao.enabled: true`, the key is fetched from OpenBao KV v2 and parsed in memory via `parseSSHKey` + `withKnownHosts` (cache-first; see decision above); otherwise uses `go-git/go-git/v5/plumbing/transport/ssh.NewPublicKeysFromFile("git", keyPath, "")`. No passphrase support. SSH auth failure with an OpenBao key triggers one refetch-retry cycle (the retry uses the key the refetch returned and is skipped when it is unchanged); file-based keys are not retried.
+- **Validation**: KV paths reject `.` and `..` segments; a per-repo `openbao` block in directory mode is ignored with a warning.
 - **HTTPS**: URLs starting with `https://` or `http://`. Auth is `nil` (anonymous). Only public repos are supported.
 
 ## Known future work
