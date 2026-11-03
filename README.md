@@ -252,6 +252,25 @@ gfetch dev (commit: none, built: unknown)
 
 Version, commit, and build date are injected at build time via ldflags when using GoReleaser or a manual build with `-ldflags`.
 
+## Release
+
+Releases are cut with [cocogitto](https://docs.cocogitto.io/) on a `master`
+that matches GitHub's; `cog bump` refuses to run otherwise (cog 7.0.0 reports
+that refusal as a `StashError` panic):
+
+```sh
+cog bump --auto --dry-run   # print the version it would cut
+cog bump --auto
+```
+
+`--auto` picks the version from the commit types since the last tag; pass
+`--patch`, `--minor` or `--major` instead to choose it. cog tags the merged
+commit, with no bump commit since changes land through GitHub PRs, and pushes
+`master` and the tag to `origin` (GitHub) and `gitea`. On GitHub the tag runs
+[GoReleaser](https://goreleaser.com/), which publishes the release binaries and
+the `ghcr.io/obmondo/gfetch` image; on Gitea it builds the
+`harbor.obmondo.com/obmondo/gfetch` image.
+
 ## Documentation
 
 [Configuration Reference](docs/configuration.md)
