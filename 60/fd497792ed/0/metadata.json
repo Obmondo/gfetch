@@ -1,0 +1,31 @@
+{
+  "cli_version": "0.4.4",
+  "checkpoint_id": "60fd497792ed",
+  "session_id": "cc38b683-4495-4d3e-b3df-0c3651ee7aae",
+  "strategy": "manual-commit",
+  "created_at": "2026-11-03T09:20:07.867106023Z",
+  "branch": "chore/cog-release",
+  "checkpoints_count": 2,
+  "files_touched": [
+    ".github/workflows/docker.yml"
+  ],
+  "agent": "Claude Code",
+  "transcript_identifier_at_start": "b6d77dd1-b8ad-4647-88ed-54dcec5d572b",
+  "token_usage": {
+    "input_tokens": 13,
+    "cache_creation_tokens": 18798,
+    "cache_read_tokens": 280840,
+    "output_tokens": 5054,
+    "api_call_count": 9
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-11-03T09:20:07.826445134Z",
+    "agent_lines": 0,
+    "human_added": 9061,
+    "human_modified": 53,
+    "human_removed": 0,
+    "total_committed": 9065,
+    "agent_percentage": 0
+  },
+  "transcript_path": ".claude/projects/-home-ashish-gitea-gfetch/cc38b683-4495-4d3e-b3df-0c3651ee7aae.jsonl"
+}

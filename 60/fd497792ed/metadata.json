@@ -1,0 +1,26 @@
+{
+  "cli_version": "0.4.4",
+  "checkpoint_id": "60fd497792ed",
+  "strategy": "manual-commit",
+  "branch": "chore/cog-release",
+  "checkpoints_count": 2,
+  "files_touched": [
+    ".github/workflows/docker.yml"
+  ],
+  "sessions": [
+    {
+      "metadata": "/60/fd497792ed/0/metadata.json",
+      "transcript": "/60/fd497792ed/0/full.jsonl",
+      "context": "/60/fd497792ed/0/context.md",
+      "content_hash": "/60/fd497792ed/0/content_hash.txt",
+      "prompt": "/60/fd497792ed/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 13,
+    "cache_creation_tokens": 18798,
+    "cache_read_tokens": 280840,
+    "output_tokens": 5054,
+    "api_call_count": 9
+  }
+}

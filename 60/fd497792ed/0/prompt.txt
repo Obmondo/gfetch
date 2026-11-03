@@ -1,0 +1,11 @@
+Error: buildx failed with: ERROR: failed to build: failed to solve: failed to push ghcr.io/obmondo/gfetch:1.0.0: denied: permission_denied: write_package the v1.0.0 is getting like 1.0.0 and perm denied as well on github actions
+
+---
+
+- name: Login to GitHub Container Registry
+        uses: docker/login-action@v1
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+ fro one of our github repo but in this case it fails with write package in github CI
