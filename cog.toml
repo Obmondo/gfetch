@@ -1,0 +1,28 @@
+tag_prefix = "v"
+branch_whitelist = ["master"]
+ignore_merge_commits = true
+disable_changelog = true
+# Changes land through GitHub PRs, so tag the merged commit instead of adding one.
+disable_bump_commit = true
+# Older commits do not all follow Conventional Commits, so `cog check` starts
+# at the latest tag.
+from_latest_tag = true
+
+pre_bump_hooks = [
+  # Tag exactly GitHub's master: not behind it, nothing unmerged on top.
+  # When one of these fails, cog 7.0.0 panics with a StashError instead of
+  # naming the hook; no tag is created and nothing is pushed.
+  "git fetch origin master",
+  "git merge-base --is-ancestor origin/master HEAD",
+  "git merge-base --is-ancestor HEAD origin/master",
+]
+
+post_bump_hooks = [
+  # origin is GitHub, where the tag builds the release and the GHCR image.
+  # gitea is a mirror that only these pushes keep up to date, and the tag there
+  # builds the Harbor image, so master and the tag go to both. cog stops at the
+  # first hook that fails and keeps the tag, so a failed gitea push is retried
+  # by hand: git push --no-follow-tags gitea master <tag>
+  "git push --no-follow-tags origin master {{version_tag}}",
+  "git push --no-follow-tags gitea master {{version_tag}}",
+]

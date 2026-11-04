@@ -50,6 +50,7 @@ config.example.yaml           # Annotated example configuration
 testdata/config.yaml          # Test fixture
 .goreleaser-github.yaml       # Release config used by the GitHub release workflow
 .goreleaser-gitea.yaml        # Release config used by the Gitea release workflow (release disabled, Harbor images only)
+cog.toml                      # cocogitto release config: `cog bump` tags the merged master commit and pushes it to GitHub and Gitea
 Dockerfile                    # Multi-stage build (Go builder + Alpine runtime)
 .github/workflows/
   test.yml                    # CI: tests, lint, fmt on push/PR
@@ -122,6 +123,12 @@ For AI coding agents: after making code changes, run `go fix ./...` before tests
 - **Error handling**: errors are returned up the call stack, wrapped with `fmt.Errorf("context: %w", err)`. The `sync` command exits with code 1 if any repo has an error.
 - **Tests**: standard `testing` package, table-driven tests, `t.TempDir()` for temp dirs. Sync tests use in-process bare git repos created via `initBareAndClone()` helper. No external test dependencies or test frameworks.
 - **No Makefile**: build and test with standard `go` commands.
+
+## Release
+
+- Cut with `cog bump --auto` (`cog.toml`) on a `master` that matches GitHub's; a pre-bump hook refuses otherwise. It tags the merged commit, with no bump commit or changelog since changes land through GitHub PRs, and pushes `master` and the tag to `origin` (GitHub) and `gitea` (the mirror, kept up to date only by this push).
+- On GitHub the tag runs `.github/workflows/release.yml` (GoReleaser binaries, GitHub release, GHCR image); on Gitea it runs `.gitea/workflows/release.yml` (Harbor image only).
+- `--auto` derives the version from the commit types since the last tag (`feat` minor, `fix` patch, `!` major), so commit subjects must follow the style below.
 
 ## Git commit style
 
